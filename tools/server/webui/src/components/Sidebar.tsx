@@ -15,6 +15,7 @@ import { BtnWithTooltips } from '../utils/common';
 import { useAppContext } from '../utils/app.context';
 import toast from 'react-hot-toast';
 import { useModals } from './ModalProvider';
+import ModelSelector from './ModelSelector';
 
 export default function Sidebar() {
   const params = useParams();
@@ -76,21 +77,30 @@ export default function Sidebar() {
         </a>
 
         <div className="flex flex-col bg-base-200 min-h-full max-w-64 py-4 px-4">
-          <div className="flex flex-row items-center justify-between mb-4 mt-4">
+          <div className="mb-4">
+            <div className="flex flex-row items-center justify-between">
+              <h2 className="font-bold ml-4" role="heading">
+                Models
+              </h2>
+              {/* close sidebar button */}
+              <label
+                htmlFor="toggle-drawer"
+                className="btn btn-ghost lg:hidden"
+                aria-label="Close sidebar"
+                role="button"
+                tabIndex={0}
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </label>
+            </div>
+            <div className="mt-2">
+              <ModelSelector />
+            </div>
+          </div>
+          <div className="mb-4">
             <h2 className="font-bold ml-4" role="heading">
               Conversations
             </h2>
-
-            {/* close sidebar button */}
-            <label
-              htmlFor="toggle-drawer"
-              className="btn btn-ghost lg:hidden"
-              aria-label="Close sidebar"
-              role="button"
-              tabIndex={0}
-            >
-              <XMarkIcon className="w-5 h-5" />
-            </label>
           </div>
 
           {/* new conversation button */}

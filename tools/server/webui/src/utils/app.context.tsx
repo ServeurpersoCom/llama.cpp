@@ -206,6 +206,7 @@ export const AppContextProvider = ({
 
       // prepare params
       const params = {
+        ...(config.model ? { model: config.model } : {}),
         messages,
         stream: true,
         cache_prompt: true,
