@@ -36,7 +36,7 @@ export default function ModelSelector() {
 
   return (
     <select
-      className="select select-bordered select-sm w-auto"
+      className="select select-bordered select-sm w-full"
       value={config.model}
       onChange={handleChange}
     >
