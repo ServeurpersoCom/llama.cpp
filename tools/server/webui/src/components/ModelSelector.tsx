@@ -3,7 +3,7 @@ import { BASE_URL } from '../Config';
 import { useAppContext } from '../utils/app.context';
 
 export default function ModelSelector() {
-  const { config, saveConfig } = useAppContext();
+  const { config, saveConfig, setShouldRefetchProps } = useAppContext();
   const [models, setModels] = useState<string[]>([]);
 
   useEffect(() => {
@@ -32,6 +32,7 @@ export default function ModelSelector() {
 
   const handleChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     saveConfig({ ...config, model: e.target.value });
+    setShouldRefetchProps(true);
   };
 
   return (

@@ -52,6 +52,8 @@ interface AppContextValue {
 
   // props
   serverProps: LlamaCppServerProps | null;
+  shouldRefetchProps: boolean;
+  setShouldRefetchProps: (flag: boolean) => void;
 }
 
 // this callback is used for scrolling to the bottom of the chat and switching to the last node
@@ -93,6 +95,7 @@ export const AppContextProvider = ({
   const [config, setConfig] = useState(StorageUtils.getConfig());
   const [canvasData, setCanvasData] = useState<CanvasData | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [shouldRefetchProps, setShouldRefetchProps] = useState(false);
 
   // get server props
   useEffect(() => {
@@ -251,7 +254,22 @@ export const AppContextProvider = ({
         throw new Error(body?.error?.message || 'Unknown error');
       }
       const chunks = getSSEStreamAsync(fetchResponse);
+      let isFirstChunk = true;
       for await (const chunk of chunks) {
+        if (isFirstChunk) {
+          isFirstChunk = false;
+          if (shouldRefetchProps) {
+            try {
+              const props = await getServerProps(BASE_URL, config.apiKey);
+              console.debug('Server props:', props);
+              setServerProps(props);
+            } catch (err) {
+              console.error(err);
+              toast.error('Failed to fetch server props');
+            }
+            setShouldRefetchProps(false);
+          }
+        }
         // const stop = chunk.stop;
         if (chunk.error) {
           throw new Error(chunk.error?.message || 'Unknown error');
@@ -403,6 +421,8 @@ export const AppContextProvider = ({
         showSettings,
         setShowSettings,
         serverProps,
+        shouldRefetchProps,
+        setShouldRefetchProps,
       }}
     >
       {children}
