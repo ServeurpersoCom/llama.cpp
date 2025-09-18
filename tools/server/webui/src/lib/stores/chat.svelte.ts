@@ -313,12 +313,21 @@ class ChatStore {
 
 		let streamedReasoningContent = '';
 
+		let hasSyncedServerProps = false;
+
 		slotsService.startStreaming();
 
 		await chatService.sendMessage(allMessages, {
 			...this.getApiOptions(),
 
 			onChunk: (chunk: string) => {
+				if (!hasSyncedServerProps) {
+					hasSyncedServerProps = true;
+					void serverStore.fetchServerProps().catch((error) => {
+						console.warn('Failed to refresh server props after first chunk:', error);
+					});
+				}
+
 				streamedContent += chunk;
 				this.currentResponse = streamedContent;
 
