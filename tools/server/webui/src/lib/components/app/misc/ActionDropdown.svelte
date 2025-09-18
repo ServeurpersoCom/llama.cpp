@@ -32,11 +32,36 @@
 		align = 'end',
 		open = $bindable(false)
 	}: Props = $props();
+
+	let lastPointerWasTouch = false;
+
+	const handlePointerDown = (event: PointerEvent) => {
+		const isMouse = event.pointerType === 'mouse';
+		lastPointerWasTouch = !isMouse;
+		if (!isMouse) {
+			event.stopPropagation();
+		}
+	};
+
+	const handleTouchStart = (event: TouchEvent) => {
+		lastPointerWasTouch = true;
+		event.stopPropagation();
+	};
+
+	const handleClick = (event: MouseEvent) => {
+		if (lastPointerWasTouch) {
+			event.stopPropagation();
+			lastPointerWasTouch = false;
+		}
+	};
 </script>
 
 <DropdownMenu.Root bind:open>
 	<DropdownMenu.Trigger
 		class="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md p-0 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground focus:outline-none disabled:pointer-events-none disabled:opacity-50 data-[state=open]:bg-accent data-[state=open]:text-accent-foreground {triggerClass}"
+		onpointerdown={handlePointerDown}
+		ontouchstart={handleTouchStart}
+		onclick={handleClick}
 	>
 		{#if triggerTooltip}
 			<Tooltip.Root delayDuration={TOOLTIP_DELAY_DURATION}>
@@ -53,7 +78,7 @@
 		{/if}
 	</DropdownMenu.Trigger>
 
-	<DropdownMenu.Content {align} class="z-999 w-48">
+	<DropdownMenu.Content {align} class="z-[100000] w-48">
 		{#each actions as action, index (action.label)}
 			{#if action.separator && index > 0}
 				<DropdownMenu.Separator />
