@@ -133,7 +133,7 @@
 				{/if}
 			</Select.Trigger>
 
-			<Select.Content class="z-[100000]">
+			<Select.Content>
 				{#each options as option (option.id)}
 					<Select.Item value={option.id} label={option.name}>
 						<div class="flex flex-col gap-1">
