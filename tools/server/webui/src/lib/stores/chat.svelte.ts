@@ -6,6 +6,7 @@ import { filterByLeafNodeId, findLeafNode, findDescendantMessages } from '$lib/u
 import { browser } from '$app/environment';
 import { goto } from '$app/navigation';
 import { extractPartialThinking } from '$lib/utils/thinking';
+import { toast } from 'svelte-sonner';
 
 /**
  * ChatStore - Central state management for chat conversations and AI interactions
@@ -957,6 +958,87 @@ class ChatStore {
 	}
 
 	/**
+	 * Exports all conversations with their messages as a JSON file
+	 */
+	async exportAllConversations(): Promise<void> {
+		try {
+			const allConversations = await DatabaseStore.getAllConversations();
+			if (allConversations.length === 0) {
+				throw new Error('No conversations to export');
+			}
+
+			const allData = await Promise.all(
+				allConversations.map(async (conv) => {
+					const messages = await DatabaseStore.getConversationMessages(conv.id);
+					return { conv, messages };
+				})
+			);
+
+			const blob = new Blob([JSON.stringify(allData, null, 2)], {
+				type: 'application/json'
+			});
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = `all_conversations_${new Date().toISOString().split('T')[0]}.json`;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
+
+			toast.success(`All conversations (${allConversations.length}) prepared for download`);
+		} catch (err) {
+			console.error('Failed to export conversations:', err);
+			throw err;
+		}
+	}
+
+	/**
+	 * Imports conversations from a JSON file
+	 * Uses DatabaseStore for safe, encapsulated data access
+	 */
+	async importAllConversations(): Promise<void> {
+		return new Promise((resolve, reject) => {
+			const input = document.createElement('input');
+			input.type = 'file';
+			input.accept = '.json';
+
+			input.onchange = async (e) => {
+				const file = (e.target as HTMLInputElement)?.files?.[0];
+				if (!file) {
+					reject(new Error('No file selected'));
+					return;
+				}
+
+				try {
+					const text = await file.text();
+					const importedData: { conv: DatabaseConversation; messages: DatabaseMessage[] }[] =
+						JSON.parse(text);
+
+					if (!Array.isArray(importedData)) {
+						throw new Error('Invalid file format: expected array of conversations');
+					}
+
+					const result = await DatabaseStore.importConversations(importedData);
+
+					// Refresh UI
+					await this.loadConversations();
+
+					toast.success(`Imported ${result.imported} conversation(s), skipped ${result.skipped}`);
+
+					resolve(undefined);
+				} catch (err: unknown) {
+					const message = err instanceof Error ? err.message : 'Unknown error';
+					console.error('Failed to import conversations:', err);
+					reject(new Error(`Import failed: ${message}`));
+				}
+			};
+
+			input.click();
+		});
+	}
+
+	/**
 	 * Deletes a conversation and all its messages
 	 * @param convId - The conversation ID to delete
 	 */
@@ -1429,6 +1511,8 @@ export const maxContextError = () => chatStore.maxContextError;
 
 export const createConversation = chatStore.createConversation.bind(chatStore);
 export const downloadConversation = chatStore.downloadConversation.bind(chatStore);
+export const exportAllConversations = chatStore.exportAllConversations.bind(chatStore);
+export const importAllConversations = chatStore.importAllConversations.bind(chatStore);
 export const deleteConversation = chatStore.deleteConversation.bind(chatStore);
 export const sendMessage = chatStore.sendMessage.bind(chatStore);
 export const gracefulStop = chatStore.gracefulStop.bind(chatStore);
