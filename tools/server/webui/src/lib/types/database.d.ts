@@ -53,3 +53,18 @@ export interface DatabaseMessage {
 	extra?: DatabaseMessageExtra[];
 	timings?: ChatMessageTimings;
 }
+
+/**
+ * Represents a single conversation with its associated messages,
+ * typically used for import/export operations.
+ */
+export type ExportedConversation = {
+	conv: DatabaseConversation;
+	messages: DatabaseMessage[];
+};
+
+/**
+ * Type representing one or more exported conversations.
+ * Can be a single conversation object or an array of them.
+ */
+export type ExportedConversations = ExportedConversation | ExportedConversation[];

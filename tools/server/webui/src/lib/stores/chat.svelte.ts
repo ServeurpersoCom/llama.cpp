@@ -7,6 +7,7 @@ import { browser } from '$app/environment';
 import { goto } from '$app/navigation';
 import { extractPartialThinking } from '$lib/utils/thinking';
 import { toast } from 'svelte-sonner';
+import type { ExportedConversations } from '$lib/types/database';
 
 /**
  * ChatStore - Central state management for chat conversations and AI interactions
@@ -923,8 +924,8 @@ class ChatStore {
 		this.triggerDownload(conversationData);
 	    } else {
 		// Use current active conversation data
-		const conversationData = {
-		    conv: this.activeConversation,
+		const conversationData: ExportedConversations = {
+		    conv: this.activeConversation!,
 		    messages: this.activeMessages
 		};
 
@@ -937,8 +938,12 @@ class ChatStore {
 	 * @param data - Data to download (expected: { conv: DatabaseConversation, messages: DatabaseMessage[] })
 	 * @param filename - Optional filename
 	 */
-	private triggerDownload(data: any, filename?: string): void {
-		const conversation = data.conv || data;
+	private triggerDownload(data: ExportedConversations, filename?: string): void {
+		const conversation = 'conv' in data ? data.conv : (Array.isArray(data) ? data[0]?.conv : undefined);
+		if (!conversation) {
+			console.error('Invalid data: missing conversation');
+			return;
+		}
 		const conversationName = conversation.name ? conversation.name.trim() : '';
 		const convId = conversation.id || 'unknown';
 		const truncatedSuffix = conversationName.toLowerCase()
@@ -969,7 +974,7 @@ class ChatStore {
 				throw new Error('No conversations to export');
 			}
 
-			const allData = await Promise.all(
+			const allData: ExportedConversations = await Promise.all(
 				allConversations.map(async (conv) => {
 					const messages = await DatabaseStore.getConversationMessages(conv.id);
 					return { conv, messages };
@@ -1016,9 +1021,7 @@ class ChatStore {
 				try {
 					const text = await file.text();
 					const parsedData = JSON.parse(text);
-
-					// Handle both single conversation object and array of conversations
-					let importedData: { conv: DatabaseConversation; messages: DatabaseMessage[] }[];
+					let importedData: ExportedConversations;
 
 					if (Array.isArray(parsedData)) {
 						importedData = parsedData;
