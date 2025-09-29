@@ -916,7 +916,7 @@ class ChatStore {
 
 		const messages = await DatabaseStore.getConversationMessages(convId);
 		const conversationData = {
-		    ...conversation,
+		    conv: conversation,
 		    messages
 		};
 
@@ -924,7 +924,7 @@ class ChatStore {
 	    } else {
 		// Use current active conversation data
 		const conversationData = {
-		    ...this.activeConversation,
+		    conv: this.activeConversation,
 		    messages: this.activeMessages
 		};
 
@@ -934,14 +934,16 @@ class ChatStore {
 
 	/**
 	 * Triggers file download in browser
-	 * @param data - Data to download
+	 * @param data - Data to download (expected: { conv: DatabaseConversation, messages: DatabaseMessage[] })
 	 * @param filename - Optional filename
 	 */
 	private triggerDownload(data: any, filename?: string): void {
-		const conversationName = data.name || '';
+		const conversation = data.conv || data;
+		const conversationName = conversation.name ? conversation.name.trim() : '';
+		const convId = conversation.id || 'unknown';
 		const truncatedSuffix = conversationName.toLowerCase()
 			.replace(/[^a-z0-9]/gi, '_').replace(/_+/g, '_').substring(0, 20);
-		const downloadFilename = filename || `conversation_${data.id}_${truncatedSuffix}.json`;
+		const downloadFilename = filename || `conversation_${convId}_${truncatedSuffix}.json`;
 
 		const conversationJson = JSON.stringify(data, null, 2);
 		const blob = new Blob([conversationJson], {
@@ -994,10 +996,11 @@ class ChatStore {
 	}
 
 	/**
-	 * Imports conversations from a JSON file
+	 * Imports conversations from a JSON file.
+	 * Supports both single conversation (object) and multiple conversations (array).
 	 * Uses DatabaseStore for safe, encapsulated data access
 	 */
-	async importAllConversations(): Promise<void> {
+	async importConversations(): Promise<void> {
 		return new Promise((resolve, reject) => {
 			const input = document.createElement('input');
 			input.type = 'file';
@@ -1012,11 +1015,18 @@ class ChatStore {
 
 				try {
 					const text = await file.text();
-					const importedData: { conv: DatabaseConversation; messages: DatabaseMessage[] }[] =
-						JSON.parse(text);
+					const parsedData = JSON.parse(text);
 
-					if (!Array.isArray(importedData)) {
-						throw new Error('Invalid file format: expected array of conversations');
+					// Handle both single conversation object and array of conversations
+					let importedData: { conv: DatabaseConversation; messages: DatabaseMessage[] }[];
+
+					if (Array.isArray(parsedData)) {
+						importedData = parsedData;
+					} else if (parsedData && typeof parsedData === 'object' && 'conv' in parsedData && 'messages' in parsedData) {
+						// Single conversation object
+						importedData = [parsedData];
+					} else {
+						throw new Error('Invalid file format: expected array of conversations or single conversation object');
 					}
 
 					const result = await DatabaseStore.importConversations(importedData);
@@ -1030,6 +1040,9 @@ class ChatStore {
 				} catch (err: unknown) {
 					const message = err instanceof Error ? err.message : 'Unknown error';
 					console.error('Failed to import conversations:', err);
+					toast.error('Import failed', {
+						description: message
+					});
 					reject(new Error(`Import failed: ${message}`));
 				}
 			};
@@ -1512,7 +1525,7 @@ export const maxContextError = () => chatStore.maxContextError;
 export const createConversation = chatStore.createConversation.bind(chatStore);
 export const downloadConversation = chatStore.downloadConversation.bind(chatStore);
 export const exportAllConversations = chatStore.exportAllConversations.bind(chatStore);
-export const importAllConversations = chatStore.importAllConversations.bind(chatStore);
+export const importConversations = chatStore.importConversations.bind(chatStore);
 export const deleteConversation = chatStore.deleteConversation.bind(chatStore);
 export const sendMessage = chatStore.sendMessage.bind(chatStore);
 export const gracefulStop = chatStore.gracefulStop.bind(chatStore);

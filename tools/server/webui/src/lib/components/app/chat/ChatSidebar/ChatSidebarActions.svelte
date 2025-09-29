@@ -3,7 +3,7 @@
 	import { KeyboardShortcutInfo } from '$lib/components/app';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
-	import { exportAllConversations, importAllConversations } from '$lib/stores/chat.svelte';
+	import { exportAllConversations, importConversations } from '$lib/stores/chat.svelte';
 
 	interface Props {
 		handleMobileSidebarItemClick: () => void;
@@ -97,7 +97,7 @@
 		<Button
 			class="w-full justify-start text-sm"
 			onclick={() => {
-				importAllConversations().catch(err => {
+				importConversations().catch(err => {
 					console.error('Import failed:', err);
 					// Optional: show toast or dialog
 				});
