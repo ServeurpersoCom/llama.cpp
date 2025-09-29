@@ -142,7 +142,7 @@
 
 <ModeWatcher />
 
-<Toaster richColors />
+<Toaster position="top-center" richColors />
 
 <MaximumContextAlertDialog />
 
