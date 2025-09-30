@@ -75,6 +75,11 @@
 					key: 'pdfAsImage',
 					label: 'Parse PDF as image',
 					type: 'checkbox'
+				},
+				{
+					key: 'renderUserContentAsMarkdown',
+					label: 'Render user content as Markdown',
+					type: 'checkbox'
 				}
 			]
 		},
