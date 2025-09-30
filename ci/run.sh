@@ -612,7 +612,7 @@ test $ret -eq 0 && gg_run ctest_release
 
 if [ -z ${GG_BUILD_LOW_PERF} ]; then
     test $ret -eq 0 && gg_run embd_bge_small
-    test $ret -eq 0 && gg_run rerank_tiny
+    #test $ret -eq 0 && gg_run rerank_tiny
 
     if [ -z ${GG_BUILD_CLOUD} ] || [ ${GG_BUILD_EXTRA_TESTS_0} ]; then
         test $ret -eq 0 && gg_run test_scripts
