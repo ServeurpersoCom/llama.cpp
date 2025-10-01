@@ -17,7 +17,6 @@
 	import { ModeWatcher } from 'mode-watcher';
 	import { Toaster } from 'svelte-sonner';
 	import { goto } from '$app/navigation';
-	import { onMount } from 'svelte';
 
 	let { children } = $props();
 
@@ -26,7 +25,6 @@
 	let isNewChatMode = $derived(page.url.searchParams.get('new_chat') === 'true');
 	let showSidebarByDefault = $derived(activeMessages().length > 0 || isLoading());
 	let sidebarOpen = $state(false);
-	let viewportHeight = $state<number | undefined>();
 	let chatSidebar:
 		| { activateSearchMode?: () => void; editActiveConversation?: () => void }
 		| undefined = $state();
@@ -62,20 +60,6 @@
 			}
 		}
 	}
-
-	function updateViewportHeight() {
-		viewportHeight = window.innerHeight;
-	}
-
-	onMount(() => {
-		updateViewportHeight();
-
-		window.addEventListener('resize', updateViewportHeight);
-
-		return () => {
-			window.removeEventListener('resize', updateViewportHeight);
-		};
-	});
 
 	function handleTitleUpdateCancel() {
 		titleUpdateDialogOpen = false;
@@ -171,10 +155,7 @@
 />
 
 <Sidebar.Provider bind:open={sidebarOpen}>
-	<div
-		class="flex h-screen w-full"
-		style:height={viewportHeight !== undefined ? `${viewportHeight}px` : undefined}
-	>
+	<div class="flex h-screen w-full">
 		<Sidebar.Root class="h-full">
 			<ChatSidebar bind:this={chatSidebar} />
 		</Sidebar.Root>
