@@ -262,10 +262,8 @@ export class ChatService {
 		}
 
 		const decoder = new TextDecoder();
-		let fullResponse = '';
+		let aggregatedContent = '';
 		let fullReasoningContent = '';
-		let regularContent = '';
-		let insideThinkTag = false;
 		let hasReceivedData = false;
 		let lastTimings: ChatMessageTimings | undefined;
 
@@ -283,7 +281,7 @@ export class ChatService {
 					if (line.startsWith('data: ')) {
 						const data = line.slice(6);
 						if (data === '[DONE]') {
-							if (!hasReceivedData && fullResponse.length === 0) {
+							if (!hasReceivedData && aggregatedContent.length === 0) {
 								const contextError = new Error(
 									'The request exceeds the available context size. Try increasing the context size or enable context shift.'
 								);
@@ -292,7 +290,7 @@ export class ChatService {
 								return;
 							}
 
-							onComplete?.(regularContent, fullReasoningContent || undefined, lastTimings);
+							onComplete?.(aggregatedContent, fullReasoningContent || undefined, lastTimings);
 
 							return;
 						}
@@ -314,36 +312,17 @@ export class ChatService {
 								}
 							}
 
-							if (content) {
-								hasReceivedData = true;
-								fullResponse += content;
+                                                        if (content) {
+                                                                hasReceivedData = true;
+                                                                aggregatedContent += content;
+                                                                onChunk?.(content);
+                                                        }
 
-								// Track the regular content before processing this chunk
-								const regularContentBefore = regularContent;
-
-								// Process content character by character to handle think tags
-								insideThinkTag = this.processContentForThinkTags(
-									content,
-									insideThinkTag,
-									() => {
-										// Think content is ignored - we don't include it in API requests
-									},
-									(regularChunk) => {
-										regularContent += regularChunk;
-									}
-								);
-
-								const newRegularContent = regularContent.slice(regularContentBefore.length);
-								if (newRegularContent) {
-									onChunk?.(newRegularContent);
-								}
-							}
-
-							if (reasoningContent) {
-								hasReceivedData = true;
-								fullReasoningContent += reasoningContent;
-								onReasoningChunk?.(reasoningContent);
-							}
+                                                        if (reasoningContent) {
+                                                                hasReceivedData = true;
+                                                                fullReasoningContent += reasoningContent;
+                                                                onReasoningChunk?.(reasoningContent);
+                                                        }
 						} catch (e) {
 							console.error('Error parsing JSON chunk:', e);
 						}
@@ -351,7 +330,7 @@ export class ChatService {
 				}
 			}
 
-			if (!hasReceivedData && fullResponse.length === 0) {
+			if (!hasReceivedData && aggregatedContent.length === 0) {
 				const contextError = new Error(
 					'The request exceeds the available context size. Try increasing the context size or enable context shift.'
 				);
@@ -556,51 +535,6 @@ export class ChatService {
 			console.error('Error fetching server props:', error);
 			throw error;
 		}
-	}
-
-	/**
-	 * Processes content to separate thinking tags from regular content.
-	 * Parses <think> and </think> tags to route content to appropriate handlers.
-	 *
-	 * @param content - The content string to process
-	 * @param currentInsideThinkTag - Current state of whether we're inside a think tag
-	 * @param addThinkContent - Callback to handle content inside think tags
-	 * @param addRegularContent - Callback to handle regular content outside think tags
-	 * @returns Boolean indicating if we're still inside a think tag after processing
-	 * @private
-	 */
-	private processContentForThinkTags(
-		content: string,
-		currentInsideThinkTag: boolean,
-		addThinkContent: (chunk: string) => void,
-		addRegularContent: (chunk: string) => void
-	): boolean {
-		let i = 0;
-		let insideThinkTag = currentInsideThinkTag;
-
-		while (i < content.length) {
-			if (!insideThinkTag && content.substring(i, i + 7) === '<think>') {
-				insideThinkTag = true;
-				i += 7; // Skip the <think> tag
-				continue;
-			}
-
-			if (insideThinkTag && content.substring(i, i + 8) === '</think>') {
-				insideThinkTag = false;
-				i += 8; // Skip the </think> tag
-				continue;
-			}
-
-			if (insideThinkTag) {
-				addThinkContent(content[i]);
-			} else {
-				addRegularContent(content[i]);
-			}
-
-			i++;
-		}
-
-		return insideThinkTag;
 	}
 
 	/**
