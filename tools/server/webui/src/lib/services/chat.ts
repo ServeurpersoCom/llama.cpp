@@ -266,6 +266,7 @@ export class ChatService {
 		let fullReasoningContent = '';
 		let hasReceivedData = false;
 		let lastTimings: ChatMessageTimings | undefined;
+		let streamFinished = false;
 
 		try {
 			let chunk = '';
@@ -281,18 +282,8 @@ export class ChatService {
 					if (line.startsWith('data: ')) {
 						const data = line.slice(6);
 						if (data === '[DONE]') {
-							if (!hasReceivedData && aggregatedContent.length === 0) {
-								const contextError = new Error(
-									'The request exceeds the available context size. Try increasing the context size or enable context shift.'
-								);
-								contextError.name = 'ContextError';
-								onError?.(contextError);
-								return;
-							}
-
-							onComplete?.(aggregatedContent, fullReasoningContent || undefined, lastTimings);
-
-							return;
+							streamFinished = true;
+							continue;
 						}
 
 						try {
@@ -330,13 +321,17 @@ export class ChatService {
 				}
 			}
 
-			if (!hasReceivedData && aggregatedContent.length === 0) {
-				const contextError = new Error(
-					'The request exceeds the available context size. Try increasing the context size or enable context shift.'
-				);
-				contextError.name = 'ContextError';
-				onError?.(contextError);
-				return;
+			if (streamFinished) {
+				if (!hasReceivedData && aggregatedContent.length === 0) {
+					const contextError = new Error(
+						'The request exceeds the available context size. Try increasing the context size or enable context shift.'
+					);
+					contextError.name = 'ContextError';
+					onError?.(contextError);
+					return;
+				}
+
+				onComplete?.(aggregatedContent, fullReasoningContent || undefined, lastTimings);
 			}
 		} catch (error) {
 			const err = error instanceof Error ? error : new Error('Stream error');
