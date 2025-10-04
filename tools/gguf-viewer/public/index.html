@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>llama-gguf-viewer</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            font-family: "Segoe UI", Tahoma, sans-serif;
+            background-color: #111827;
+            color: #e5e7eb;
+        }
+        body {
+            margin: 0;
+            padding: 0;
+        }
+        header {
+            background: linear-gradient(90deg, #2563eb, #7c3aed);
+            padding: 1.5rem 2rem;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+        }
+        h1 {
+            margin: 0;
+            font-size: 1.8rem;
+            font-weight: 600;
+        }
+        main {
+            padding: 1.5rem 2rem 4rem;
+            display: grid;
+            gap: 1.5rem;
+        }
+        section {
+            background-color: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(148, 163, 184, 0.15);
+            border-radius: 12px;
+            padding: 1.25rem;
+            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.5);
+        }
+        section h2 {
+            margin-top: 0;
+            font-size: 1.3rem;
+            color: #93c5fd;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .grid-two {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            gap: 1rem;
+        }
+        .info-card {
+            background: rgba(30, 41, 59, 0.7);
+            border-radius: 10px;
+            padding: 1rem;
+            border: 1px solid rgba(148, 163, 184, 0.1);
+        }
+        .info-card h3 {
+            margin: 0;
+            font-size: 0.95rem;
+            color: #cbd5f5;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .info-card p {
+            margin: 0.35rem 0 0;
+            font-size: 1.3rem;
+            font-weight: 600;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+        thead {
+            background-color: rgba(37, 99, 235, 0.12);
+        }
+        th, td {
+            padding: 0.6rem 0.75rem;
+            border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+            text-align: left;
+            vertical-align: top;
+        }
+        tbody tr:hover {
+            background-color: rgba(59, 130, 246, 0.08);
+        }
+        code {
+            font-family: "Fira Code", "Menlo", monospace;
+            background-color: rgba(15, 23, 42, 0.8);
+            padding: 0.15rem 0.35rem;
+            border-radius: 5px;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+        }
+        button {
+            background: linear-gradient(135deg, #2563eb, #7c3aed);
+            border: none;
+            color: white;
+            padding: 0.45rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            cursor: pointer;
+            transition: transform 0.1s ease, box-shadow 0.2s ease;
+        }
+        button:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(37, 99, 235, 0.35);
+        }
+        button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            box-shadow: none;
+        }
+        .controls {
+            display: flex;
+            gap: 0.75rem;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+        .controls input {
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(148, 163, 184, 0.35);
+            border-radius: 6px;
+            padding: 0.35rem 0.5rem;
+            color: inherit;
+            width: 5rem;
+        }
+        .preview-box {
+            margin-top: 1rem;
+            padding: 0.75rem;
+            border-radius: 8px;
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            background: rgba(15, 23, 42, 0.7);
+            white-space: pre-wrap;
+            font-family: "Fira Code", monospace;
+            overflow-x: auto;
+        }
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            padding: 0.15rem 0.5rem;
+            border-radius: 999px;
+            background: rgba(59, 130, 246, 0.12);
+            color: #bfdbfe;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .kv-value {
+            max-width: 360px;
+            overflow-wrap: anywhere;
+        }
+        .model-title {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.6rem;
+            align-items: baseline;
+        }
+        .model-title .model-path {
+            font-size: 0.95rem;
+            color: #cbd5f5;
+            background: rgba(30, 41, 59, 0.7);
+            border-radius: 6px;
+            padding: 0.25rem 0.5rem;
+            border: 1px solid rgba(148, 163, 184, 0.25);
+        }
+        .tokenizer-controls {
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .tokenizer-controls .control-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.85rem;
+        }
+        .tokenizer-controls input {
+            width: 6rem;
+        }
+        .tokenizer-controls .badge {
+            margin-left: 0.5rem;
+        }
+        .token-grid {
+            display: grid;
+            gap: 0.65rem;
+            margin-top: 1rem;
+        }
+        .token-cell {
+            background: rgba(30, 41, 59, 0.7);
+            border: 1px solid rgba(148, 163, 184, 0.2);
+            border-radius: 10px;
+            min-height: 3.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.75rem;
+            font-family: "Fira Code", "Menlo", monospace;
+            font-size: 1rem;
+            text-align: center;
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
+        }
+        .token-cell:hover {
+            border-color: rgba(59, 130, 246, 0.4);
+            box-shadow: 0 6px 18px rgba(37, 99, 235, 0.25);
+        }
+        .token-cell--empty {
+            opacity: 0.35;
+            border-style: dashed;
+        }
+        .token-cell .token-text {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+<header>
+    <h1>llama-gguf-viewer</h1>
+</header>
+<main>
+    <section id="model-info">
+        <h2 id="model-title" class="model-title">Model overview</h2>
+        <div class="grid-two" id="info-cards"></div>
+    </section>
+
+    <section>
+        <h2>Metadata (KV)</h2>
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Key</th>
+                        <th>Type</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody id="kv-body"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <section class="tokenizer-section">
+        <h2>Tokenizer</h2>
+        <div id="tokenizer-content"></div>
+    </section>
+
+    <section>
+        <h2>Tensors</h2>
+        <div class="controls">
+            <label for="tensor-count">Preview elements:</label>
+            <input type="number" id="tensor-count" min="1" value="32" />
+        </div>
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Type</th>
+                        <th>Shape</th>
+                        <th>Elements</th>
+                        <th>Offset</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody id="tensor-body"></tbody>
+            </table>
+        </div>
+        <div class="preview-box" id="tensor-preview">Select a tensor to preview its values.</div>
+    </section>
+</main>
+<script>
+const infoCards = document.getElementById("info-cards");
+const modelTitle = document.getElementById("model-title");
+const kvBody = document.getElementById("kv-body");
+const tokenizerContent = document.getElementById("tokenizer-content");
+const tensorBody = document.getElementById("tensor-body");
+const tensorCountInput = document.getElementById("tensor-count");
+const tensorPreviewBox = document.getElementById("tensor-preview");
+
+let tensorData = [];
+let tokenizerState = { offset: 0, total: 0, gridSize: 16 };
+const textEncoder = new TextEncoder();
+
+async function fetchJSON(url) {
+    const res = await fetch(url);
+    if (!res.ok) {
+        const message = await res.text();
+        throw new Error(message || `Request failed: ${res.status}`);
+    }
+    return res.json();
+}
+
+function formatBytes(bytes) {
+    if (bytes === 0) return "0";
+    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    const value = bytes / Math.pow(1024, idx);
+    return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${units[idx]}`;
+}
+
+function createInfoCard(title, value) {
+    const div = document.createElement("div");
+    div.className = "info-card";
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    const para = document.createElement("p");
+    para.textContent = value;
+    div.appendChild(heading);
+    div.appendChild(para);
+    return div;
+}
+
+async function loadInfo() {
+    const info = await fetchJSON("/api/info");
+    infoCards.innerHTML = "";
+    modelTitle.textContent = "Model overview";
+    const pathBadge = document.createElement("span");
+    pathBadge.className = "model-path";
+    pathBadge.title = info.modelPath;
+    const pathCode = document.createElement("code");
+    pathCode.textContent = info.modelPath;
+    pathBadge.appendChild(pathCode);
+    modelTitle.appendChild(pathBadge);
+    infoCards.appendChild(createInfoCard("File size", formatBytes(info.fileSize)));
+    infoCards.appendChild(createInfoCard("GGUF version", info.ggufVersion));
+    infoCards.appendChild(createInfoCard("KV entries", info.nKv));
+    infoCards.appendChild(createInfoCard("Tensors", info.nTensors));
+    infoCards.appendChild(createInfoCard("Alignment", `${info.alignment} bytes`));
+    infoCards.appendChild(createInfoCard("Data offset", `${info.dataOffset}`));
+}
+
+function renderKvRow(entry) {
+    const tr = document.createElement("tr");
+    const typeText = entry.type === "GGUF_TYPE_ARRAY"
+        ? `${entry.type}<br/><span class="badge">${entry.arrayType} × ${entry.length}</span>`
+        : entry.type;
+    tr.innerHTML = `
+        <td><code>${entry.key}</code></td>
+        <td>${typeText}</td>
+        <td class="kv-value"></td>
+    `;
+    const details = tr.querySelector(".kv-value");
+    if (entry.type === "GGUF_TYPE_ARRAY") {
+        const preview = Array.isArray(entry.preview) ? entry.preview : [];
+        details.textContent = preview.length ? JSON.stringify(preview, null, 2) : "[]";
+        if (entry.previewTruncated) {
+            const span = document.createElement("span");
+            span.className = "badge";
+            span.textContent = `first ${preview.length} of ${entry.length}`;
+            details.appendChild(document.createElement("br"));
+            details.appendChild(span);
+        }
+    } else {
+        details.textContent = entry.value === null ? "null" : entry.value;
+    }
+    return tr;
+}
+
+async function loadKv() {
+    const entries = await fetchJSON("/api/kv");
+    kvBody.innerHTML = "";
+    entries.forEach(entry => kvBody.appendChild(renderKvRow(entry)));
+}
+
+const TOKEN_TYPE_LABELS = {
+    0: "normal",
+    1: "unknown",
+    2: "control",
+    3: "user_defined",
+    4: "unused",
+    5: "byte",
+};
+
+function formatTokenForDisplay(token) {
+    if (!token) {
+        return "∅";
+    }
+    let output = "";
+    for (const ch of token) {
+        switch (ch) {
+            case " ":
+                output += "␠";
+                break;
+            case "\n":
+                output += "⏎";
+                break;
+            case "\r":
+                output += "␍";
+                break;
+            case "\t":
+                output += "⇥";
+                break;
+            default: {
+                const code = ch.codePointAt(0);
+                if (code !== undefined && (code < 0x20 || code === 0x7f)) {
+                    output += `\\u{${code.toString(16)}}`;
+                } else {
+                    output += ch;
+                }
+            }
+        }
+    }
+    return output;
+}
+
+function tokenToHex(token) {
+    if (!token) {
+        return "";
+    }
+    return Array.from(textEncoder.encode(token))
+        .map((byte) => byte.toString(16).padStart(2, "0"))
+        .join(" ");
+}
+
+function formatTokenType(value) {
+    if (value === undefined) {
+        return "n/a";
+    }
+    const label = TOKEN_TYPE_LABELS[value];
+    return label ? `${value} (${label})` : String(value);
+}
+
+function formatTokenTooltip(item) {
+    const hex = tokenToHex(item.token);
+    const score = item.score !== undefined ? item.score.toFixed(6) : "n/a";
+    const type = formatTokenType(item.tokenType);
+    const hexLine = hex ? hex : "(empty)";
+    return `#${item.index}\nHex: ${hexLine}\nScore: ${score}\nType: ${type}`;
+}
+
+function renderTokenizerGrid(state, data) {
+    const container = document.createElement("div");
+
+    const controls = document.createElement("div");
+    controls.className = "controls tokenizer-controls";
+
+    const offsetGroup = document.createElement("div");
+    offsetGroup.className = "control-group";
+    const offsetLabel = document.createElement("label");
+    offsetLabel.textContent = "Offset:";
+    const offsetInput = document.createElement("input");
+    offsetInput.type = "number";
+    offsetInput.min = "0";
+    offsetInput.value = state.offset;
+    offsetLabel.appendChild(offsetInput);
+    offsetGroup.appendChild(offsetLabel);
+
+    const gridGroup = document.createElement("div");
+    gridGroup.className = "control-group";
+    const gridLabel = document.createElement("label");
+    gridLabel.textContent = "Grid size:";
+    const gridInput = document.createElement("input");
+    gridInput.type = "number";
+    gridInput.min = "1";
+    gridInput.max = "64";
+    gridInput.value = state.gridSize;
+    gridLabel.appendChild(gridInput);
+    gridGroup.appendChild(gridLabel);
+
+    const badge = document.createElement("span");
+    badge.className = "badge";
+    if (data.items.length > 0) {
+        const start = data.items[0].index;
+        const end = data.items[data.items.length - 1].index;
+        badge.textContent = `#${start} – #${end} / ${data.total}`;
+    } else {
+        badge.textContent = `0 / ${data.total}`;
+    }
+
+    const prev = document.createElement("button");
+    prev.textContent = "Prev";
+
+    const next = document.createElement("button");
+    next.textContent = "Next";
+
+    controls.appendChild(offsetGroup);
+    controls.appendChild(gridGroup);
+    controls.appendChild(badge);
+    controls.appendChild(prev);
+    controls.appendChild(next);
+
+    const grid = document.createElement("div");
+    grid.className = "token-grid";
+    grid.style.gridTemplateColumns = `repeat(${state.gridSize}, minmax(0, 1fr))`;
+
+    const totalCells = state.gridSize * state.gridSize;
+    for (let i = 0; i < totalCells; ++i) {
+        const item = data.items[i];
+        const cell = document.createElement("div");
+        cell.className = "token-cell";
+
+        if (item) {
+            const span = document.createElement("span");
+            span.className = "token-text";
+            span.textContent = formatTokenForDisplay(item.token);
+            cell.appendChild(span);
+            cell.title = formatTokenTooltip(item);
+        } else {
+            cell.classList.add("token-cell--empty");
+            cell.textContent = "";
+        }
+
+        grid.appendChild(cell);
+    }
+
+    container.appendChild(controls);
+    container.appendChild(grid);
+
+    return { container, offsetInput, gridInput, prev, next, badge };
+}
+
+async function loadTokenizer(offset = tokenizerState.offset) {
+    try {
+        const gridSize = Math.max(1, tokenizerState.gridSize);
+        const requestedOffset = Math.max(0, Math.floor(Number(offset)) || 0);
+        const limit = gridSize * gridSize;
+        const data = await fetchJSON(`/api/tokenizer?offset=${requestedOffset}&limit=${limit}`);
+        tokenizerContent.innerHTML = "";
+        if (!data.hasTokenizer) {
+            tokenizerContent.textContent = "Tokenizer metadata not found in this model.";
+            return;
+        }
+        tokenizerState = {
+            ...tokenizerState,
+            offset: data.offset,
+            total: data.total,
+        };
+
+        if (data.total > 0 && data.items.length === 0 && data.offset >= data.total) {
+            const fallbackOffset = Math.max(0, data.total - limit);
+            if (fallbackOffset !== data.offset) {
+                loadTokenizer(fallbackOffset);
+                return;
+            }
+        }
+
+        const layout = renderTokenizerGrid(tokenizerState, data);
+        tokenizerContent.appendChild(layout.container);
+
+        const step = tokenizerState.gridSize * tokenizerState.gridSize;
+        const nextOffset = tokenizerState.offset + step;
+
+        layout.offsetInput.value = tokenizerState.offset;
+        layout.gridInput.value = tokenizerState.gridSize;
+
+        layout.prev.disabled = tokenizerState.offset === 0;
+        layout.next.disabled = tokenizerState.total === 0 || nextOffset >= tokenizerState.total;
+
+        layout.prev.addEventListener("click", () => {
+            if (tokenizerState.offset === 0) {
+                return;
+            }
+            const newOffset = Math.max(0, tokenizerState.offset - step);
+            loadTokenizer(newOffset);
+        });
+
+        layout.next.addEventListener("click", () => {
+            if (tokenizerState.total === 0) {
+                return;
+            }
+            const target = tokenizerState.offset + step;
+            if (target >= tokenizerState.total) {
+                return;
+            }
+            loadTokenizer(target);
+        });
+
+        const commitOffsetChange = () => {
+            if (tokenizerState.total === 0) {
+                layout.offsetInput.value = 0;
+                return;
+            }
+            let value = Math.floor(Number(layout.offsetInput.value));
+            if (!Number.isFinite(value) || value < 0) {
+                value = tokenizerState.offset;
+            }
+            value = Math.min(value, Math.max(0, tokenizerState.total - 1));
+            layout.offsetInput.value = value;
+            if (value !== tokenizerState.offset) {
+                loadTokenizer(value);
+            }
+        };
+
+        layout.offsetInput.addEventListener("change", commitOffsetChange);
+        layout.offsetInput.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") {
+                commitOffsetChange();
+            }
+        });
+
+        layout.gridInput.addEventListener("change", () => {
+            let value = Math.floor(Number(layout.gridInput.value));
+            if (!Number.isFinite(value) || value < 1) {
+                value = tokenizerState.gridSize;
+            }
+            value = Math.min(value, 64);
+            if (value !== tokenizerState.gridSize) {
+                tokenizerState.gridSize = value;
+                loadTokenizer(tokenizerState.offset);
+            } else {
+                layout.gridInput.value = tokenizerState.gridSize;
+            }
+        });
+    } catch (err) {
+        tokenizerContent.textContent = err.message;
+    }
+}
+
+function renderTensorRow(tensor) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+        <td><code>${tensor.name}</code></td>
+        <td>${tensor.type}</td>
+        <td><code>${JSON.stringify(tensor.shape)}</code></td>
+        <td>${tensor.nElements}</td>
+        <td>${tensor.fileOffset}</td>
+        <td><button data-name="${encodeURIComponent(tensor.name)}">Preview</button></td>
+    `;
+    return tr;
+}
+
+async function loadTensors() {
+    tensorData = await fetchJSON("/api/tensors");
+    tensorBody.innerHTML = "";
+    tensorData.forEach(tensor => tensorBody.appendChild(renderTensorRow(tensor)));
+}
+
+async function previewTensor(nameEncoded) {
+    try {
+        const count = Math.max(1, Number(tensorCountInput.value) || 32);
+        tensorPreviewBox.textContent = "Loading preview...";
+        const data = await fetchJSON(`/api/tensors/${nameEncoded}/preview?count=${count}`);
+        const header = `${data.name} (${data.type})\nshape: ${JSON.stringify(data.shape)}\nvalues (first ${data.count} of ${data.total}):`;
+        tensorPreviewBox.textContent = `${header}\n${JSON.stringify(data.values, null, 2)}`;
+    } catch (err) {
+        tensorPreviewBox.textContent = `Failed to load tensor preview: ${err.message}`;
+    }
+}
+
+tensorBody.addEventListener("click", (event) => {
+    const target = event.target;
+    if (target.tagName === "BUTTON" && target.dataset.name) {
+        previewTensor(target.dataset.name);
+    }
+});
+
+(async function init() {
+    try {
+        await loadInfo();
+        await loadKv();
+        await loadTokenizer();
+        await loadTensors();
+    } catch (err) {
+        alert(`Failed to initialize viewer: ${err.message}`);
+    }
+})();
+</script>
+</body>
+</html>
