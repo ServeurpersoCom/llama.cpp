@@ -442,6 +442,13 @@ json tensor_to_json(const tensor_entry & entry, size_t data_offset) {
         {"height", entry.layout.height},
         {"depth",  entry.layout.depth},
     };
+    size_t block_size = 1;
+    if (const auto * traits = ggml_get_type_traits(entry.tensor->type)) {
+        if (traits->blck_size > 0) {
+            block_size = traits->blck_size;
+        }
+    }
+    node["blockSize"] = block_size;
     return node;
 }
 
