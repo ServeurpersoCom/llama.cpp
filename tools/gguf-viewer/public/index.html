@@ -130,6 +130,39 @@
             flex-direction: column;
             gap: 0.75rem;
         }
+        .heatmap-controls {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .heatmap-controls label {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            font-size: 0.85rem;
+        }
+        .heatmap-controls input[type="number"],
+        .heatmap-controls select {
+            width: 5rem;
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid rgba(148, 163, 184, 0.35);
+            border-radius: 6px;
+            padding: 0.35rem 0.5rem;
+            color: inherit;
+        }
+        .heatmap-controls input[type="checkbox"] {
+            width: auto;
+            height: auto;
+            accent-color: #7c3aed;
+        }
+        .heatmap-controls select {
+            min-width: 12rem;
+        }
+        .heatmap-controls .button-group {
+            display: inline-flex;
+            gap: 0.35rem;
+        }
         .heatmap-header {
             display: flex;
             flex-wrap: wrap;
@@ -236,6 +269,11 @@
             gap: 0.5rem;
             font-size: 0.85rem;
         }
+        .tokenizer-controls label {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
         .tokenizer-controls input {
             width: 6rem;
         }
@@ -330,11 +368,42 @@
                 <div class="heatmap-header-title" id="heatmap-info">Select a tensor to open the heatmap viewer.</div>
                 <span class="badge" id="heatmap-status" hidden></span>
             </div>
+            <div class="heatmap-controls" id="heatmap-controls" hidden>
+                <label>
+                    <span>Tensor</span>
+                    <select id="heatmap-tensor-select"></select>
+                </label>
+                <label>
+                    <span>Slice</span>
+                    <input type="number" id="heatmap-slice-input" min="1" value="1">
+                </label>
+                <label>
+                    <span>Min</span>
+                    <input type="number" id="heatmap-min-input" value="-1" step="0.001">
+                </label>
+                <label>
+                    <span>Max</span>
+                    <input type="number" id="heatmap-max-input" value="1" step="0.001">
+                </label>
+                <button id="heatmap-auto-button" type="button">Auto</button>
+                <label>
+                    <span>Step</span>
+                    <input type="number" id="heatmap-step-input" value="0.01" step="0.001">
+                </label>
+                <div class="button-group">
+                    <button id="heatmap-tighten-button" type="button">+</button>
+                    <button id="heatmap-widen-button" type="button">−</button>
+                </div>
+                <label class="heatmap-toggle">
+                    <input type="checkbox" id="heatmap-gain-offset-toggle">
+                    <span>Gain / Offset</span>
+                </label>
+            </div>
             <div class="heatmap-canvas-wrapper">
                 <canvas id="heatmap-canvas" width="1024" height="1024"></canvas>
                 <div class="heatmap-overlay" id="heatmap-overlay">Select a tensor to stream its weights.</div>
             </div>
-            <div class="heatmap-help" id="heatmap-help">Drag the canvas to explore the tensor. Use the mouse wheel to switch slices when the tensor has depth.</div>
+            <div class="heatmap-help" id="heatmap-help">Drag the canvas to explore the tensor. Use the controls to change slices and tune the contrast with the mouse wheel or the ± buttons.</div>
         </div>
     </section>
 </main>
@@ -350,14 +419,50 @@ const heatmapInfo = document.getElementById("heatmap-info");
 const heatmapStatus = document.getElementById("heatmap-status");
 const heatmapOverlay = document.getElementById("heatmap-overlay");
 const heatmapHelp = document.getElementById("heatmap-help");
+const heatmapControls = document.getElementById("heatmap-controls");
+const heatmapTensorSelect = document.getElementById("heatmap-tensor-select");
+const heatmapSliceInput = document.getElementById("heatmap-slice-input");
+const heatmapMinInput = document.getElementById("heatmap-min-input");
+const heatmapMaxInput = document.getElementById("heatmap-max-input");
+const heatmapAutoButton = document.getElementById("heatmap-auto-button");
+const heatmapStepInput = document.getElementById("heatmap-step-input");
+const heatmapTightenButton = document.getElementById("heatmap-tighten-button");
+const heatmapWidenButton = document.getElementById("heatmap-widen-button");
+const heatmapGainOffsetToggle = document.getElementById("heatmap-gain-offset-toggle");
 const heatmapCtx = heatmapCanvas.getContext("2d");
 if (heatmapCtx) {
     heatmapCtx.imageSmoothingEnabled = false;
 }
+
+suppressNativeValidation(heatmapMinInput);
+suppressNativeValidation(heatmapMaxInput);
+suppressNativeValidation(heatmapStepInput);
+const heatmapControlElements = [
+    heatmapTensorSelect,
+    heatmapSliceInput,
+    heatmapMinInput,
+    heatmapMaxInput,
+    heatmapAutoButton,
+    heatmapStepInput,
+    heatmapTightenButton,
+    heatmapWidenButton,
+    heatmapGainOffsetToggle,
+];
+heatmapControlElements.forEach((element) => {
+    if (element) {
+        element.removeAttribute("title");
+    }
+});
 let heatmapImageData = null;
 
 const HEATMAP_BACKGROUND = { r: 15, g: 23, b: 42 };
 const HEATMAP_HUE_MAX = 270;
+const HEATMAP_SCALE_EPSILON = 1e-5;
+const HEATMAP_STEP_FALLBACK = 0.01;
+const HEATMAP_MIN_STEP = 1e-6;
+const HEATMAP_SCALE_HTML_STEP = 0.001;
+const HEATMAP_SCALE_DECIMALS = 3;
+const VIEWPORT_MARGIN = 64;
 
 let tensorData = [];
 let tokenizerState = { offset: 0, total: 0, gridSize: 16 };
@@ -369,15 +474,270 @@ const heatmapState = {
     windowX: 0,
     windowY: 0,
     slice: 0,
-    min: undefined,
-    max: undefined,
+    autoMin: undefined,
+    autoMax: undefined,
+    sliceMinBound: undefined,
+    sliceMaxBound: undefined,
+    scaleMin: -1,
+    scaleMax: 1,
+    scaleInitialized: false,
+    scaleStep: HEATMAP_STEP_FALLBACK,
+    offsetMode: false,
     valid: 0,
     viewWidth: heatmapCanvas.width,
     viewHeight: heatmapCanvas.height,
     controller: null,
     fetching: false,
     imageReady: false,
+    values: [],
 };
+
+function getSliceBounds() {
+    let minBound = Number.isFinite(heatmapState.sliceMinBound) ? heatmapState.sliceMinBound : undefined;
+    let maxBound = Number.isFinite(heatmapState.sliceMaxBound) ? heatmapState.sliceMaxBound : undefined;
+
+    if (minBound !== undefined && maxBound !== undefined && minBound > maxBound) {
+        const tmp = minBound;
+        minBound = maxBound;
+        maxBound = tmp;
+    }
+
+    return { minBound, maxBound };
+}
+
+function clampToBounds(value, minBound, maxBound) {
+    let result = value;
+    if (minBound !== undefined && result < minBound) {
+        result = minBound;
+    }
+    if (maxBound !== undefined && result > maxBound) {
+        result = maxBound;
+    }
+    return result;
+}
+
+function roundScaleValue(value) {
+    if (!Number.isFinite(value)) {
+        return value;
+    }
+    const factor = 1 / HEATMAP_SCALE_HTML_STEP;
+    const rounded = Math.round(value * factor) / factor;
+    return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function formatScaleInputValue(value) {
+    if (!Number.isFinite(value)) {
+        return "";
+    }
+    const rounded = roundScaleValue(value);
+    if (Object.is(rounded, -0)) {
+        return "0";
+    }
+    const fixed = rounded.toFixed(HEATMAP_SCALE_DECIMALS);
+    return fixed
+        .replace(/(\.\d*?[1-9])0+$/, "$1")
+        .replace(/\.0+$/, "");
+}
+
+function suppressNativeValidation(input) {
+    if (!input) {
+        return;
+    }
+    input.addEventListener("invalid", (event) => {
+        event.preventDefault();
+    });
+}
+
+function sanitizeScale(minValue, maxValue) {
+    const { minBound, maxBound } = getSliceBounds();
+
+    let min = Number.isFinite(minValue) ? minValue : undefined;
+    if (!Number.isFinite(min)) {
+        min = Number.isFinite(heatmapState.scaleMin) ? heatmapState.scaleMin : undefined;
+    }
+    if (!Number.isFinite(min)) {
+        min = Number.isFinite(heatmapState.autoMin) ? heatmapState.autoMin : undefined;
+    }
+    if (!Number.isFinite(min)) {
+        min = minBound;
+    }
+    if (!Number.isFinite(min)) {
+        min = -1;
+    }
+
+    let max = Number.isFinite(maxValue) ? maxValue : undefined;
+    if (!Number.isFinite(max)) {
+        max = Number.isFinite(heatmapState.scaleMax) ? heatmapState.scaleMax : undefined;
+    }
+    if (!Number.isFinite(max)) {
+        max = Number.isFinite(heatmapState.autoMax) ? heatmapState.autoMax : undefined;
+    }
+    if (!Number.isFinite(max)) {
+        max = maxBound;
+    }
+    if (!Number.isFinite(max)) {
+        max = 1;
+    }
+
+    min = clampToBounds(min, minBound, maxBound);
+    max = clampToBounds(max, minBound, maxBound);
+
+    if (!Number.isFinite(min)) {
+        min = -1;
+    }
+    if (!Number.isFinite(max)) {
+        max = 1;
+    }
+
+    return { min, max };
+}
+
+function setHeatmapScale(minValue, maxValue, options = {}) {
+    const { reapply = true, sync = true } = options;
+    const { min, max } = sanitizeScale(minValue, maxValue);
+    const roundedMin = roundScaleValue(min);
+    const roundedMax = roundScaleValue(max);
+    if (heatmapState.scaleInitialized) {
+        const prevMin = Number.isFinite(heatmapState.scaleMin) ? heatmapState.scaleMin : -1;
+        const prevMax = Number.isFinite(heatmapState.scaleMax) ? heatmapState.scaleMax : 1;
+        if (Math.abs(prevMin - roundedMin) < HEATMAP_SCALE_EPSILON && Math.abs(prevMax - roundedMax) < HEATMAP_SCALE_EPSILON) {
+            if (sync) {
+                updateHeatmapHeader();
+                syncHeatmapControls();
+            }
+            return;
+        }
+    }
+    heatmapState.scaleMin = roundedMin;
+    heatmapState.scaleMax = roundedMax;
+    heatmapState.scaleInitialized = true;
+
+    if (reapply && heatmapState.imageReady && Array.isArray(heatmapState.values) && heatmapState.values.length > 0) {
+        updateHeatmapImage(heatmapState.values, heatmapState.scaleMin, heatmapState.scaleMax);
+    }
+
+    if (sync) {
+        updateHeatmapHeader();
+        syncHeatmapControls();
+    }
+}
+
+function sanitizeStepValue(value) {
+    if (!Number.isFinite(value) || value <= 0) {
+        return HEATMAP_STEP_FALLBACK;
+    }
+    return Math.max(HEATMAP_MIN_STEP, Math.abs(value));
+}
+
+function ensureHeatmapStep() {
+    const next = sanitizeStepValue(heatmapState.scaleStep);
+    heatmapState.scaleStep = next;
+    return next;
+}
+
+function commitHeatmapStep(rawValue) {
+    const parsed = Number.parseFloat(rawValue);
+    const next = Number.isFinite(parsed) ? sanitizeStepValue(parsed) : ensureHeatmapStep();
+    heatmapState.scaleStep = next;
+    if (heatmapStepInput) {
+        heatmapStepInput.value = String(next);
+    }
+    return next;
+}
+
+function adjustHeatmapContrast(direction, magnitude = 1) {
+    if (!heatmapState.tensor || !heatmapState.imageReady) {
+        return;
+    }
+    if (direction === 0) {
+        return;
+    }
+    const step = ensureHeatmapStep();
+    const appliedMagnitude = Math.max(1, Math.floor(Math.abs(magnitude)));
+    const delta = step * appliedMagnitude;
+    let nextMin = heatmapState.scaleMin;
+    let nextMax = heatmapState.scaleMax;
+    if (heatmapState.offsetMode) {
+        const offsetDelta = direction > 0 ? delta : -delta;
+        nextMin += offsetDelta;
+        nextMax += offsetDelta;
+    } else if (direction > 0) {
+        nextMin += delta;
+        nextMax -= delta;
+    } else {
+        nextMin -= delta;
+        nextMax += delta;
+    }
+    setHeatmapScale(nextMin, nextMax);
+}
+
+function syncHeatmapControls() {
+    if (!heatmapControls) {
+        return;
+    }
+
+    const hasTensor = !!heatmapState.tensor;
+    heatmapControls.hidden = !hasTensor;
+
+    if (heatmapTensorSelect) {
+        const selected = hasTensor && heatmapState.tensor
+            ? encodeURIComponent(heatmapState.tensor.name)
+            : "";
+        if (heatmapTensorSelect.value !== selected) {
+            heatmapTensorSelect.value = selected;
+        }
+        heatmapTensorSelect.disabled = tensorData.length === 0;
+    }
+
+    if (heatmapStepInput) {
+        const step = ensureHeatmapStep();
+        heatmapStepInput.value = String(step);
+        heatmapStepInput.disabled = !hasTensor;
+    }
+
+    if (heatmapTightenButton) {
+        heatmapTightenButton.disabled = !(hasTensor && heatmapState.imageReady);
+    }
+    if (heatmapWidenButton) {
+        heatmapWidenButton.disabled = !(hasTensor && heatmapState.imageReady);
+    }
+    if (heatmapGainOffsetToggle) {
+        heatmapGainOffsetToggle.checked = !!heatmapState.offsetMode;
+        heatmapGainOffsetToggle.disabled = !hasTensor;
+    }
+
+    if (!hasTensor) {
+        return;
+    }
+
+    const depth = heatmapState.layout && typeof heatmapState.layout.depth === "number" && heatmapState.layout.depth > 0
+        ? heatmapState.layout.depth
+        : 1;
+
+    if (heatmapSliceInput) {
+        heatmapSliceInput.min = "1";
+        heatmapSliceInput.max = String(depth);
+        heatmapSliceInput.value = String(Math.min(depth, heatmapState.slice + 1));
+        heatmapSliceInput.disabled = depth <= 1;
+    }
+
+    const ready = heatmapState.imageReady;
+
+    if (heatmapMinInput) {
+        heatmapMinInput.value = formatScaleInputValue(heatmapState.scaleMin);
+        heatmapMinInput.disabled = !ready;
+    }
+
+    if (heatmapMaxInput) {
+        heatmapMaxInput.value = formatScaleInputValue(heatmapState.scaleMax);
+        heatmapMaxInput.disabled = !ready;
+    }
+
+    if (heatmapAutoButton) {
+        const hasAuto = Number.isFinite(heatmapState.autoMin) && Number.isFinite(heatmapState.autoMax);
+        heatmapAutoButton.disabled = !ready || !hasAuto;
+    }
+}
 
 function getViewportDimensions() {
     const doc = document.documentElement;
@@ -579,23 +939,27 @@ function renderTokenizerGrid(state, data) {
     const offsetGroup = document.createElement("div");
     offsetGroup.className = "control-group";
     const offsetLabel = document.createElement("label");
-    offsetLabel.textContent = "Offset:";
+    const offsetText = document.createElement("span");
+    offsetText.textContent = "Offset";
     const offsetInput = document.createElement("input");
     offsetInput.type = "number";
     offsetInput.min = "0";
     offsetInput.value = state.offset;
+    offsetLabel.appendChild(offsetText);
     offsetLabel.appendChild(offsetInput);
     offsetGroup.appendChild(offsetLabel);
 
     const gridGroup = document.createElement("div");
     gridGroup.className = "control-group";
     const gridLabel = document.createElement("label");
-    gridLabel.textContent = "Grid size:";
+    const gridText = document.createElement("span");
+    gridText.textContent = "Grid size";
     const gridInput = document.createElement("input");
     gridInput.type = "number";
     gridInput.min = "1";
     gridInput.max = "64";
     gridInput.value = state.gridSize;
+    gridLabel.appendChild(gridText);
     gridLabel.appendChild(gridInput);
     gridGroup.appendChild(gridLabel);
 
@@ -761,10 +1125,43 @@ function renderTensorRow(tensor) {
     return tr;
 }
 
+function refreshHeatmapTensorSelect() {
+    if (!heatmapTensorSelect) {
+        return;
+    }
+
+    const fragment = document.createDocumentFragment();
+    const placeholder = document.createElement("option");
+    placeholder.value = "";
+    placeholder.textContent = tensorData.length > 0 ? "Select tensor…" : "No tensors available";
+    placeholder.disabled = tensorData.length > 0;
+    placeholder.selected = !heatmapState.tensor;
+    fragment.appendChild(placeholder);
+
+    tensorData.forEach((tensor) => {
+        const option = document.createElement("option");
+        const encodedName = encodeURIComponent(tensor.name);
+        option.value = encodedName;
+        option.textContent = tensor.name;
+        if (heatmapState.tensor && tensor.name === heatmapState.tensor.name) {
+            option.selected = true;
+        }
+        fragment.appendChild(option);
+    });
+
+    heatmapTensorSelect.innerHTML = "";
+    heatmapTensorSelect.appendChild(fragment);
+    if (heatmapState.tensor) {
+        heatmapTensorSelect.value = encodeURIComponent(heatmapState.tensor.name);
+    }
+    heatmapTensorSelect.disabled = tensorData.length === 0;
+}
+
 async function loadTensors() {
     tensorData = await fetchJSON("api/tensors");
     tensorBody.innerHTML = "";
     tensorData.forEach(tensor => tensorBody.appendChild(renderTensorRow(tensor)));
+    refreshHeatmapTensorSelect();
 }
 
 function setHeatmapOverlay(message, mode = "idle") {
@@ -830,19 +1227,21 @@ function updateHeatmapHeader() {
     const layoutWidth = layout && typeof layout.width === "number" && layout.width > 0 ? layout.width : heatmapState.viewWidth;
     const layoutHeight = layout && typeof layout.height === "number" && layout.height > 0 ? layout.height : heatmapState.viewHeight;
 
-    heatmapInfo.textContent = `${tensor.name} (${tensor.type}) \u2013 shape ${formatShape(tensor.shape)} \u2022 layout ${layoutHeight}×${layoutWidth}`;
+    const headerParts = [];
+    if (tensor.type) {
+        headerParts.push(tensor.type);
+    }
+    headerParts.push(`shape ${formatShape(tensor.shape)}`);
+    headerParts.push(`layout ${layoutHeight}×${layoutWidth}`);
+    heatmapInfo.textContent = headerParts.join(" \u2022 ");
 
     const x0 = heatmapState.windowX;
     const y0 = heatmapState.windowY;
     const x1 = Math.min(layoutWidth - 1, x0 + heatmapState.viewWidth - 1);
     const y1 = Math.min(layoutHeight - 1, y0 + heatmapState.viewHeight - 1);
-    const sliceIndex = heatmapState.slice;
     const coverageTotal = heatmapState.viewWidth * heatmapState.viewHeight;
     const coverageText = coverageTotal > 0 ? `${heatmapState.valid}/${coverageTotal}` : "0/0";
-    const minText = Number.isFinite(heatmapState.min) ? heatmapState.min.toFixed(6) : "n/a";
-    const maxText = Number.isFinite(heatmapState.max) ? heatmapState.max.toFixed(6) : "n/a";
-
-    heatmapStatus.textContent = `slice ${sliceIndex + 1}/${depth} • x ${x0} → ${x1} • y ${y0} → ${y1} • cells ${coverageText} • min ${minText} • max ${maxText}`;
+    heatmapStatus.textContent = `x ${x0} → ${x1} • y ${y0} → ${y1} • cells ${coverageText}`;
     heatmapStatus.hidden = false;
 }
 
@@ -864,8 +1263,9 @@ function ensureHeatmapBuffer(width, height) {
 
 function syncHeatmapToViewport(fetchAfterResize) {
     const viewport = getViewportDimensions();
+    const availableHeight = Math.max(1, viewport.height - VIEWPORT_MARGIN);
     if (heatmapCanvasWrapper) {
-        heatmapCanvasWrapper.style.height = `${viewport.height}px`;
+        heatmapCanvasWrapper.style.height = `${availableHeight}px`;
     }
 
     const wrapperWidth = heatmapCanvasWrapper
@@ -878,10 +1278,10 @@ function syncHeatmapToViewport(fetchAfterResize) {
         : wrapperWidth;
     const layoutHeight = hasTensor && heatmapState.layout && heatmapState.layout.height > 0
         ? heatmapState.layout.height
-        : viewport.height;
+        : availableHeight;
 
     const targetWidth = Math.max(1, Math.min(layoutWidth, wrapperWidth));
-    const targetHeight = Math.max(1, Math.min(layoutHeight, viewport.height));
+    const targetHeight = Math.max(1, Math.min(layoutHeight, availableHeight));
 
     const widthChanged = targetWidth !== heatmapState.viewWidth;
     const heightChanged = targetHeight !== heatmapState.viewHeight;
@@ -897,6 +1297,7 @@ function syncHeatmapToViewport(fetchAfterResize) {
             heatmapState.windowX = clampWindowX(heatmapState.windowX);
             heatmapState.windowY = clampWindowY(heatmapState.windowY);
             heatmapState.imageReady = false;
+            syncHeatmapControls();
             if (fetchAfterResize) {
                 void fetchHeatmapWindow();
             } else {
@@ -1068,12 +1469,24 @@ async function fetchHeatmapWindow() {
         heatmapState.windowY = clampWindowY(heatmapState.windowY);
         heatmapState.slice = clampSlice(heatmapState.slice);
 
-        heatmapState.min = typeof data.min === "number" ? data.min : undefined;
-        heatmapState.max = typeof data.max === "number" ? data.max : undefined;
-        heatmapState.valid = typeof data.validCount === "number" ? data.validCount : 0;
+        heatmapState.autoMin = typeof data.min === "number" ? data.min : undefined;
+        heatmapState.autoMax = typeof data.max === "number" ? data.max : undefined;
+        heatmapState.sliceMinBound = typeof data.sliceMin === "number" ? data.sliceMin : undefined;
+        heatmapState.sliceMaxBound = typeof data.sliceMax === "number" ? data.sliceMax : undefined;
+
+        if (!heatmapState.scaleInitialized) {
+            setHeatmapScale(heatmapState.autoMin, heatmapState.autoMax, { reapply: false, sync: false });
+        } else {
+            const clamped = sanitizeScale(heatmapState.scaleMin, heatmapState.scaleMax);
+            heatmapState.scaleMin = clamped.min;
+            heatmapState.scaleMax = clamped.max;
+        }
 
         const values = Array.isArray(data.values) ? data.values : [];
-        updateHeatmapImage(values, heatmapState.min, heatmapState.max);
+        heatmapState.values = values;
+        updateHeatmapImage(values, heatmapState.scaleMin, heatmapState.scaleMax);
+        syncHeatmapControls();
+        updateHeatmapHeader();
         if (!heatmapState.imageReady) {
             setHeatmapOverlay("Reached tensor boundary.", "idle");
         } else {
@@ -1124,7 +1537,7 @@ function updateHeatmapImage(values, minValue, maxValue) {
             continue;
         }
 
-        let norm = span > 0 ? (value - min) / span : 0;
+        let norm = span !== 0 ? (value - min) / span : 0;
         if (!Number.isFinite(norm)) {
             norm = 0;
         }
@@ -1158,10 +1571,16 @@ function openHeatmap(nameEncoded) {
     heatmapState.windowX = 0;
     heatmapState.windowY = 0;
     heatmapState.slice = 0;
-    heatmapState.min = undefined;
-    heatmapState.max = undefined;
+    heatmapState.autoMin = undefined;
+    heatmapState.autoMax = undefined;
+    heatmapState.sliceMinBound = undefined;
+    heatmapState.sliceMaxBound = undefined;
+    heatmapState.scaleMin = -1;
+    heatmapState.scaleMax = 1;
+    heatmapState.scaleInitialized = false;
     heatmapState.valid = 0;
     heatmapState.imageReady = false;
+    heatmapState.values = [];
     if (heatmapState.controller) {
         heatmapState.controller.abort();
         heatmapState.controller = null;
@@ -1169,6 +1588,7 @@ function openHeatmap(nameEncoded) {
     heatmapState.viewWidth = 1;
     heatmapState.viewHeight = 1;
     syncHeatmapToViewport(false);
+    syncHeatmapControls();
     setHeatmapOverlay("Preparing heatmap…", "loading");
     void fetchHeatmapWindow();
 }
@@ -1179,6 +1599,139 @@ tensorBody.addEventListener("click", (event) => {
         openHeatmap(target.dataset.name);
     }
 });
+
+function commitSliceInput() {
+    if (!heatmapSliceInput || !heatmapState.tensor) {
+        return;
+    }
+    const depth = heatmapState.layout && typeof heatmapState.layout.depth === "number" && heatmapState.layout.depth > 0
+        ? heatmapState.layout.depth
+        : 1;
+    let value = Math.floor(Number(heatmapSliceInput.value));
+    if (!Number.isFinite(value)) {
+        value = heatmapState.slice + 1;
+    }
+    value = Math.min(Math.max(1, value), depth);
+    heatmapSliceInput.value = String(value);
+    const nextSlice = clampSlice(value - 1);
+    if (nextSlice !== heatmapState.slice) {
+        heatmapState.slice = nextSlice;
+        updateHeatmapHeader();
+        void fetchHeatmapWindow();
+    }
+}
+
+function commitScaleInputs() {
+    if (!heatmapState.tensor) {
+        return;
+    }
+    let minValue = heatmapState.scaleMin;
+    if (heatmapMinInput) {
+        const parsedMin = Number.parseFloat(heatmapMinInput.value);
+        if (Number.isFinite(parsedMin)) {
+            minValue = parsedMin;
+        }
+    }
+    let maxValue = heatmapState.scaleMax;
+    if (heatmapMaxInput) {
+        const parsedMax = Number.parseFloat(heatmapMaxInput.value);
+        if (Number.isFinite(parsedMax)) {
+            maxValue = parsedMax;
+        }
+    }
+    setHeatmapScale(minValue, maxValue);
+}
+
+if (heatmapTensorSelect) {
+    heatmapTensorSelect.addEventListener("change", () => {
+        const value = heatmapTensorSelect.value;
+        if (!value) {
+            return;
+        }
+        if (heatmapState.tensor && encodeURIComponent(heatmapState.tensor.name) === value) {
+            return;
+        }
+        openHeatmap(value);
+    });
+}
+
+if (heatmapSliceInput) {
+    heatmapSliceInput.addEventListener("change", commitSliceInput);
+    heatmapSliceInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            commitSliceInput();
+        }
+    });
+}
+
+if (heatmapMinInput) {
+    heatmapMinInput.addEventListener("change", commitScaleInputs);
+    heatmapMinInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            commitScaleInputs();
+        }
+    });
+}
+
+if (heatmapMaxInput) {
+    heatmapMaxInput.addEventListener("change", commitScaleInputs);
+    heatmapMaxInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            commitScaleInputs();
+        }
+    });
+}
+
+if (heatmapAutoButton) {
+    heatmapAutoButton.addEventListener("click", () => {
+        if (!heatmapState.tensor) {
+            return;
+        }
+        if (!Number.isFinite(heatmapState.autoMin) || !Number.isFinite(heatmapState.autoMax)) {
+            return;
+        }
+        setHeatmapScale(heatmapState.autoMin, heatmapState.autoMax);
+    });
+}
+
+if (heatmapStepInput) {
+    const commitStepInput = () => {
+        commitHeatmapStep(heatmapStepInput.value);
+    };
+    heatmapStepInput.addEventListener("change", commitStepInput);
+    heatmapStepInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+            commitStepInput();
+        }
+    });
+}
+
+if (heatmapGainOffsetToggle) {
+    const commitGainOffsetMode = () => {
+        heatmapState.offsetMode = heatmapGainOffsetToggle.checked;
+        syncHeatmapControls();
+    };
+    heatmapGainOffsetToggle.addEventListener("change", commitGainOffsetMode);
+    heatmapGainOffsetToggle.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            heatmapGainOffsetToggle.checked = !heatmapGainOffsetToggle.checked;
+            commitGainOffsetMode();
+        }
+    });
+}
+
+if (heatmapTightenButton) {
+    heatmapTightenButton.addEventListener("click", () => {
+        adjustHeatmapContrast(1);
+    });
+}
+
+if (heatmapWidenButton) {
+    heatmapWidenButton.addEventListener("click", () => {
+        adjustHeatmapContrast(-1);
+    });
+}
 
 const heatmapDragState = {
     active: false,
@@ -1278,22 +1831,15 @@ heatmapCanvas.addEventListener("mouseleave", () => {
 });
 
 heatmapCanvas.addEventListener("wheel", (event) => {
-    if (!heatmapState.tensor) {
+    if (!heatmapState.tensor || !heatmapState.imageReady) {
         return;
     }
-    const depth = heatmapState.layout && typeof heatmapState.layout.depth === "number" ? heatmapState.layout.depth : 1;
-    if (depth <= 1) {
+    if (event.deltaY === 0) {
         return;
     }
     event.preventDefault();
-    const direction = event.deltaY > 0 ? -1 : 1;
     const magnitude = Math.max(1, Math.round(Math.abs(event.deltaY) / 120));
-    const nextSlice = clampSlice(heatmapState.slice + direction * magnitude);
-    if (nextSlice !== heatmapState.slice) {
-        heatmapState.slice = nextSlice;
-        updateHeatmapHeader();
-        void fetchHeatmapWindow();
-    }
+    adjustHeatmapContrast(event.deltaY < 0 ? 1 : -1, magnitude);
 }, { passive: false });
 
 window.addEventListener("resize", () => {
@@ -1302,6 +1848,7 @@ window.addEventListener("resize", () => {
 
 syncHeatmapToViewport(false);
 updateHeatmapHeader();
+syncHeatmapControls();
 setHeatmapOverlay("Select a tensor to stream its weights.");
 
 (async function init() {

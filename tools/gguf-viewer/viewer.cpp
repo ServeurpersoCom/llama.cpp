@@ -369,6 +369,9 @@ struct tensor_tile_result {
     size_t valid  = 0;
     float min     = 0.0f;
     float max     = 0.0f;
+    size_t slice_valid = 0;
+    float slice_min    = 0.0f;
+    float slice_max    = 0.0f;
     std::vector<float> values;
     std::vector<uint8_t> mask;
 };
@@ -547,6 +550,23 @@ bool tensor_tile_values(
     const size_t base_offset = slice_index * slice_size;
     if (base_offset >= entry.n_elements) {
         return true;
+    }
+
+    const size_t slice_offset = base_offset;
+    const size_t slice_available = entry.n_elements - slice_offset;
+    if (slice_available > 0) {
+        const size_t slice_count = std::min(slice_size, slice_available);
+        if (slice_count > 0) {
+            tensor_window_result slice_window;
+            if (!tensor_window_values(state, entry, slice_offset, slice_count, slice_window, error)) {
+                return false;
+            }
+            if (slice_window.count > 0) {
+                out.slice_min = slice_window.min;
+                out.slice_max = slice_window.max;
+                out.slice_valid = slice_window.count;
+            }
+        }
     }
 
     const size_t start_offset = base_offset + y * layout.width + x;
@@ -773,6 +793,14 @@ void setup_routes(httplib::Server & server, std::shared_ptr<viewer_state> state)
         };
         body["offset"] = tile.offset;
         body["count"] = tile.width * tile.height;
+
+        if (tile.slice_valid > 0) {
+            body["sliceMin"] = tile.slice_min;
+            body["sliceMax"] = tile.slice_max;
+        } else {
+            body["sliceMin"] = nullptr;
+            body["sliceMax"] = nullptr;
+        }
 
         if (tile.valid > 0) {
             body["min"] = tile.min;
