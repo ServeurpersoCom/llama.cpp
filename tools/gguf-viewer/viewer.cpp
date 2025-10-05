@@ -18,6 +18,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <mutex>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -66,6 +67,82 @@ struct viewer_state {
     std::unordered_map<std::string, size_t> tensor_index_by_name;
     tokenizer_info           tokenizer;
 };
+
+struct server_state {
+    fs::path                                root;
+    std::string                             current_model_relative;
+    std::shared_ptr<viewer_state>           active_viewer;
+    std::mutex                              mutex;
+};
+
+struct model_descriptor {
+    std::string relative;
+    std::string name;
+    uintmax_t   size = 0;
+};
+
+bool has_gguf_extension(const fs::path & path) {
+    auto ext = path.extension().string();
+    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return ext == ".gguf";
+}
+
+std::optional<fs::path> safe_relative(const fs::path & target, const fs::path & base) {
+    std::error_code ec;
+    fs::path relative = fs::relative(target, base, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+    for (const auto & part : relative) {
+        if (part == "..") {
+            return std::nullopt;
+        }
+    }
+    return relative;
+}
+
+std::vector<model_descriptor> scan_models(const fs::path & root) {
+    std::vector<model_descriptor> models;
+    std::error_code ec;
+    fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+    if (ec) {
+        return models;
+    }
+    for (; it != fs::recursive_directory_iterator(); it.increment(ec)) {
+        if (ec) {
+            break;
+        }
+        const auto & entry = *it;
+        if (!entry.is_regular_file(ec)) {
+            if (ec) {
+                ec.clear();
+            }
+            continue;
+        }
+        if (!has_gguf_extension(entry.path())) {
+            continue;
+        }
+        auto rel = safe_relative(entry.path(), root);
+        if (!rel) {
+            continue;
+        }
+        model_descriptor desc;
+        desc.relative = rel->generic_string();
+        desc.name = entry.path().filename().string();
+        desc.size = entry.file_size(ec);
+        if (ec) {
+            desc.size = 0;
+            ec.clear();
+        }
+        models.push_back(std::move(desc));
+    }
+    std::sort(models.begin(), models.end(), [](const model_descriptor & a, const model_descriptor & b) {
+        return a.relative < b.relative;
+    });
+    return models;
+}
 
 std::optional<int64_t> parse_i64(const std::string & value) {
     if (value.empty()) {
@@ -122,10 +199,29 @@ void set_json_response(httplib::Response & res, const json & body, int status = 
     res.set_content(body.dump(), "application/json");
 }
 
+viewer_state load_state(const std::string & model_path);
+
 json make_error(const std::string & message) {
     json body;
     body["error"] = message;
     return body;
+}
+
+template <typename Fn>
+bool with_viewer_state(const std::shared_ptr<server_state> & state, httplib::Response & res, Fn && fn) {
+    std::shared_ptr<viewer_state> viewer;
+    std::string relative;
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        viewer = state->active_viewer;
+        relative = state->current_model_relative;
+    }
+    if (!viewer) {
+        set_json_response(res, make_error("no model selected"), 409);
+        return false;
+    }
+    fn(viewer, relative);
+    return true;
 }
 
 json kv_scalar_to_json(const gguf_context * ctx, int64_t key_id, gguf_type type) {
@@ -672,210 +768,325 @@ bool ensure_count_in_range(size_t & offset, size_t & limit, size_t total) {
     return true;
 }
 
-void setup_routes(httplib::Server & server, std::shared_ptr<viewer_state> state) {
-    server.Get("/", [state](const httplib::Request &, httplib::Response & res) {
+void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state) {
+    server.Get("/", [](const httplib::Request &, httplib::Response & res) {
         res.set_content(reinterpret_cast<const char *>(index_html), index_html_len, "text/html; charset=utf-8");
     });
 
-    server.Get("/api/info", [state](const httplib::Request &, httplib::Response & res) {
+    server.Get("/api/models", [state](const httplib::Request &, httplib::Response & res) {
         json body;
-        body["modelPath"] = state->model_path;
-        body["fileSize"] = state->file_size;
-        body["nKv"] = gguf_get_n_kv(state->gguf.get());
-        body["nTensors"] = gguf_get_n_tensors(state->gguf.get());
-        body["ggufVersion"] = gguf_get_version(state->gguf.get());
-        body["alignment"] = state->alignment;
-        body["dataOffset"] = state->data_offset;
-        body["tokenizer"] = {
-            {"hasTokens", state->tokenizer.key_tokens >= 0},
-            {"totalTokens", state->tokenizer.total_tokens}
-        };
+        body["root"] = state->root.generic_string();
+        json items = json::array();
+        std::string selected;
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            selected = state->current_model_relative;
+        }
+        auto models = scan_models(state->root);
+        for (const auto & item : models) {
+            json entry;
+            entry["path"] = item.relative;
+            entry["name"] = item.name;
+            entry["size"] = item.size;
+            entry["selected"] = (!selected.empty() && item.relative == selected);
+            items.push_back(entry);
+        }
+        body["items"] = std::move(items);
+        body["selected"] = selected;
         set_json_response(res, body);
+    });
+
+    server.Post("/api/models/select", [state](const httplib::Request & req, httplib::Response & res) {
+        std::string param;
+        if (auto value = req.get_param_value("model"); !value.empty()) {
+            param = value;
+        } else if (auto value = req.get_param_value("path"); !value.empty()) {
+            param = value;
+        }
+        if (param.empty()) {
+            set_json_response(res, make_error("missing model parameter"), 400);
+            return;
+        }
+
+        const std::string decoded = url_decode(param);
+        fs::path candidate(decoded);
+        std::error_code ec;
+        fs::path resolved = candidate.is_absolute()
+            ? fs::weakly_canonical(candidate, ec)
+            : fs::weakly_canonical(state->root / candidate, ec);
+        if (ec) {
+            set_json_response(res, make_error("failed to resolve model path"), 400);
+            return;
+        }
+
+        auto relative = safe_relative(resolved, state->root);
+        if (!relative) {
+            set_json_response(res, make_error("model is outside of root"), 400);
+            return;
+        }
+
+        std::error_code status_ec;
+        if (!fs::exists(resolved, status_ec) || status_ec) {
+            set_json_response(res, make_error("model not found"), 404);
+            return;
+        }
+        if (!fs::is_regular_file(resolved, status_ec) || status_ec) {
+            set_json_response(res, make_error("model is not a regular file"), 400);
+            return;
+        }
+        if (!has_gguf_extension(resolved)) {
+            set_json_response(res, make_error("model must have .gguf extension"), 400);
+            return;
+        }
+
+        std::shared_ptr<viewer_state> viewer;
+        try {
+            viewer = std::make_shared<viewer_state>(load_state(resolved.string()));
+        } catch (const std::exception & ex) {
+            set_json_response(res, make_error(ex.what()), 500);
+            return;
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->active_viewer = viewer;
+            state->current_model_relative = relative->generic_string();
+        }
+
+        LOG_INF("Loaded %s with %zu tensors and %lld key/value pairs\n",
+            resolved.string().c_str(),
+            viewer->tensors.size(),
+            (long long)gguf_get_n_kv(viewer->gguf.get()));
+
+        json body;
+        body["selected"] = relative->generic_string();
+        set_json_response(res, body);
+    });
+
+    server.Get("/api/info", [state](const httplib::Request &, httplib::Response & res) {
+        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string & relative) {
+            json body;
+            body["modelPath"] = viewer->model_path;
+            body["relativePath"] = relative;
+            body["fileSize"] = viewer->file_size;
+            body["nKv"] = gguf_get_n_kv(viewer->gguf.get());
+            body["nTensors"] = gguf_get_n_tensors(viewer->gguf.get());
+            body["ggufVersion"] = gguf_get_version(viewer->gguf.get());
+            body["alignment"] = viewer->alignment;
+            body["dataOffset"] = viewer->data_offset;
+            body["tokenizer"] = {
+                {"hasTokens", viewer->tokenizer.key_tokens >= 0},
+                {"totalTokens", viewer->tokenizer.total_tokens}
+            };
+            set_json_response(res, body);
+        });
     });
 
     server.Get("/api/kv", [state](const httplib::Request & req, httplib::Response & res) {
-        size_t limit = 8;
-        if (auto value = req.get_param_value("preview"); !value.empty()) {
-            if (auto parsed = parse_size_t(value)) {
-                limit = *parsed;
+        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+            size_t limit = 8;
+            if (auto value = req.get_param_value("preview"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    limit = *parsed;
+                }
             }
-        }
 
-        json kvs = json::array();
-        const int64_t total = gguf_get_n_kv(state->gguf.get());
-        for (int64_t i = 0; i < total; ++i) {
-            kvs.push_back(describe_kv(state->gguf.get(), i, limit));
-        }
-        set_json_response(res, kvs);
+            json kvs = json::array();
+            const int64_t total = gguf_get_n_kv(viewer->gguf.get());
+            for (int64_t i = 0; i < total; ++i) {
+                kvs.push_back(describe_kv(viewer->gguf.get(), i, limit));
+            }
+            set_json_response(res, kvs);
+        });
     });
 
     server.Get(R"(/api/tensors$)", [state](const httplib::Request &, httplib::Response & res) {
-        json tensors_json = json::array();
-        for (const auto & entry : state->tensors) {
-            tensors_json.push_back(tensor_to_json(entry, state->data_offset));
-        }
-        set_json_response(res, tensors_json);
+        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+            json tensors_json = json::array();
+            for (const auto & entry : viewer->tensors) {
+                tensors_json.push_back(tensor_to_json(entry, viewer->data_offset));
+            }
+            set_json_response(res, tensors_json);
+        });
     });
 
     server.Get(R"(/api/tensors/(.+)/raw)", [state](const httplib::Request & req, httplib::Response & res) {
-        const std::string name = url_decode(req.matches[1]);
-        auto it = state->tensor_index_by_name.find(name);
-        if (it == state->tensor_index_by_name.end()) {
-            set_json_response(res, make_error("tensor not found"), 404);
-            return;
-        }
-        const tensor_entry & entry = state->tensors[it->second];
-
-        size_t x = 0;
-        size_t y = 0;
-        size_t width = 1024;
-        size_t height = 1024;
-        size_t slice = 0;
-
-        if (auto value = req.get_param_value("x"); !value.empty()) {
-            if (auto parsed = parse_size_t(value)) {
-                x = *parsed;
+        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+            const std::string name = url_decode(req.matches[1]);
+            auto it = viewer->tensor_index_by_name.find(name);
+            if (it == viewer->tensor_index_by_name.end()) {
+                set_json_response(res, make_error("tensor not found"), 404);
+                return;
             }
-        }
-        if (auto value = req.get_param_value("y"); !value.empty()) {
-            if (auto parsed = parse_size_t(value)) {
-                y = *parsed;
+            const tensor_entry & entry = viewer->tensors[it->second];
+
+            size_t x = 0;
+            size_t y = 0;
+            size_t width = 1024;
+            size_t height = 1024;
+            size_t slice = 0;
+
+            if (auto value = req.get_param_value("x"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    x = *parsed;
+                }
             }
-        }
-        if (auto value = req.get_param_value("width"); !value.empty()) {
-            if (auto parsed = parse_size_t(value)) {
-                width = *parsed;
+            if (auto value = req.get_param_value("y"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    y = *parsed;
+                }
             }
-        }
-        if (auto value = req.get_param_value("height"); !value.empty()) {
-            if (auto parsed = parse_size_t(value)) {
-                height = *parsed;
+            if (auto value = req.get_param_value("width"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    width = *parsed;
+                }
             }
-        }
-        if (auto value = req.get_param_value("slice"); !value.empty()) {
-            if (auto parsed = parse_size_t(value)) {
-                slice = *parsed;
+            if (auto value = req.get_param_value("height"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    height = *parsed;
+                }
             }
-        }
+            if (auto value = req.get_param_value("slice"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    slice = *parsed;
+                }
+            }
 
-        if (width == 0) {
-            width = 1;
-        }
-        if (height == 0) {
-            height = 1;
-        }
+            const tensor_layout layout = compute_tensor_layout(entry.shape, entry.n_elements);
+            if (x >= layout.width || y >= layout.height) {
+                set_json_response(res, make_error("window outside of tensor"), 400);
+                return;
+            }
+            if (width == 0 || height == 0) {
+                set_json_response(res, make_error("invalid viewport size"), 400);
+                return;
+            }
 
-        tensor_tile_result tile;
-        std::string error;
-        if (!tensor_tile_values(*state, entry, slice, x, y, width, height, tile, error)) {
-            set_json_response(res, make_error(error.empty() ? "failed to read tensor" : error), 500);
-            return;
-        }
+            width = std::min(width, layout.width - x);
+            height = std::min(height, layout.height - y);
+            if (slice >= layout.depth) {
+                slice = layout.depth - 1;
+            }
 
-        json body;
-        body["name"] = entry.name;
-        body["type"] = ggml_type_name(entry.tensor->type);
-        body["shape"] = entry.shape;
-        body["total"] = entry.n_elements;
-        body["layout"] = {
-            {"width", entry.layout.width},
-            {"height", entry.layout.height},
-            {"depth", entry.layout.depth},
-        };
-        body["origin"] = {
-            {"x", tile.x},
-            {"y", tile.y},
-            {"slice", tile.slice},
-        };
-        body["viewport"] = {
-            {"width", tile.width},
-            {"height", tile.height},
-        };
-        body["offset"] = tile.offset;
-        body["count"] = tile.width * tile.height;
+            std::string error;
+            tensor_tile_result tile;
+            if (!tensor_tile_values(*viewer, entry, slice, x, y, width, height, tile, error)) {
+                set_json_response(res, make_error(error.empty() ? "failed to read tensor window" : error), 500);
+                return;
+            }
 
-        if (tile.slice_valid > 0) {
-            body["sliceMin"] = tile.slice_min;
-            body["sliceMax"] = tile.slice_max;
-        } else {
-            body["sliceMin"] = nullptr;
-            body["sliceMax"] = nullptr;
-        }
+            json origin = {
+                {"x", tile.x},
+                {"y", tile.y},
+            };
+            if (layout.depth > 1) {
+                origin["slice"] = tile.slice;
+            }
 
-        if (tile.valid > 0) {
-            body["min"] = tile.min;
-            body["max"] = tile.max;
-        } else {
-            body["min"] = nullptr;
-            body["max"] = nullptr;
-        }
+            json viewport = {
+                {"width", tile.width},
+                {"height", tile.height},
+            };
 
-        json values = json::array();
-        for (size_t i = 0; i < tile.values.size(); ++i) {
-            if (i < tile.mask.size() && tile.mask[i]) {
-                values.push_back(tile.values[i]);
+            json values = json::array();
+            for (size_t i = 0; i < tile.values.size(); ++i) {
+                if (i < tile.mask.size() && tile.mask[i]) {
+                    values.push_back(tile.values[i]);
+                } else {
+                    values.push_back(nullptr);
+                }
+            }
+
+            json body;
+            body["layout"] = {
+                {"width", layout.width},
+                {"height", layout.height},
+                {"depth", layout.depth},
+            };
+            body["origin"] = std::move(origin);
+            body["viewport"] = std::move(viewport);
+            body["values"] = std::move(values);
+            body["offset"] = entry.offset + viewer->data_offset;
+            if (tile.valid > 0) {
+                body["min"] = tile.min;
+                body["max"] = tile.max;
             } else {
-                values.push_back(nullptr);
+                body["min"] = nullptr;
+                body["max"] = nullptr;
             }
-        }
-        body["values"] = std::move(values);
-        body["validCount"] = tile.valid;
-        set_json_response(res, body);
+            if (layout.depth > 1) {
+                if (tile.slice_valid > 0) {
+                    body["sliceMin"] = tile.slice_min;
+                    body["sliceMax"] = tile.slice_max;
+                } else {
+                    body["sliceMin"] = nullptr;
+                    body["sliceMax"] = nullptr;
+                }
+            }
+
+            set_json_response(res, body);
+        });
     });
 
     server.Get(R"(/api/tokenizer$)", [state](const httplib::Request & req, httplib::Response & res) {
-        json body;
-        if (state->tokenizer.key_tokens < 0) {
-            body["hasTokenizer"] = false;
+        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+            json body;
+            if (viewer->tokenizer.key_tokens < 0) {
+                body["hasTokenizer"] = false;
+                body["total"] = 0;
+                body["offset"] = 0;
+                body["limit"] = 0;
+                body["items"] = json::array();
+                set_json_response(res, body);
+                return;
+            }
+
+            size_t offset = 0;
+            size_t limit = 256;
+            if (auto value = req.get_param_value("offset"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    offset = *parsed;
+                }
+            }
+            if (auto value = req.get_param_value("limit"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    limit = *parsed;
+                }
+            }
+
+            const size_t total = static_cast<size_t>(viewer->tokenizer.total_tokens);
+            ensure_count_in_range(offset, limit, total);
+
+            body["hasTokenizer"] = true;
+            body["total"] = total;
+            body["offset"] = offset;
+            body["limit"] = limit;
+            json items = json::array();
+            const size_t to = offset + limit;
+            const float * scores_ptr = nullptr;
+            const int32_t * types_ptr = nullptr;
+            if (viewer->tokenizer.key_scores >= 0) {
+                scores_ptr = static_cast<const float *>(gguf_get_arr_data(viewer->gguf.get(), viewer->tokenizer.key_scores));
+            }
+            if (viewer->tokenizer.key_types >= 0) {
+                types_ptr = static_cast<const int32_t *>(gguf_get_arr_data(viewer->gguf.get(), viewer->tokenizer.key_types));
+            }
+
+            for (size_t i = offset; i < to; ++i) {
+                json item;
+                item["index"] = i;
+                item["token"] = gguf_get_arr_str(viewer->gguf.get(), viewer->tokenizer.key_tokens, i);
+                if (scores_ptr) {
+                    item["score"] = scores_ptr[i];
+                }
+                if (types_ptr) {
+                    item["tokenType"] = types_ptr[i];
+                }
+                items.push_back(std::move(item));
+            }
+            body["items"] = std::move(items);
             set_json_response(res, body);
-            return;
-        }
-
-        size_t offset = 0;
-        size_t limit = 100;
-        if (auto value = req.get_param_value("offset"); !value.empty()) {
-            if (auto parsed = parse_size_t(value)) {
-                offset = *parsed;
-            }
-        }
-        if (auto value = req.get_param_value("limit"); !value.empty()) {
-            if (auto parsed = parse_size_t(value)) {
-                limit = *parsed;
-            }
-        }
-
-        const size_t total = static_cast<size_t>(state->tokenizer.total_tokens);
-        ensure_count_in_range(offset, limit, total);
-
-        body["hasTokenizer"] = true;
-        body["total"] = total;
-        body["offset"] = offset;
-        body["limit"] = limit;
-        json items = json::array();
-        const size_t to = offset + limit;
-        const float * scores_ptr = nullptr;
-        const int32_t * types_ptr = nullptr;
-        if (state->tokenizer.key_scores >= 0) {
-            scores_ptr = static_cast<const float *>(gguf_get_arr_data(state->gguf.get(), state->tokenizer.key_scores));
-        }
-        if (state->tokenizer.key_types >= 0) {
-            types_ptr = static_cast<const int32_t *>(gguf_get_arr_data(state->gguf.get(), state->tokenizer.key_types));
-        }
-
-        for (size_t i = offset; i < to; ++i) {
-            json item;
-            item["index"] = i;
-            item["token"] = gguf_get_arr_str(state->gguf.get(), state->tokenizer.key_tokens, i);
-            if (scores_ptr) {
-                item["score"] = scores_ptr[i];
-            }
-            if (types_ptr) {
-                item["tokenType"] = types_ptr[i];
-            }
-            items.push_back(item);
-        }
-        body["items"] = std::move(items);
-        set_json_response(res, body);
+        });
     });
 }
 
@@ -922,11 +1133,11 @@ viewer_state load_state(const std::string & model_path) {
 }
 
 void print_usage(const char * argv0) {
-    fprintf(stderr, "Usage: %s --model <path> [--host 127.0.0.1] [--port 8080]\n", argv0);
+    fprintf(stderr, "Usage: %s --root <path> [--host 127.0.0.1] [--port 8080]\n", argv0);
 }
 
 struct cli_params {
-    std::string model;
+    std::string root;
     std::string host = "127.0.0.1";
     int port = 8080;
 };
@@ -940,8 +1151,8 @@ enum class cli_status {
 cli_status parse_cli(int argc, char ** argv, cli_params & params) {
     for (int i = 1; i < argc; ++i) {
         std::string arg(argv[i]);
-        if (arg == "--model" && i + 1 < argc) {
-            params.model = argv[++i];
+        if (arg == "--root" && i + 1 < argc) {
+            params.root = argv[++i];
         } else if (arg == "--host" && i + 1 < argc) {
             params.host = argv[++i];
         } else if (arg == "--port" && i + 1 < argc) {
@@ -961,8 +1172,8 @@ cli_status parse_cli(int argc, char ** argv, cli_params & params) {
         }
     }
 
-    if (params.model.empty()) {
-        fprintf(stderr, "Missing required --model argument\n");
+    if (params.root.empty()) {
+        fprintf(stderr, "Missing required --root argument\n");
         print_usage(argv[0]);
         return cli_status::error;
     }
@@ -992,12 +1203,26 @@ int main(int argc, char ** argv) {
     }
 
     try {
-        auto state_ptr = std::make_shared<viewer_state>(load_state(params.model));
-        LOG_INF("Loaded %s with %zu tensors and %lld key/value pairs\n", params.model.c_str(), state_ptr->tensors.size(), (long long)gguf_get_n_kv(state_ptr->gguf.get()));
+        std::error_code ec;
+        fs::path root = fs::weakly_canonical(fs::path(params.root), ec);
+        if (ec) {
+            throw std::runtime_error("failed to resolve root directory");
+        }
+        if (!fs::exists(root, ec) || ec) {
+            throw std::runtime_error("root directory not found");
+        }
+        if (!fs::is_directory(root, ec) || ec) {
+            throw std::runtime_error("root path is not a directory");
+        }
+
+        auto app_state = std::make_shared<server_state>();
+        app_state->root = std::move(root);
+
+        LOG_INF("Root directory: %s\n", app_state->root.string().c_str());
 
         httplib::Server server;
         server.set_default_headers({{"Access-Control-Allow-Origin", "*"}});
-        setup_routes(server, state_ptr);
+        setup_routes(server, app_state);
 
         LOG_INF("Serving llama-gguf-viewer at http://%s:%d\n", params.host.c_str(), params.port);
         server.listen(params.host.c_str(), params.port);

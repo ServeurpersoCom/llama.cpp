@@ -6,183 +6,212 @@
     <style>
         :root {
             color-scheme: dark;
-            font-family: "Segoe UI", Tahoma, sans-serif;
-            background-color: #111827;
-            color: #e5e7eb;
+            font-family: "Inter", "Segoe UI", sans-serif;
+            background-color: #04060c;
+            color: #dbe1f2;
         }
         body {
             margin: 0;
-            padding: 0;
-        }
-        header {
-            background: linear-gradient(90deg, #2563eb, #7c3aed);
-            padding: 1.5rem 2rem;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.4);
-        }
-        h1 {
-            margin: 0;
-            font-size: 1.8rem;
-            font-weight: 600;
+            background-color: inherit;
+            color: inherit;
         }
         main {
-            padding: 1.5rem 2rem 4rem;
-            display: grid;
-            gap: 1.5rem;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 0.85rem 1rem 1.25rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
         }
         section {
-            background-color: rgba(15, 23, 42, 0.8);
-            border: 1px solid rgba(148, 163, 184, 0.15);
-            border-radius: 12px;
-            padding: 1.25rem;
-            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.5);
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            padding: 0.5rem 0;
+            width: 100%;
         }
-        section h2 {
-            margin-top: 0;
-            font-size: 1.3rem;
-            color: #93c5fd;
+        h2 {
+            margin: 0;
+            font-size: 0.9rem;
+            font-weight: 600;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: #8ea2c8;
+        }
+        .tabs {
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 0.35rem;
+            padding: 0.6rem 1rem;
+            background: transparent;
+            width: 100%;
+            box-sizing: border-box;
         }
-        .grid-two {
+        .tab-button {
+            border: none;
+            background: transparent;
+            color: #7c8ea9;
+            padding: 0.3rem 0.6rem;
+            font-size: 0.8rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            cursor: pointer;
+            font-weight: 500;
+        }
+        .tab-button:focus-visible {
+            outline: 1px solid #38bdf8;
+            outline-offset: 2px;
+        }
+        .tab-button:hover {
+            color: #cad6ef;
+        }
+        .tab-button--active {
+            color: #f5f7ff;
+            text-decoration: underline;
+            text-decoration-thickness: 0.12em;
+            text-underline-offset: 0.35em;
+        }
+        .page {
+            display: none;
+        }
+        .page--active {
+            display: block;
+        }
+        .info-cards {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-            gap: 1rem;
+            gap: 0.6rem;
         }
         .info-card {
-            background: rgba(30, 41, 59, 0.7);
-            border-radius: 10px;
-            padding: 1rem;
-            border: 1px solid rgba(148, 163, 184, 0.1);
+            background: #0a101c;
+            padding: 0.65rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.3rem;
         }
         .info-card h3 {
             margin: 0;
-            font-size: 0.95rem;
-            color: #cbd5f5;
-            text-transform: uppercase;
+            font-size: 0.7rem;
             letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #8ea2c8;
         }
         .info-card p {
-            margin: 0.35rem 0 0;
-            font-size: 1.3rem;
-            font-weight: 600;
+            margin: 0;
+            font-size: 1.1rem;
+            color: #f1f5ff;
+        }
+        .model-title {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            align-items: baseline;
+        }
+        .model-path {
+            font-size: 0.8rem;
+            color: #9fb4d9;
+            background: #0a111f;
+            padding: 0.2rem 0.45rem;
+        }
+        .table-wrapper {
+            background: #060a13;
+            overflow-x: auto;
         }
         table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 0.9rem;
+            font-size: 0.82rem;
         }
         thead {
-            background-color: rgba(37, 99, 235, 0.12);
+            background: #050910;
         }
         th, td {
-            padding: 0.6rem 0.75rem;
-            border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+            padding: 0.45rem 0.65rem;
             text-align: left;
             vertical-align: top;
         }
-        tbody tr:hover {
-            background-color: rgba(59, 130, 246, 0.08);
+        tbody tr:nth-of-type(2n) {
+            background: #081020;
+        }
+        thead th {
+            font-size: 0.72rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #8ea2c8;
         }
         code {
             font-family: "Fira Code", "Menlo", monospace;
-            background-color: rgba(15, 23, 42, 0.8);
-            padding: 0.15rem 0.35rem;
-            border-radius: 5px;
-            border: 1px solid rgba(148, 163, 184, 0.2);
+            background: #0b1220;
+            color: #f4f7ff;
+            padding: 0.1rem 0.3rem;
         }
         button {
-            background: linear-gradient(135deg, #2563eb, #7c3aed);
+            background: #0f1625;
             border: none;
-            color: white;
-            padding: 0.45rem 0.75rem;
-            border-radius: 6px;
-            font-size: 0.85rem;
+            color: inherit;
+            padding: 0.3rem 0.65rem;
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
             cursor: pointer;
-            transition: transform 0.1s ease, box-shadow 0.2s ease;
         }
-        button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 6px 20px rgba(37, 99, 235, 0.35);
+        button:hover:not(:disabled) {
+            color: #f3f5ff;
+            background: #162238;
         }
         button:disabled {
-            opacity: 0.4;
+            color: #5d6983;
             cursor: not-allowed;
-            box-shadow: none;
+            background: #0f1625;
+            opacity: 0.6;
         }
         .controls {
             display: flex;
-            gap: 0.75rem;
+            flex-wrap: wrap;
             align-items: center;
-            margin-bottom: 0.75rem;
+            gap: 0.4rem;
         }
-        .controls input {
-            background: rgba(15, 23, 42, 0.8);
-            border: 1px solid rgba(148, 163, 184, 0.35);
-            border-radius: 6px;
-            padding: 0.35rem 0.5rem;
+        input,
+        select {
+            background: #0a1321;
+            border: none;
             color: inherit;
-            width: 5rem;
+            padding: 0.28rem 0.4rem;
+            font-size: 0.82rem;
         }
-        .heatmap-panel {
-            margin-top: 1.25rem;
-            display: flex;
-            flex-direction: column;
-            gap: 0.75rem;
+        input:focus,
+        select:focus {
+            outline: 1px solid #38bdf8;
+            outline-offset: 1px;
         }
         .heatmap-controls {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
-            gap: 0.75rem;
+            gap: 0.4rem;
         }
         .heatmap-controls label {
             display: inline-flex;
             align-items: center;
-            gap: 0.35rem;
-            font-size: 0.85rem;
+            gap: 0.3rem;
+            font-size: 0.78rem;
         }
-        .heatmap-controls input[type="number"],
-        .heatmap-controls select {
+        .heatmap-controls select,
+        .heatmap-controls input[type="number"] {
             width: 5rem;
-            background: rgba(15, 23, 42, 0.8);
-            border: 1px solid rgba(148, 163, 184, 0.35);
-            border-radius: 6px;
-            padding: 0.35rem 0.5rem;
-            color: inherit;
-        }
-        .heatmap-controls input[type="checkbox"] {
-            width: auto;
-            height: auto;
-            accent-color: #7c3aed;
         }
         .heatmap-controls select {
-            min-width: 12rem;
+            min-width: 10rem;
         }
         .heatmap-controls .button-group {
             display: inline-flex;
             gap: 0.35rem;
         }
-        .heatmap-header {
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: space-between;
-            align-items: center;
-            gap: 0.75rem;
-        }
-        .heatmap-header-title {
-            font-size: 1rem;
-            font-weight: 500;
-            color: #e0e7ff;
-        }
         .heatmap-canvas-wrapper {
             position: relative;
-            border-radius: 10px;
-            overflow: hidden;
-            border: 1px solid rgba(148, 163, 184, 0.2);
-            background: rgba(15, 23, 42, 0.65);
+            background: #060b13;
             width: 100%;
-            height: 100vh;
+            min-height: 420px;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -194,7 +223,6 @@
             height: 100%;
             cursor: grab;
             image-rendering: pixelated;
-            margin: 0 auto;
             touch-action: none;
         }
         #heatmap-canvas.heatmap-canvas--dragging {
@@ -206,164 +234,202 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            padding: 1rem;
             text-align: center;
-            padding: 1.5rem;
-            font-size: 1.05rem;
-            background: rgba(15, 23, 42, 0.55);
-            color: #cbd5f5;
+            font-size: 0.9rem;
+            background: rgba(4, 8, 15, 0.78);
+            color: #cdd9f4;
         }
         .heatmap-overlay[hidden] {
             display: none;
         }
         .heatmap-overlay--error {
-            background: rgba(190, 24, 93, 0.35);
-            color: #fee2e2;
+            background: rgba(168, 34, 70, 0.6);
+            color: #ffe4ef;
         }
         .heatmap-overlay--loading {
-            background: rgba(37, 99, 235, 0.35);
-            color: #e0f2fe;
+            background: rgba(26, 86, 219, 0.5);
+            color: #e5f2ff;
+        }
+        .heatmap-header {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 0.6rem;
+        }
+        .heatmap-header-title {
+            font-size: 0.95rem;
+            font-weight: 500;
+            color: #d3dcfb;
         }
         .heatmap-help {
-            font-size: 0.85rem;
-            color: #9ca3af;
+            font-size: 0.72rem;
+            color: #7b879e;
             text-align: center;
         }
         .badge {
             display: inline-flex;
             align-items: center;
-            gap: 0.35rem;
-            padding: 0.15rem 0.5rem;
-            border-radius: 999px;
-            background: rgba(59, 130, 246, 0.12);
-            color: #bfdbfe;
-            font-size: 0.75rem;
+            gap: 0.25rem;
+            padding: 0.15rem 0.4rem;
+            background: #132036;
+            color: #a8bee5;
+            font-size: 0.68rem;
+            letter-spacing: 0.06em;
             text-transform: uppercase;
-            letter-spacing: 0.08em;
-        }
-        .kv-value {
-            max-width: 360px;
-            overflow-wrap: anywhere;
-        }
-        .model-title {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 0.6rem;
-            align-items: baseline;
-        }
-        .model-title .model-path {
-            font-size: 0.95rem;
-            color: #cbd5f5;
-            background: rgba(30, 41, 59, 0.7);
-            border-radius: 6px;
-            padding: 0.25rem 0.5rem;
-            border: 1px solid rgba(148, 163, 184, 0.25);
         }
         .tokenizer-controls {
-            flex-wrap: wrap;
             align-items: center;
-            gap: 0.75rem;
-        }
-        .tokenizer-controls .control-group {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-            font-size: 0.85rem;
-        }
-        .tokenizer-controls label {
-            display: inline-flex;
-            align-items: center;
-            gap: 0.35rem;
-        }
-        .tokenizer-controls input {
-            width: 6rem;
-        }
-        .tokenizer-controls .badge {
-            margin-left: 0.5rem;
         }
         .token-grid {
             display: grid;
-            gap: 0.65rem;
-            margin-top: 1rem;
+            gap: 0.25rem;
+            margin-top: 0.6rem;
         }
         .token-cell {
-            background: rgba(30, 41, 59, 0.7);
-            border: 1px solid rgba(148, 163, 184, 0.2);
-            border-radius: 10px;
-            min-height: 3.5rem;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 0.75rem;
+            background: #121c30;
+            padding: 0.32rem 0.4rem;
             font-family: "Fira Code", "Menlo", monospace;
-            font-size: 1rem;
+            font-size: 0.95rem;
             text-align: center;
             white-space: pre-wrap;
             word-break: break-word;
-            overflow-wrap: anywhere;
-            transition: border-color 0.15s ease, box-shadow 0.15s ease;
-        }
-        .token-cell:hover {
-            border-color: rgba(59, 130, 246, 0.4);
-            box-shadow: 0 6px 18px rgba(37, 99, 235, 0.25);
         }
         .token-cell--empty {
             opacity: 0.35;
-            border-style: dashed;
         }
-        .token-cell .token-text {
-            display: block;
+        .model-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
         }
-    </style>
+        .model-item {
+            display: flex;
+        }
+        .model-button {
+            background: #101827;
+            border: none;
+            color: inherit;
+            padding: 0.45rem 0.7rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            width: 100%;
+            cursor: pointer;
+        }
+        .model-button[data-selected="true"] {
+            background: #1c2941;
+            color: #f1f5ff;
+        }
+        .model-button:hover {
+            background: #162238;
+        }
+        .model-path-entry {
+            font-size: 0.85rem;
+            color: #f7f9ff;
+            word-break: break-all;
+            flex: 1;
+            text-align: left;
+        }
+        .model-meta {
+            font-size: 0.72rem;
+            color: #8ea2c8;
+        }
+        .browser-info {
+            font-size: 0.75rem;
+            color: #8ea2c8;
+        }
+        .empty-note {
+            font-size: 0.85rem;
+            color: #8490a7;
+            padding: 0.5rem 0;
+        }
+        .table-empty td {
+            text-align: center;
+            padding: 0.75rem;
+            color: #8490a7;
+        }
+        .badge + .badge {
+            margin-left: 0.35rem;
+        }
+</style>
 </head>
 <body>
-<header>
-    <h1>llama-gguf-viewer</h1>
-</header>
+<nav class="tabs" aria-label="Viewer sections">
+    <button type="button" class="tab-button tab-button--active" data-target-page="browser">Browser</button>
+    <button type="button" class="tab-button" data-target-page="metadata">Metadata</button>
+    <button type="button" class="tab-button" data-target-page="tokenizer">Tokenizer</button>
+    <button type="button" class="tab-button" data-target-page="tensors">Tensors</button>
+    <button type="button" class="tab-button" data-target-page="heatmap">Heatmap</button>
+</nav>
 <main>
-    <section id="model-info">
-        <h2 id="model-title" class="model-title">Model overview</h2>
-        <div class="grid-two" id="info-cards"></div>
-    </section>
+    <div class="page page--active" data-page-id="browser">
+        <section>
+            <h2>GGUF Browser</h2>
+            <div class="browser-info" id="model-browser-root"></div>
+            <div id="model-browser"></div>
+        </section>
+    </div>
 
-    <section>
-        <h2>Metadata (KV)</h2>
-        <div class="table-wrapper">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Key</th>
-                        <th>Type</th>
-                        <th>Details</th>
-                    </tr>
-                </thead>
-                <tbody id="kv-body"></tbody>
-            </table>
-        </div>
-    </section>
+    <div class="page" data-page-id="metadata">
+        <section id="model-info">
+            <h2 id="model-title" class="model-title">Model overview</h2>
+            <div class="info-cards" id="info-cards"></div>
+        </section>
 
-    <section class="tokenizer-section">
-        <h2>Tokenizer</h2>
-        <div id="tokenizer-content"></div>
-    </section>
+        <section>
+            <h2>Metadata (KV)</h2>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Key</th>
+                            <th>Type</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody id="kv-body"></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
 
-    <section>
-        <h2>Tensors</h2>
-        <div class="table-wrapper">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Name</th>
-                        <th>Type</th>
-                        <th>Shape</th>
-                        <th>Elements</th>
-                        <th>Offset</th>
-                        <th></th>
-                    </tr>
-                </thead>
-                <tbody id="tensor-body"></tbody>
-            </table>
-        </div>
-        <div class="heatmap-panel">
+    <div class="page" data-page-id="tokenizer">
+        <section class="tokenizer-section">
+            <h2>Tokenizer</h2>
+            <div id="tokenizer-content"></div>
+        </section>
+    </div>
+
+    <div class="page" data-page-id="tensors">
+        <section>
+            <h2>Tensors</h2>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Shape</th>
+                            <th>Elements</th>
+                            <th>Offset</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="tensor-body"></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <div class="page" data-page-id="heatmap">
+        <section>
+            <h2>Heatmap</h2>
             <div class="heatmap-header">
                 <div class="heatmap-header-title" id="heatmap-info">Select a tensor to open the heatmap viewer.</div>
                 <span class="badge" id="heatmap-status" hidden></span>
@@ -379,16 +445,16 @@
                 </label>
                 <label>
                     <span>Min</span>
-                    <input type="number" id="heatmap-min-input" value="-1" step="0.001">
+                    <input type="number" id="heatmap-min-input" value="-1" step="0.0001">
                 </label>
                 <label>
                     <span>Max</span>
-                    <input type="number" id="heatmap-max-input" value="1" step="0.001">
+                    <input type="number" id="heatmap-max-input" value="1" step="0.0001">
                 </label>
                 <button id="heatmap-auto-button" type="button">Auto</button>
                 <label>
                     <span>Step</span>
-                    <input type="number" id="heatmap-step-input" value="0.01" step="0.001">
+                    <input type="number" id="heatmap-step-input" value="0.01" step="0.0001">
                 </label>
                 <div class="button-group">
                     <button id="heatmap-tighten-button" type="button">+</button>
@@ -404,8 +470,8 @@
                 <div class="heatmap-overlay" id="heatmap-overlay">Select a tensor to stream its weights.</div>
             </div>
             <div class="heatmap-help" id="heatmap-help">Drag the canvas to explore the tensor. Use the controls to change slices and tune the contrast with the mouse wheel or the ± buttons.</div>
-        </div>
-    </section>
+        </section>
+    </div>
 </main>
 <script>
 const infoCards = document.getElementById("info-cards");
@@ -429,10 +495,63 @@ const heatmapStepInput = document.getElementById("heatmap-step-input");
 const heatmapTightenButton = document.getElementById("heatmap-tighten-button");
 const heatmapWidenButton = document.getElementById("heatmap-widen-button");
 const heatmapGainOffsetToggle = document.getElementById("heatmap-gain-offset-toggle");
+const tabButtons = document.querySelectorAll(".tab-button");
+const pageContainers = document.querySelectorAll(".page");
+const modelBrowserContainer = document.getElementById("model-browser");
+const modelBrowserRoot = document.getElementById("model-browser-root");
 const heatmapCtx = heatmapCanvas.getContext("2d");
 if (heatmapCtx) {
     heatmapCtx.imageSmoothingEnabled = false;
 }
+
+const DEFAULT_PAGE = "browser";
+const validPages = new Set(Array.from(pageContainers, (page) => page.dataset.pageId));
+let activePage = DEFAULT_PAGE;
+
+function setActivePage(pageId, { updateHash = true } = {}) {
+    const targetPage = validPages.has(pageId) ? pageId : DEFAULT_PAGE;
+    const previousPage = activePage;
+    activePage = targetPage;
+    pageContainers.forEach((page) => {
+        const isActive = page.dataset.pageId === targetPage;
+        page.classList.toggle("page--active", isActive);
+    });
+    tabButtons.forEach((button) => {
+        const isActive = button.dataset.targetPage === targetPage;
+        button.classList.toggle("tab-button--active", isActive);
+        if (isActive) {
+            button.setAttribute("aria-current", "page");
+        } else {
+            button.removeAttribute("aria-current");
+        }
+    });
+
+    if (updateHash && window.location.hash.slice(1) !== targetPage) {
+        window.location.hash = targetPage;
+    }
+
+    if (targetPage === "heatmap" || previousPage === "heatmap") {
+        syncHeatmapToViewport(!!heatmapState.tensor);
+    }
+}
+
+tabButtons.forEach((button) => {
+    button.addEventListener("click", () => {
+        const target = button.dataset.targetPage;
+        if (target) {
+            setActivePage(target);
+        }
+    });
+});
+
+window.addEventListener("hashchange", () => {
+    const hash = window.location.hash.slice(1);
+    if (hash) {
+        setActivePage(hash, { updateHash: false });
+    } else {
+        setActivePage(DEFAULT_PAGE, { updateHash: false });
+    }
+});
 
 suppressNativeValidation(heatmapMinInput);
 suppressNativeValidation(heatmapMaxInput);
@@ -460,13 +579,19 @@ const HEATMAP_HUE_MAX = 270;
 const HEATMAP_SCALE_EPSILON = 1e-5;
 const HEATMAP_STEP_FALLBACK = 0.01;
 const HEATMAP_MIN_STEP = 1e-6;
-const HEATMAP_SCALE_HTML_STEP = 0.001;
-const HEATMAP_SCALE_DECIMALS = 3;
+const HEATMAP_SCALE_HTML_STEP = 0.0001;
+const HEATMAP_SCALE_DECIMALS = 4;
 const VIEWPORT_MARGIN = 64;
 
 let tensorData = [];
 let tokenizerState = { offset: 0, total: 0, gridSize: 16 };
 const textEncoder = new TextEncoder();
+const NO_MODEL_MESSAGE = "Select a GGUF model to inspect.";
+const LOADING_MESSAGE = "Loading…";
+const BROWSER_EMPTY_MESSAGE = "No GGUF files found in the root directory.";
+let modelBrowserState = { root: "", items: [], selected: null };
+let currentModelPath = null;
+let selectingModel = false;
 
 const heatmapState = {
     tensor: null,
@@ -491,6 +616,8 @@ const heatmapState = {
     imageReady: false,
     values: [],
 };
+
+setActivePage(window.location.hash.slice(1) || DEFAULT_PAGE, { updateHash: false });
 
 function getSliceBounds() {
     let minBound = Number.isFinite(heatmapState.sliceMinBound) ? heatmapState.sliceMinBound : undefined;
@@ -707,6 +834,18 @@ function syncHeatmapControls() {
     }
 
     if (!hasTensor) {
+        if (heatmapSliceInput) {
+            heatmapSliceInput.value = "1";
+            heatmapSliceInput.disabled = true;
+        }
+        if (heatmapMinInput) {
+            heatmapMinInput.value = formatScaleInputValue(heatmapState.scaleMin);
+            heatmapMinInput.disabled = true;
+        }
+        if (heatmapMaxInput) {
+            heatmapMaxInput.value = formatScaleInputValue(heatmapState.scaleMax);
+            heatmapMaxInput.disabled = true;
+        }
         return;
     }
 
@@ -783,13 +922,57 @@ function hslToRgb(h, s, l) {
     };
 }
 
-async function fetchJSON(url) {
-    const res = await fetch(url);
+function renderEmptyNote(target, message) {
+    if (!target) {
+        return;
+    }
+    target.innerHTML = "";
+    const note = document.createElement("div");
+    note.className = "empty-note";
+    note.textContent = message;
+    target.appendChild(note);
+}
+
+function renderTableMessage(body, span, message) {
+    if (!body) {
+        return;
+    }
+    const row = document.createElement("tr");
+    row.className = "table-empty";
+    const cell = document.createElement("td");
+    cell.colSpan = span;
+    cell.textContent = message;
+    row.appendChild(cell);
+    body.appendChild(row);
+}
+
+function setInfoMessage(message) {
+    modelTitle.textContent = "Model overview";
+    renderEmptyNote(infoCards, message);
+}
+
+function setTokenizerMessage(message) {
+    renderEmptyNote(tokenizerContent, message);
+}
+
+async function fetchJSON(url, options) {
+    const res = await fetch(url, options);
     if (!res.ok) {
         const message = await res.text();
-        throw new Error(message || `Request failed: ${res.status}`);
+        const error = new Error(message || `Request failed: ${res.status}`);
+        error.status = res.status;
+        throw error;
     }
-    return res.json();
+    if (res.status === 204) {
+        return null;
+    }
+    try {
+        return await res.json();
+    } catch (err) {
+        const error = new Error(`Failed to parse response from ${url}: ${err.message}`);
+        error.status = res.status;
+        throw error;
+    }
 }
 
 function formatBytes(bytes) {
@@ -812,23 +995,198 @@ function createInfoCard(title, value) {
     return div;
 }
 
+function renderModelBrowser() {
+    if (!modelBrowserContainer) {
+        return;
+    }
+
+    modelBrowserContainer.innerHTML = "";
+
+    if (modelBrowserRoot) {
+        modelBrowserRoot.innerHTML = "";
+        if (modelBrowserState.root) {
+            const label = document.createElement("span");
+            label.textContent = "Root: ";
+            const code = document.createElement("code");
+            code.textContent = modelBrowserState.root;
+            label.appendChild(code);
+            modelBrowserRoot.appendChild(label);
+        }
+    }
+
+    const items = Array.isArray(modelBrowserState.items) ? modelBrowserState.items : [];
+    if (items.length === 0) {
+        renderEmptyNote(modelBrowserContainer, BROWSER_EMPTY_MESSAGE);
+        return;
+    }
+
+    const list = document.createElement("ul");
+    list.className = "model-list";
+
+    items.forEach((item) => {
+        const li = document.createElement("li");
+        li.className = "model-item";
+
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "model-button";
+        const isSelected = !!item.selected || (modelBrowserState.selected && modelBrowserState.selected === item.path);
+        button.dataset.selected = isSelected ? "true" : "false";
+        button.disabled = selectingModel;
+
+        const pathLabel = document.createElement("span");
+        pathLabel.className = "model-path-entry";
+        pathLabel.textContent = item.path;
+
+        const size = document.createElement("span");
+        size.className = "model-meta";
+        size.textContent = Number.isFinite(item.size) ? formatBytes(item.size) : "n/a";
+
+        button.appendChild(pathLabel);
+        button.appendChild(size);
+
+        button.addEventListener("click", () => {
+            if (!selectingModel) {
+                selectModel(item.path);
+            }
+        });
+
+        li.appendChild(button);
+        list.appendChild(li);
+    });
+
+    modelBrowserContainer.appendChild(list);
+}
+
+async function loadModelList() {
+    if (modelBrowserContainer) {
+        renderEmptyNote(modelBrowserContainer, LOADING_MESSAGE);
+    }
+
+    try {
+        const data = await fetchJSON("api/models");
+        const items = Array.isArray(data?.items) ? data.items : [];
+        const rootPath = typeof data?.root === "string" ? data.root : "";
+        const selected = typeof data?.selected === "string" && data.selected.length > 0 ? data.selected : null;
+        modelBrowserState = { root: rootPath, items, selected };
+        currentModelPath = selected;
+        renderModelBrowser();
+    } catch (err) {
+        modelBrowserState = { root: "", items: [], selected: null };
+        if (modelBrowserRoot) {
+            modelBrowserRoot.textContent = "";
+        }
+        if (modelBrowserContainer) {
+            renderEmptyNote(modelBrowserContainer, err.message);
+        }
+    }
+}
+
+async function selectModel(path) {
+    if (!path || selectingModel) {
+        return;
+    }
+    if (currentModelPath && currentModelPath === path) {
+        setActivePage("metadata");
+        return;
+    }
+
+    selectingModel = true;
+    let errorMessage = null;
+    try {
+        await fetchJSON(`api/models/select?model=${encodeURIComponent(path)}`, { method: "POST" });
+        currentModelPath = path;
+        await refreshAll();
+        await loadModelList();
+        setActivePage("metadata");
+    } catch (err) {
+        errorMessage = err.status === 409 ? NO_MODEL_MESSAGE : err.message;
+    } finally {
+        selectingModel = false;
+        renderModelBrowser();
+        if (errorMessage && modelBrowserContainer) {
+            const note = document.createElement("div");
+            note.className = "empty-note";
+            note.textContent = errorMessage;
+            modelBrowserContainer.appendChild(note);
+        }
+    }
+}
+
+function resetViewer(message = NO_MODEL_MESSAGE) {
+    setInfoMessage(message);
+    kvBody.innerHTML = "";
+    renderTableMessage(kvBody, 3, message);
+    setTokenizerMessage(message);
+    tensorBody.innerHTML = "";
+    renderTableMessage(tensorBody, 6, message);
+    tensorData = [];
+    tokenizerState = { ...tokenizerState, offset: 0, total: 0 };
+    refreshHeatmapTensorSelect();
+    resetHeatmap(message);
+}
+
+async function refreshAll() {
+    if (!currentModelPath) {
+        resetViewer();
+        return;
+    }
+
+    setInfoMessage(LOADING_MESSAGE);
+    kvBody.innerHTML = "";
+    renderTableMessage(kvBody, 3, LOADING_MESSAGE);
+    setTokenizerMessage(LOADING_MESSAGE);
+    tensorBody.innerHTML = "";
+    renderTableMessage(tensorBody, 6, LOADING_MESSAGE);
+    tokenizerState = { ...tokenizerState, offset: 0, total: 0 };
+    resetHeatmap();
+
+    await loadInfo();
+    await loadKv();
+    await loadTokenizer(0);
+    await loadTensors();
+}
+
 async function loadInfo() {
-    const info = await fetchJSON("api/info");
-    infoCards.innerHTML = "";
-    modelTitle.textContent = "Model overview";
-    const pathBadge = document.createElement("span");
-    pathBadge.className = "model-path";
-    pathBadge.title = info.modelPath;
-    const pathCode = document.createElement("code");
-    pathCode.textContent = info.modelPath;
-    pathBadge.appendChild(pathCode);
-    modelTitle.appendChild(pathBadge);
-    infoCards.appendChild(createInfoCard("File size", formatBytes(info.fileSize)));
-    infoCards.appendChild(createInfoCard("GGUF version", info.ggufVersion));
-    infoCards.appendChild(createInfoCard("KV entries", info.nKv));
-    infoCards.appendChild(createInfoCard("Tensors", info.nTensors));
-    infoCards.appendChild(createInfoCard("Alignment", `${info.alignment} bytes`));
-    infoCards.appendChild(createInfoCard("Data offset", `${info.dataOffset}`));
+    try {
+        const info = await fetchJSON("api/info");
+        modelTitle.textContent = "Model overview";
+        infoCards.innerHTML = "";
+
+        if (info && typeof info === "object") {
+            const displayPath = typeof info.relativePath === "string" && info.relativePath.length > 0
+                ? info.relativePath
+                : info.modelPath;
+            if (displayPath) {
+                const pathBadge = document.createElement("span");
+                pathBadge.className = "model-path";
+                if (typeof info.modelPath === "string" && info.modelPath.length > 0) {
+                    pathBadge.title = info.modelPath;
+                }
+                const pathCode = document.createElement("code");
+                pathCode.textContent = displayPath;
+                pathBadge.appendChild(pathCode);
+                modelTitle.appendChild(pathBadge);
+            }
+
+            const cards = [
+                ["File size", Number.isFinite(info.fileSize) ? formatBytes(info.fileSize) : "n/a"],
+                ["GGUF version", info.ggufVersion ?? "n/a"],
+                ["KV entries", info.nKv ?? "n/a"],
+                ["Tensors", info.nTensors ?? "n/a"],
+                ["Alignment", Number.isFinite(info.alignment) ? `${info.alignment} bytes` : "n/a"],
+                ["Data offset", Number.isFinite(info.dataOffset) ? String(info.dataOffset) : "n/a"],
+            ];
+
+            cards.forEach(([title, value]) => {
+                infoCards.appendChild(createInfoCard(title, value));
+            });
+        } else {
+            setInfoMessage("Model info unavailable.");
+        }
+    } catch (err) {
+        setInfoMessage(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
+    }
 }
 
 function renderKvRow(entry) {
@@ -859,9 +1217,18 @@ function renderKvRow(entry) {
 }
 
 async function loadKv() {
-    const entries = await fetchJSON("api/kv");
-    kvBody.innerHTML = "";
-    entries.forEach(entry => kvBody.appendChild(renderKvRow(entry)));
+    try {
+        const entries = await fetchJSON("api/kv");
+        kvBody.innerHTML = "";
+        if (!Array.isArray(entries) || entries.length === 0) {
+            renderTableMessage(kvBody, 3, "No metadata entries found.");
+            return;
+        }
+        entries.forEach(entry => kvBody.appendChild(renderKvRow(entry)));
+    } catch (err) {
+        kvBody.innerHTML = "";
+        renderTableMessage(kvBody, 3, err.status === 409 ? NO_MODEL_MESSAGE : err.message);
+    }
 }
 
 const TOKEN_TYPE_LABELS = {
@@ -968,7 +1335,7 @@ function renderTokenizerGrid(state, data) {
     if (data.items.length > 0) {
         const start = data.items[0].index;
         const end = data.items[data.items.length - 1].index;
-        badge.textContent = `#${start} – #${end} / ${data.total}`;
+        badge.textContent = `${start} - ${end} / ${data.total}`;
     } else {
         badge.textContent = `0 / ${data.total}`;
     }
@@ -1022,8 +1389,8 @@ async function loadTokenizer(offset = tokenizerState.offset) {
         const limit = gridSize * gridSize;
         const data = await fetchJSON(`api/tokenizer?offset=${requestedOffset}&limit=${limit}`);
         tokenizerContent.innerHTML = "";
-        if (!data.hasTokenizer) {
-            tokenizerContent.textContent = "Tokenizer metadata not found in this model.";
+        if (!data || typeof data !== "object" || !data.hasTokenizer) {
+            setTokenizerMessage("Tokenizer metadata not found in this model.");
             return;
         }
         tokenizerState = {
@@ -1031,6 +1398,10 @@ async function loadTokenizer(offset = tokenizerState.offset) {
             offset: data.offset,
             total: data.total,
         };
+
+        if (!Array.isArray(data.items)) {
+            data.items = [];
+        }
 
         if (data.total > 0 && data.items.length === 0 && data.offset >= data.total) {
             const fallbackOffset = Math.max(0, data.total - limit);
@@ -1108,7 +1479,7 @@ async function loadTokenizer(offset = tokenizerState.offset) {
             }
         });
     } catch (err) {
-        tokenizerContent.textContent = err.message;
+        setTokenizerMessage(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
     }
 }
 
@@ -1117,12 +1488,27 @@ function renderTensorRow(tensor) {
     tr.innerHTML = `
         <td><code>${tensor.name}</code></td>
         <td>${tensor.type}</td>
-        <td><code>${JSON.stringify(tensor.shape)}</code></td>
+        <td><code>${formatShape(tensor.shape)}</code></td>
         <td>${tensor.nElements}</td>
         <td>${tensor.fileOffset}</td>
         <td><button data-name="${encodeURIComponent(tensor.name)}">Heatmap</button></td>
     `;
     return tr;
+}
+
+function formatHeatmapTensorLabel(tensor) {
+    if (!tensor || typeof tensor !== "object") {
+        return "";
+    }
+    const parts = [];
+    if (tensor.name) {
+        parts.push(tensor.name);
+    }
+    if (tensor.type) {
+        parts.push(tensor.type);
+    }
+    parts.push(formatShape(tensor.shape));
+    return parts.filter(Boolean).join(" ");
 }
 
 function refreshHeatmapTensorSelect() {
@@ -1142,7 +1528,7 @@ function refreshHeatmapTensorSelect() {
         const option = document.createElement("option");
         const encodedName = encodeURIComponent(tensor.name);
         option.value = encodedName;
-        option.textContent = tensor.name;
+        option.textContent = formatHeatmapTensorLabel(tensor);
         if (heatmapState.tensor && tensor.name === heatmapState.tensor.name) {
             option.selected = true;
         }
@@ -1158,10 +1544,22 @@ function refreshHeatmapTensorSelect() {
 }
 
 async function loadTensors() {
-    tensorData = await fetchJSON("api/tensors");
-    tensorBody.innerHTML = "";
-    tensorData.forEach(tensor => tensorBody.appendChild(renderTensorRow(tensor)));
-    refreshHeatmapTensorSelect();
+    try {
+        const data = await fetchJSON("api/tensors");
+        tensorData = Array.isArray(data) ? data : [];
+        tensorBody.innerHTML = "";
+        if (tensorData.length === 0) {
+            renderTableMessage(tensorBody, 6, "No tensors available.");
+        } else {
+            tensorData.forEach(tensor => tensorBody.appendChild(renderTensorRow(tensor)));
+        }
+        refreshHeatmapTensorSelect();
+    } catch (err) {
+        tensorData = [];
+        tensorBody.innerHTML = "";
+        renderTableMessage(tensorBody, 6, err.status === 409 ? NO_MODEL_MESSAGE : err.message);
+        refreshHeatmapTensorSelect();
+    }
 }
 
 function setHeatmapOverlay(message, mode = "idle") {
@@ -1176,12 +1574,52 @@ function setHeatmapOverlay(message, mode = "idle") {
     heatmapOverlay.className = `heatmap-overlay${mode !== "idle" ? ` heatmap-overlay--${mode}` : ""}`;
 }
 
+function resetHeatmap(message = "Select a tensor to stream its weights.") {
+    if (heatmapState.controller) {
+        heatmapState.controller.abort();
+        heatmapState.controller = null;
+    }
+    heatmapState.tensor = null;
+    heatmapState.layout = { width: 1, height: 1, depth: 1 };
+    heatmapState.windowX = 0;
+    heatmapState.windowY = 0;
+    heatmapState.slice = 0;
+    heatmapState.autoMin = undefined;
+    heatmapState.autoMax = undefined;
+    heatmapState.sliceMinBound = undefined;
+    heatmapState.sliceMaxBound = undefined;
+    heatmapState.scaleMin = -1;
+    heatmapState.scaleMax = 1;
+    heatmapState.scaleInitialized = false;
+    heatmapState.scaleStep = HEATMAP_STEP_FALLBACK;
+    heatmapState.offsetMode = false;
+    heatmapState.valid = 0;
+    heatmapState.fetching = false;
+    heatmapState.imageReady = false;
+    heatmapState.values = [];
+    heatmapState.viewWidth = heatmapCanvas.width;
+    heatmapState.viewHeight = heatmapCanvas.height;
+    if (heatmapGainOffsetToggle) {
+        heatmapGainOffsetToggle.checked = false;
+    }
+    syncHeatmapControls();
+    clearHeatmapCanvas();
+    updateHeatmapHeader();
+    setHeatmapOverlay(message);
+    syncHeatmapToViewport(false);
+}
+
 function formatShape(shape) {
-    try {
-        return JSON.stringify(shape);
-    } catch (_) {
+    if (!Array.isArray(shape) || shape.length === 0) {
         return "[]";
     }
+    const parts = shape.map((value) => {
+        if (Number.isFinite(value)) {
+            return String(value);
+        }
+        return typeof value === "string" && value.length > 0 ? value : "?";
+    });
+    return `[${parts.join(", ")}]`;
 }
 
 function layoutFromTensor(tensor) {
@@ -1215,25 +1653,19 @@ function layoutFromTensor(tensor) {
 
 function updateHeatmapHeader() {
     if (!heatmapState.tensor) {
+        heatmapInfo.hidden = false;
         heatmapInfo.textContent = "Select a tensor to open the heatmap viewer.";
         heatmapStatus.textContent = "";
         heatmapStatus.hidden = true;
         return;
     }
 
-    const tensor = heatmapState.tensor;
     const layout = heatmapState.layout || { width: heatmapState.viewWidth, height: heatmapState.viewHeight, depth: 1 };
-    const depth = layout && typeof layout.depth === "number" && layout.depth > 0 ? layout.depth : 1;
     const layoutWidth = layout && typeof layout.width === "number" && layout.width > 0 ? layout.width : heatmapState.viewWidth;
     const layoutHeight = layout && typeof layout.height === "number" && layout.height > 0 ? layout.height : heatmapState.viewHeight;
 
-    const headerParts = [];
-    if (tensor.type) {
-        headerParts.push(tensor.type);
-    }
-    headerParts.push(`shape ${formatShape(tensor.shape)}`);
-    headerParts.push(`layout ${layoutHeight}×${layoutWidth}`);
-    heatmapInfo.textContent = headerParts.join(" \u2022 ");
+    heatmapInfo.textContent = "";
+    heatmapInfo.hidden = true;
 
     const x0 = heatmapState.windowX;
     const y0 = heatmapState.windowY;
@@ -1241,7 +1673,13 @@ function updateHeatmapHeader() {
     const y1 = Math.min(layoutHeight - 1, y0 + heatmapState.viewHeight - 1);
     const coverageTotal = heatmapState.viewWidth * heatmapState.viewHeight;
     const coverageText = coverageTotal > 0 ? `${heatmapState.valid}/${coverageTotal}` : "0/0";
-    heatmapStatus.textContent = `x ${x0} → ${x1} • y ${y0} → ${y1} • cells ${coverageText}`;
+    const statusParts = [
+        `layout ${layoutHeight}×${layoutWidth}`,
+        `x ${x0} → ${x1}`,
+        `y ${y0} → ${y1}`,
+        `cells ${coverageText}`,
+    ];
+    heatmapStatus.textContent = statusParts.join(" \u2022 ");
     heatmapStatus.hidden = false;
 }
 
@@ -1262,6 +1700,10 @@ function ensureHeatmapBuffer(width, height) {
 }
 
 function syncHeatmapToViewport(fetchAfterResize) {
+    if (heatmapCanvasWrapper && heatmapCanvasWrapper.offsetParent === null) {
+        return;
+    }
+
     const viewport = getViewportDimensions();
     const availableHeight = Math.max(1, viewport.height - VIEWPORT_MARGIN);
     if (heatmapCanvasWrapper) {
@@ -1566,27 +2008,10 @@ function openHeatmap(nameEncoded) {
         return;
     }
 
+    setActivePage("heatmap");
+    resetHeatmap();
     heatmapState.tensor = tensor;
     heatmapState.layout = layoutFromTensor(tensor);
-    heatmapState.windowX = 0;
-    heatmapState.windowY = 0;
-    heatmapState.slice = 0;
-    heatmapState.autoMin = undefined;
-    heatmapState.autoMax = undefined;
-    heatmapState.sliceMinBound = undefined;
-    heatmapState.sliceMaxBound = undefined;
-    heatmapState.scaleMin = -1;
-    heatmapState.scaleMax = 1;
-    heatmapState.scaleInitialized = false;
-    heatmapState.valid = 0;
-    heatmapState.imageReady = false;
-    heatmapState.values = [];
-    if (heatmapState.controller) {
-        heatmapState.controller.abort();
-        heatmapState.controller = null;
-    }
-    heatmapState.viewWidth = 1;
-    heatmapState.viewHeight = 1;
     syncHeatmapToViewport(false);
     syncHeatmapControls();
     setHeatmapOverlay("Preparing heatmap…", "loading");
@@ -1847,18 +2272,15 @@ window.addEventListener("resize", () => {
 });
 
 syncHeatmapToViewport(false);
-updateHeatmapHeader();
-syncHeatmapControls();
-setHeatmapOverlay("Select a tensor to stream its weights.");
+resetViewer();
 
 (async function init() {
-    try {
-        await loadInfo();
-        await loadKv();
-        await loadTokenizer();
-        await loadTensors();
-    } catch (err) {
-        alert(`Failed to initialize viewer: ${err.message}`);
+    await loadModelList();
+    if (modelBrowserState.selected) {
+        currentModelPath = modelBrowserState.selected;
+        await refreshAll();
+    } else {
+        resetViewer();
     }
 })();
 </script>
