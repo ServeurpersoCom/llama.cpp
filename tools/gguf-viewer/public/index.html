@@ -453,7 +453,7 @@ function createInfoCard(title, value) {
 }
 
 async function loadInfo() {
-    const info = await fetchJSON("/api/info");
+    const info = await fetchJSON("api/info");
     infoCards.innerHTML = "";
     modelTitle.textContent = "Model overview";
     const pathBadge = document.createElement("span");
@@ -499,7 +499,7 @@ function renderKvRow(entry) {
 }
 
 async function loadKv() {
-    const entries = await fetchJSON("/api/kv");
+    const entries = await fetchJSON("api/kv");
     kvBody.innerHTML = "";
     entries.forEach(entry => kvBody.appendChild(renderKvRow(entry)));
 }
@@ -656,7 +656,7 @@ async function loadTokenizer(offset = tokenizerState.offset) {
         const gridSize = Math.max(1, tokenizerState.gridSize);
         const requestedOffset = Math.max(0, Math.floor(Number(offset)) || 0);
         const limit = gridSize * gridSize;
-        const data = await fetchJSON(`/api/tokenizer?offset=${requestedOffset}&limit=${limit}`);
+        const data = await fetchJSON(`api/tokenizer?offset=${requestedOffset}&limit=${limit}`);
         tokenizerContent.innerHTML = "";
         if (!data.hasTokenizer) {
             tokenizerContent.textContent = "Tokenizer metadata not found in this model.";
@@ -762,7 +762,7 @@ function renderTensorRow(tensor) {
 }
 
 async function loadTensors() {
-    tensorData = await fetchJSON("/api/tensors");
+    tensorData = await fetchJSON("api/tensors");
     tensorBody.innerHTML = "";
     tensorData.forEach(tensor => tensorBody.appendChild(renderTensorRow(tensor)));
 }
@@ -1013,7 +1013,7 @@ async function fetchHeatmapWindow() {
     }
 
     try {
-        const res = await fetch(`/api/tensors/${encodeURIComponent(tensor.name)}/raw?${params.toString()}`, {
+        const res = await fetch(`api/tensors/${encodeURIComponent(tensor.name)}/raw?${params.toString()}`, {
             signal: controller.signal,
         });
         if (!res.ok) {
