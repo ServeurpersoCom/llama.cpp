@@ -472,6 +472,15 @@ struct tensor_tile_result {
     std::vector<uint8_t> mask;
 };
 
+struct tensor_histogram_result {
+    size_t slice      = 0;
+    uint64_t total    = 0;
+    uint64_t max_bin  = 0;
+    float range_min   = 0.0f;
+    float range_max   = 0.0f;
+    std::vector<uint64_t> bins;
+};
+
 bool tensor_window_values(
         const viewer_state & state,
         const tensor_entry & entry,
@@ -739,6 +748,122 @@ bool tensor_tile_values(
             break;
         }
         src_index += skip;
+    }
+
+    return true;
+}
+
+bool tensor_slice_histogram(
+        const viewer_state & state,
+        const tensor_entry & entry,
+        size_t slice_index,
+        size_t bin_count,
+        tensor_histogram_result & out,
+        std::string & error) {
+    out = {};
+
+    if (bin_count == 0) {
+        return true;
+    }
+
+    const tensor_layout & layout = entry.layout;
+    if (layout.depth == 0) {
+        return true;
+    }
+
+    const size_t slice_size = layout.width * layout.height;
+    if (slice_size == 0) {
+        return true;
+    }
+
+    if (slice_index >= layout.depth) {
+        slice_index = layout.depth - 1;
+    }
+
+    const size_t base_offset = slice_index * slice_size;
+    if (base_offset >= entry.n_elements) {
+        return true;
+    }
+
+    const size_t slice_available = entry.n_elements - base_offset;
+    if (slice_available == 0) {
+        return true;
+    }
+
+    const size_t slice_count = std::min(slice_size, slice_available);
+    if (slice_count == 0) {
+        return true;
+    }
+
+    tensor_window_result window;
+    if (!tensor_window_values(state, entry, base_offset, slice_count, window, error)) {
+        return false;
+    }
+
+    if (window.count == 0 || window.values.empty()) {
+        return true;
+    }
+
+    out.slice = slice_index;
+    out.bins.assign(bin_count, 0);
+    out.range_min = window.min;
+    out.range_max = window.max;
+
+    if (!std::isfinite(out.range_min) || !std::isfinite(out.range_max)) {
+        return true;
+    }
+
+    if (out.range_max < out.range_min) {
+        std::swap(out.range_max, out.range_min);
+    }
+
+    if (out.range_max == out.range_min) {
+        if (bin_count == 0) {
+            return true;
+        }
+
+        uint64_t finite_count = 0;
+        for (float value : window.values) {
+            if (std::isfinite(value)) {
+                ++finite_count;
+            }
+        }
+
+        if (finite_count == 0) {
+            return true;
+        }
+
+        const size_t index = std::min(bin_count - 1, bin_count / 2);
+        out.bins[index] = finite_count;
+        out.max_bin = finite_count;
+        out.total = finite_count;
+        return true;
+    }
+
+    const float span = out.range_max - out.range_min;
+    if (!std::isfinite(span) || span <= 0.0f) {
+        return true;
+    }
+
+    const float bin_scale = static_cast<float>(bin_count) / span;
+
+    for (float value : window.values) {
+        if (!std::isfinite(value)) {
+            continue;
+        }
+
+        const float relative = (value - out.range_min) * bin_scale;
+        size_t index = relative < 0.0f ? 0 : static_cast<size_t>(relative);
+        if (index >= bin_count) {
+            index = bin_count - 1;
+        }
+
+        uint64_t & bin = out.bins[index];
+        bin += 1;
+        out.total += 1;
+        if (bin > out.max_bin) {
+            out.max_bin = bin;
+        }
     }
 
     return true;
@@ -1023,6 +1148,73 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
                     body["sliceMax"] = nullptr;
                 }
             }
+
+            set_json_response(res, body);
+        });
+    });
+
+    server.Get(R"(/api/tensors/(.+)/histogram)", [state](const httplib::Request & req, httplib::Response & res) {
+        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+            const std::string name = url_decode(req.matches[1]);
+            auto it = viewer->tensor_index_by_name.find(name);
+            if (it == viewer->tensor_index_by_name.end()) {
+                set_json_response(res, make_error("tensor not found"), 404);
+                return;
+            }
+
+            const tensor_entry & entry = viewer->tensors[it->second];
+
+            size_t width = 1024;
+            size_t height = 512;
+            size_t slice = 0;
+
+            if (auto value = req.get_param_value("width"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    width = *parsed;
+                }
+            }
+            if (auto value = req.get_param_value("height"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    height = *parsed;
+                }
+            }
+            if (auto value = req.get_param_value("slice"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    slice = *parsed;
+                }
+            }
+
+            if (width == 0) {
+                set_json_response(res, make_error("width must be greater than zero"), 400);
+                return;
+            }
+
+            if (height == 0) {
+                height = 1;
+            }
+
+            tensor_histogram_result histogram;
+            std::string error;
+            if (!tensor_slice_histogram(*viewer, entry, slice, width, histogram, error)) {
+                set_json_response(res, make_error(error.empty() ? "failed to compute histogram" : error), 500);
+                return;
+            }
+
+            json bins = json::array();
+            for (uint64_t count : histogram.bins) {
+                bins.push_back(count);
+            }
+
+            json body;
+            body["width"] = width;
+            body["height"] = height;
+            body["slice"] = histogram.slice;
+            body["range"] = { {"min", histogram.range_min}, {"max", histogram.range_max} };
+            body["maxCount"] = histogram.max_bin;
+            body["total"] = histogram.total;
+            body["min"] = histogram.range_min;
+            body["max"] = histogram.range_max;
+            body["bins"] = std::move(bins);
 
             set_json_response(res, body);
         });
