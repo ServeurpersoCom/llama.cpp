@@ -201,7 +201,7 @@
             width: 5rem;
         }
         .heatmap-controls select {
-            min-width: 10rem;
+            min-width: 18rem;
         }
         .heatmap-controls .button-group {
             display: inline-flex;
@@ -305,10 +305,10 @@
             font-weight: 500;
             color: #d3dcfb;
         }
-        .heatmap-help {
-            font-size: 0.72rem;
-            color: #7b879e;
-            text-align: center;
+        .heatmap-status {
+            font-size: 0.75rem;
+            color: #9fb4d9;
+            white-space: nowrap;
         }
         .badge {
             display: inline-flex;
@@ -323,6 +323,14 @@
         }
         .tokenizer-controls {
             align-items: center;
+        }
+        .tokenizer-controls label {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+        .tokenizer-controls input[type="number"] {
+            width: 5rem;
         }
         .token-grid {
             display: grid;
@@ -412,8 +420,10 @@
 <main>
     <div class="page page--active" data-page-id="browser">
         <section>
-            <h2>GGUF Browser</h2>
-            <div class="browser-info" id="model-browser-root"></div>
+            <h2 id="browser-title" class="model-title">
+                GGUF Browser
+                <span class="browser-info" id="model-browser-root" hidden></span>
+            </h2>
             <div id="model-browser"></div>
         </section>
     </div>
@@ -443,14 +453,14 @@
 
     <div class="page" data-page-id="tokenizer">
         <section class="tokenizer-section">
-            <h2>Tokenizer</h2>
+            <h2 id="tokenizer-title" class="model-title">Tokenizer</h2>
             <div id="tokenizer-content"></div>
         </section>
     </div>
 
     <div class="page" data-page-id="tensors">
         <section>
-            <h2>Tensors</h2>
+            <h2 id="tensors-title" class="model-title">Tensors</h2>
             <div class="table-wrapper">
                 <table>
                     <thead>
@@ -471,10 +481,9 @@
 
     <div class="page" data-page-id="heatmap">
         <section>
-            <h2>Heatmap</h2>
+            <h2 id="heatmap-title" class="model-title">Heatmap</h2>
             <div class="heatmap-header">
                 <div class="heatmap-header-title" id="heatmap-info">Select a tensor to open the heatmap viewer.</div>
-                <span class="badge" id="heatmap-status" hidden></span>
             </div>
             <div class="heatmap-controls" id="heatmap-controls" hidden>
                 <label>
@@ -506,6 +515,11 @@
                     <input type="checkbox" id="heatmap-gain-offset-toggle">
                     <span>Gain / Offset</span>
                 </label>
+                <label class="heatmap-toggle">
+                    <input type="checkbox" id="heatmap-grid-toggle" checked>
+                    <span>Quant Grid</span>
+                </label>
+                <span class="heatmap-status" id="heatmap-status" hidden></span>
             </div>
             <div class="heatmap-visualization">
                 <div class="heatmap-canvas-wrapper">
@@ -517,13 +531,15 @@
                     <div class="histogram-overlay" id="histogram-overlay">Select a tensor to generate its histogram.</div>
                 </div>
             </div>
-            <div class="heatmap-help" id="heatmap-help">Drag the canvas to explore the tensor. Use the controls to change slices and tune the contrast with the mouse wheel or the ± buttons.</div>
         </section>
     </div>
 </main>
 <script>
 const infoCards = document.getElementById("info-cards");
 const modelTitle = document.getElementById("model-title");
+const tokenizerTitle = document.getElementById("tokenizer-title");
+const tensorsTitle = document.getElementById("tensors-title");
+const heatmapTitle = document.getElementById("heatmap-title");
 const kvBody = document.getElementById("kv-body");
 const tokenizerContent = document.getElementById("tokenizer-content");
 const tensorBody = document.getElementById("tensor-body");
@@ -541,7 +557,6 @@ const heatmapCanvasWrapper = document.querySelector(".heatmap-canvas-wrapper");
 const heatmapInfo = document.getElementById("heatmap-info");
 const heatmapStatus = document.getElementById("heatmap-status");
 const heatmapOverlay = document.getElementById("heatmap-overlay");
-const heatmapHelp = document.getElementById("heatmap-help");
 const heatmapControls = document.getElementById("heatmap-controls");
 const heatmapTensorSelect = document.getElementById("heatmap-tensor-select");
 const heatmapSliceInput = document.getElementById("heatmap-slice-input");
@@ -552,10 +567,17 @@ const heatmapStepInput = document.getElementById("heatmap-step-input");
 const heatmapTightenButton = document.getElementById("heatmap-tighten-button");
 const heatmapWidenButton = document.getElementById("heatmap-widen-button");
 const heatmapGainOffsetToggle = document.getElementById("heatmap-gain-offset-toggle");
+const heatmapGridToggle = document.getElementById("heatmap-grid-toggle");
 const tabButtons = document.querySelectorAll(".tab-button");
 const pageContainers = document.querySelectorAll(".page");
 const modelBrowserContainer = document.getElementById("model-browser");
 const modelBrowserRoot = document.getElementById("model-browser-root");
+const sectionTitles = [
+    { element: modelTitle, label: "Model overview" },
+    { element: tokenizerTitle, label: "Tokenizer" },
+    { element: tensorsTitle, label: "Tensors" },
+    { element: heatmapTitle, label: "Heatmap" },
+];
 const heatmapCtx = heatmapCanvas.getContext("2d");
 if (heatmapCtx) {
     heatmapCtx.imageSmoothingEnabled = false;
@@ -585,6 +607,10 @@ function setActivePage(pageId, { updateHash = true } = {}) {
 
     if (updateHash && window.location.hash.slice(1) !== targetPage) {
         window.location.hash = targetPage;
+    }
+
+    if (targetPage === "browser" && previousPage !== "browser") {
+        void loadModelList();
     }
 
     if (targetPage === "heatmap" || previousPage === "heatmap") {
@@ -623,6 +649,7 @@ const heatmapControlElements = [
     heatmapTightenButton,
     heatmapWidenButton,
     heatmapGainOffsetToggle,
+    heatmapGridToggle,
 ];
 heatmapControlElements.forEach((element) => {
     if (element) {
@@ -700,6 +727,22 @@ function drawHistogram() {
         const w = Math.max(1, x1 - x0);
         const y = height - barHeight;
         histogramCtx.fillRect(x0, y, w, barHeight);
+    }
+
+    const rangeMin = Number.isFinite(histogramState.rangeMin) ? histogramState.rangeMin : Number.NaN;
+    const rangeMax = Number.isFinite(histogramState.rangeMax) ? histogramState.rangeMax : Number.NaN;
+    if (Number.isFinite(rangeMin) && Number.isFinite(rangeMax) && rangeMax > rangeMin) {
+        if (rangeMin <= 0 && rangeMax >= 0) {
+            const span = rangeMax - rangeMin;
+            const zeroOffset = -rangeMin;
+            const zeroRatio = zeroOffset / span;
+            if (Number.isFinite(zeroRatio)) {
+                const x = Math.round(zeroRatio * width);
+                const clampedX = Math.max(0, Math.min(width - 1, x));
+                histogramCtx.fillStyle = "#f87171";
+                histogramCtx.fillRect(clampedX, 0, 1, height);
+            }
+        }
     }
 }
 
@@ -842,11 +885,21 @@ const VIEWPORT_MARGIN = 64;
 let tensorData = [];
 let tokenizerState = { offset: 0, total: 0, gridSize: 16 };
 const textEncoder = new TextEncoder();
+const TOKEN_TYPE_LABELS = Object.freeze({
+    0: "normal",
+    1: "unknown",
+    2: "control",
+    3: "user_defined",
+    4: "unused",
+    5: "byte",
+});
 const NO_MODEL_MESSAGE = "Select a GGUF model to inspect.";
 const LOADING_MESSAGE = "Loading…";
 const BROWSER_EMPTY_MESSAGE = "No GGUF files found in the root directory.";
 let modelBrowserState = { root: "", items: [], selected: null };
 let currentModelPath = null;
+let currentModelDisplayPath = null;
+let currentModelFullPath = null;
 let selectingModel = false;
 
 const heatmapState = {
@@ -864,13 +917,24 @@ const heatmapState = {
     scaleInitialized: false,
     scaleStep: HEATMAP_STEP_FALLBACK,
     offsetMode: false,
+    blockSize: 1,
+    gridVisible: true,
     valid: 0,
-    viewWidth: heatmapCanvas.width,
-    viewHeight: heatmapCanvas.height,
+    viewWidth: heatmapCanvas ? heatmapCanvas.width : 0,
+    viewHeight: heatmapCanvas ? heatmapCanvas.height : 0,
     controller: null,
     fetching: false,
     imageReady: false,
     values: [],
+};
+
+const heatmapDragState = {
+    active: false,
+    lastX: 0,
+    lastY: 0,
+    offsetX: 0,
+    offsetY: 0,
+    moved: false,
 };
 
 setActivePage(window.location.hash.slice(1) || DEFAULT_PAGE, { updateHash: false });
@@ -1088,6 +1152,12 @@ function syncHeatmapControls() {
         heatmapGainOffsetToggle.checked = !!heatmapState.offsetMode;
         heatmapGainOffsetToggle.disabled = !hasTensor;
     }
+    if (heatmapGridToggle) {
+        const gridStep = getHeatmapGridStep(heatmapState.blockSize);
+        const canShowGrid = hasTensor && gridStep > 1;
+        heatmapGridToggle.disabled = !canShowGrid;
+        heatmapGridToggle.checked = canShowGrid && !!heatmapState.gridVisible;
+    }
 
     if (!hasTensor) {
         if (heatmapSliceInput) {
@@ -1202,8 +1272,31 @@ function renderTableMessage(body, span, message) {
     body.appendChild(row);
 }
 
+function updateSectionHeaderPaths(displayPath, fullPath) {
+    const resolvedDisplay = typeof displayPath === "string" && displayPath.length > 0 ? displayPath : null;
+    const resolvedFull = typeof fullPath === "string" && fullPath.length > 0 ? fullPath : null;
+    sectionTitles.forEach(({ element, label }) => {
+        if (!element) {
+            return;
+        }
+        element.textContent = label;
+        if (!resolvedDisplay) {
+            return;
+        }
+        const pathBadge = document.createElement("span");
+        pathBadge.className = "model-path";
+        if (resolvedFull) {
+            pathBadge.title = resolvedFull;
+        }
+        const pathCode = document.createElement("code");
+        pathCode.textContent = resolvedDisplay;
+        pathBadge.appendChild(pathCode);
+        element.appendChild(pathBadge);
+    });
+}
+
 function setInfoMessage(message) {
-    modelTitle.textContent = "Model overview";
+    updateSectionHeaderPaths(currentModelDisplayPath, currentModelFullPath);
     renderEmptyNote(infoCards, message);
 }
 
@@ -1260,7 +1353,9 @@ function renderModelBrowser() {
 
     if (modelBrowserRoot) {
         modelBrowserRoot.innerHTML = "";
-        if (modelBrowserState.root) {
+        const hasRoot = typeof modelBrowserState.root === "string" && modelBrowserState.root.length > 0;
+        modelBrowserRoot.hidden = !hasRoot;
+        if (hasRoot) {
             const label = document.createElement("span");
             label.textContent = "Root: ";
             const code = document.createElement("code");
@@ -1331,6 +1426,7 @@ async function loadModelList() {
         modelBrowserState = { root: "", items: [], selected: null };
         if (modelBrowserRoot) {
             modelBrowserRoot.textContent = "";
+            modelBrowserRoot.hidden = true;
         }
         if (modelBrowserContainer) {
             renderEmptyNote(modelBrowserContainer, err.message);
@@ -1370,6 +1466,8 @@ async function selectModel(path) {
 }
 
 function resetViewer(message = NO_MODEL_MESSAGE) {
+    currentModelDisplayPath = null;
+    currentModelFullPath = null;
     setInfoMessage(message);
     kvBody.innerHTML = "";
     renderTableMessage(kvBody, 3, message);
@@ -1389,6 +1487,8 @@ async function refreshAll() {
         return;
     }
 
+    currentModelDisplayPath = null;
+    currentModelFullPath = null;
     setInfoMessage(LOADING_MESSAGE);
     kvBody.innerHTML = "";
     renderTableMessage(kvBody, 3, LOADING_MESSAGE);
@@ -1407,24 +1507,17 @@ async function refreshAll() {
 async function loadInfo() {
     try {
         const info = await fetchJSON("api/info");
-        modelTitle.textContent = "Model overview";
         infoCards.innerHTML = "";
 
         if (info && typeof info === "object") {
             const displayPath = typeof info.relativePath === "string" && info.relativePath.length > 0
                 ? info.relativePath
                 : info.modelPath;
-            if (displayPath) {
-                const pathBadge = document.createElement("span");
-                pathBadge.className = "model-path";
-                if (typeof info.modelPath === "string" && info.modelPath.length > 0) {
-                    pathBadge.title = info.modelPath;
-                }
-                const pathCode = document.createElement("code");
-                pathCode.textContent = displayPath;
-                pathBadge.appendChild(pathCode);
-                modelTitle.appendChild(pathBadge);
-            }
+            currentModelDisplayPath = displayPath && displayPath.length > 0 ? displayPath : null;
+            currentModelFullPath = typeof info.modelPath === "string" && info.modelPath.length > 0
+                ? info.modelPath
+                : null;
+            updateSectionHeaderPaths(currentModelDisplayPath, currentModelFullPath);
 
             const cards = [
                 ["File size", Number.isFinite(info.fileSize) ? formatBytes(info.fileSize) : "n/a"],
@@ -1439,9 +1532,13 @@ async function loadInfo() {
                 infoCards.appendChild(createInfoCard(title, value));
             });
         } else {
+            currentModelDisplayPath = null;
+            currentModelFullPath = null;
             setInfoMessage("Model info unavailable.");
         }
     } catch (err) {
+        currentModelDisplayPath = null;
+        currentModelFullPath = null;
         setInfoMessage(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
     }
 }
@@ -1487,15 +1584,6 @@ async function loadKv() {
         renderTableMessage(kvBody, 3, err.status === 409 ? NO_MODEL_MESSAGE : err.message);
     }
 }
-
-const TOKEN_TYPE_LABELS = {
-    0: "normal",
-    1: "unknown",
-    2: "control",
-    3: "user_defined",
-    4: "unused",
-    5: "byte",
-};
 
 function formatTokenForDisplay(token) {
     if (!token) {
@@ -1840,6 +1928,7 @@ function resetHeatmap(message = "Select a tensor to stream its weights.") {
         heatmapState.controller.abort();
         heatmapState.controller = null;
     }
+    const preserveGrid = !!heatmapState.gridVisible;
     heatmapState.tensor = null;
     heatmapState.layout = { width: 1, height: 1, depth: 1 };
     heatmapState.windowX = 0;
@@ -1854,6 +1943,8 @@ function resetHeatmap(message = "Select a tensor to stream its weights.") {
     heatmapState.scaleInitialized = false;
     heatmapState.scaleStep = HEATMAP_STEP_FALLBACK;
     heatmapState.offsetMode = false;
+    heatmapState.blockSize = 1;
+    heatmapState.gridVisible = preserveGrid;
     heatmapState.valid = 0;
     heatmapState.fetching = false;
     heatmapState.imageReady = false;
@@ -1862,6 +1953,9 @@ function resetHeatmap(message = "Select a tensor to stream its weights.") {
     heatmapState.viewHeight = heatmapCanvas.height;
     if (heatmapGainOffsetToggle) {
         heatmapGainOffsetToggle.checked = false;
+    }
+    if (heatmapGridToggle) {
+        heatmapGridToggle.checked = preserveGrid;
     }
     syncHeatmapControls();
     clearHeatmapCanvas();
@@ -1912,6 +2006,17 @@ function layoutFromTensor(tensor) {
     return { width, height, depth };
 }
 
+function getTensorBlockSize(tensor) {
+    if (!tensor || typeof tensor !== "object") {
+        return 1;
+    }
+    const raw = Number(tensor.blockSize);
+    if (!Number.isFinite(raw) || raw <= 0) {
+        return 1;
+    }
+    return Math.max(1, Math.floor(raw));
+}
+
 function updateHeatmapHeader() {
     if (!heatmapState.tensor) {
         heatmapInfo.hidden = false;
@@ -1935,12 +2040,12 @@ function updateHeatmapHeader() {
     const coverageTotal = heatmapState.viewWidth * heatmapState.viewHeight;
     const coverageText = coverageTotal > 0 ? `${heatmapState.valid}/${coverageTotal}` : "0/0";
     const statusParts = [
-        `layout ${layoutHeight}×${layoutWidth}`,
-        `x ${x0} → ${x1}`,
-        `y ${y0} → ${y1}`,
-        `cells ${coverageText}`,
+        `Layout ${layoutHeight} x ${layoutWidth}`,
+        `X ${x0} - ${x1}`,
+        `Y ${y0} - ${y1}`,
+        `Cells ${coverageText}`,
     ];
-    heatmapStatus.textContent = statusParts.join(" \u2022 ");
+    heatmapStatus.textContent = statusParts.join(" | ");
     heatmapStatus.hidden = false;
 }
 
@@ -2030,6 +2135,89 @@ function clearHeatmapCanvas() {
     heatmapCtx.fillRect(0, 0, heatmapCanvas.width, heatmapCanvas.height);
 }
 
+function getHeatmapGridStep(rawBlockSize) {
+    const normalized = Number.isFinite(rawBlockSize) ? rawBlockSize : 1;
+    if (normalized <= 1) {
+        return 1;
+    }
+    const halved = Math.floor(normalized / 2);
+    return halved > 1 ? halved : Math.floor(normalized);
+}
+
+function drawHeatmapGrid(translateX = 0, translateY = 0) {
+    if (!heatmapCtx || !heatmapState.imageReady || !heatmapState.gridVisible) {
+        return;
+    }
+
+    const rawBlockSize = Number.isFinite(heatmapState.blockSize) ? heatmapState.blockSize : 1;
+    const blockSize = Math.max(1, getHeatmapGridStep(rawBlockSize));
+    if (blockSize <= 1) {
+        return;
+    }
+
+    const fallbackWidth = heatmapCanvas ? heatmapCanvas.width : 0;
+    const fallbackHeight = heatmapCanvas ? heatmapCanvas.height : 0;
+    const layout = heatmapState.layout || { width: heatmapState.viewWidth, height: heatmapState.viewHeight };
+    const layoutWidthRaw = typeof layout.width === "number" ? layout.width : heatmapState.viewWidth;
+    const layoutHeightRaw = typeof layout.height === "number" ? layout.height : heatmapState.viewHeight;
+    const layoutWidth = Math.max(0, Math.floor(Number.isFinite(layoutWidthRaw) ? layoutWidthRaw : fallbackWidth));
+    const layoutHeight = Math.max(0, Math.floor(Number.isFinite(layoutHeightRaw) ? layoutHeightRaw : fallbackHeight));
+    const viewWidthRaw = Number.isFinite(heatmapState.viewWidth) ? heatmapState.viewWidth : fallbackWidth;
+    const viewHeightRaw = Number.isFinite(heatmapState.viewHeight) ? heatmapState.viewHeight : fallbackHeight;
+    const viewWidth = Math.max(0, Math.floor(Number.isFinite(viewWidthRaw) ? viewWidthRaw : 0));
+    const viewHeight = Math.max(0, Math.floor(Number.isFinite(viewHeightRaw) ? viewHeightRaw : 0));
+    if (viewWidth <= 0 || viewHeight <= 0 || layoutWidth <= 0 || layoutHeight <= 0) {
+        return;
+    }
+
+    const windowX = Math.max(0, Math.floor(Number.isFinite(heatmapState.windowX) ? heatmapState.windowX : 0));
+    const windowY = Math.max(0, Math.floor(Number.isFinite(heatmapState.windowY) ? heatmapState.windowY : 0));
+    if (windowX >= layoutWidth || windowY >= layoutHeight) {
+        return;
+    }
+
+    const widthLimit = Math.max(0, Math.min(viewWidth, layoutWidth - windowX));
+    const heightLimit = Math.max(0, Math.min(viewHeight, layoutHeight - windowY));
+    if (widthLimit <= 0 || heightLimit <= 0) {
+        return;
+    }
+
+    const tx = Math.round(Number.isFinite(translateX) ? translateX : 0);
+    const ty = Math.round(Number.isFinite(translateY) ? translateY : 0);
+    const remainderX = windowX % blockSize;
+    const remainderY = windowY % blockSize;
+    const firstVertical = remainderX === 0 ? 0 : blockSize - remainderX;
+    const firstHorizontal = remainderY === 0 ? 0 : blockSize - remainderY;
+
+    heatmapCtx.save();
+    heatmapCtx.translate(tx, ty);
+    heatmapCtx.lineWidth = 1;
+    heatmapCtx.lineCap = "butt";
+    heatmapCtx.strokeStyle = "#fff";
+    heatmapCtx.beginPath();
+
+    let drew = false;
+
+    for (let x = firstVertical; x < widthLimit; x += blockSize) {
+        const pos = x + 0.5;
+        heatmapCtx.moveTo(pos, 0);
+        heatmapCtx.lineTo(pos, heightLimit);
+        drew = true;
+    }
+
+    for (let y = firstHorizontal; y < heightLimit; y += blockSize) {
+        const pos = y + 0.5;
+        heatmapCtx.moveTo(0, pos);
+        heatmapCtx.lineTo(widthLimit, pos);
+        drew = true;
+    }
+
+    if (drew) {
+        heatmapCtx.stroke();
+    }
+    heatmapCtx.restore();
+}
+
 function drawHeatmap(translateX = 0, translateY = 0) {
     clearHeatmapCanvas();
     if (!heatmapCtx || !heatmapImageData) {
@@ -2038,6 +2226,7 @@ function drawHeatmap(translateX = 0, translateY = 0) {
     const tx = Math.round(translateX);
     const ty = Math.round(translateY);
     heatmapCtx.putImageData(heatmapImageData, tx, ty);
+    drawHeatmapGrid(tx, ty);
 }
 
 function clampWindowX(value) {
@@ -2278,6 +2467,7 @@ function openHeatmap(nameEncoded) {
     resetHeatmap();
     heatmapState.tensor = tensor;
     heatmapState.layout = layoutFromTensor(tensor);
+    heatmapState.blockSize = getTensorBlockSize(tensor);
     histogramState.tensor = tensor;
     histogramState.slice = heatmapState.slice;
     syncHistogramToViewport(false);
@@ -2421,6 +2611,29 @@ if (heatmapGainOffsetToggle) {
     });
 }
 
+if (heatmapGridToggle) {
+    const commitGridVisibility = () => {
+        const next = heatmapGridToggle.checked;
+        if (heatmapState.gridVisible !== next) {
+            heatmapState.gridVisible = next;
+            if (heatmapState.imageReady) {
+                drawHeatmap();
+            }
+        } else {
+            heatmapState.gridVisible = next;
+        }
+        syncHeatmapControls();
+    };
+    heatmapGridToggle.addEventListener("change", commitGridVisibility);
+    heatmapGridToggle.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            heatmapGridToggle.checked = !heatmapGridToggle.checked;
+            commitGridVisibility();
+        }
+    });
+}
+
 if (heatmapTightenButton) {
     heatmapTightenButton.addEventListener("click", () => {
         adjustHeatmapContrast(1);
@@ -2432,15 +2645,6 @@ if (heatmapWidenButton) {
         adjustHeatmapContrast(-1);
     });
 }
-
-const heatmapDragState = {
-    active: false,
-    lastX: 0,
-    lastY: 0,
-    offsetX: 0,
-    offsetY: 0,
-    moved: false,
-};
 
 function heatmapCanvasScale() {
     const rect = heatmapCanvas.getBoundingClientRect();
