@@ -31,6 +31,12 @@ namespace {
 
 using json = nlohmann::json;
 
+struct tensor_layout {
+    size_t width  = 1;
+    size_t height = 1;
+    size_t depth  = 1;
+};
+
 struct tensor_entry {
     std::string              name;
     ggml_tensor *            tensor = nullptr;
@@ -39,6 +45,7 @@ struct tensor_entry {
     size_t                   n_elements = 0;
     size_t                   n_bytes = 0;
     std::vector<int64_t>     shape;
+    tensor_layout            layout;
 };
 
 struct tokenizer_info {
@@ -241,6 +248,89 @@ std::vector<int64_t> tensor_shape(const ggml_tensor * tensor) {
     return shape;
 }
 
+tensor_layout compute_tensor_layout(const std::vector<int64_t> & shape, size_t n_elements) {
+    constexpr size_t kMaxLine = 1024;
+
+    tensor_layout layout;
+    layout.width  = 1;
+    layout.height = 1;
+    layout.depth  = 1;
+
+    if (shape.empty()) {
+        layout.width = std::max<size_t>(1, n_elements);
+        layout.height = 1;
+    } else if (shape.size() == 1) {
+        const size_t total = std::max<size_t>(1, n_elements);
+        size_t width = static_cast<size_t>(std::ceil(std::sqrt(static_cast<double>(total))));
+        if (width == 0) {
+            width = 1;
+        }
+        width = std::min(width, kMaxLine);
+        if (width == 0) {
+            width = 1;
+        }
+        size_t height = (total + width - 1) / width;
+        if (height == 0) {
+            height = 1;
+        }
+        layout.width = width;
+        layout.height = height;
+    } else if (shape.size() == 2) {
+        layout.width = static_cast<size_t>(std::max<int64_t>(1, shape.back()));
+        layout.height = static_cast<size_t>(std::max<int64_t>(1, shape.front()));
+    } else {
+        const size_t depth = static_cast<size_t>(std::max<int64_t>(1, shape.back()));
+        size_t width = static_cast<size_t>(std::max<int64_t>(1, shape[shape.size() - 2]));
+        if (width == 0) {
+            width = 1;
+        }
+
+        size_t plane = 1;
+        for (size_t i = 0; i + 1 < shape.size(); ++i) {
+            plane *= static_cast<size_t>(std::max<int64_t>(1, shape[i]));
+        }
+        if (plane == 0) {
+            plane = width;
+        }
+
+        size_t height = plane / width;
+        if (height * width < plane) {
+            ++height;
+        }
+        if (height == 0) {
+            height = 1;
+        }
+
+        layout.width = width;
+        layout.height = height;
+        layout.depth = depth;
+    }
+
+    if (layout.width == 0) {
+        layout.width = 1;
+    }
+    if (layout.height == 0) {
+        layout.height = (layout.width > 0) ? (n_elements + layout.width - 1) / layout.width : 1;
+        if (layout.height == 0) {
+            layout.height = 1;
+        }
+    }
+    if (layout.depth == 0) {
+        layout.depth = 1;
+    }
+
+    const size_t slice = layout.width * layout.height;
+    if (slice > 0) {
+        size_t required_depth = (n_elements + slice - 1) / slice;
+        if (required_depth == 0) {
+            required_depth = 1;
+        }
+        layout.depth = std::max(layout.depth, required_depth);
+    }
+
+    return layout;
+}
+
 json tensor_to_json(const tensor_entry & entry, size_t data_offset) {
     json node;
     node["name"]       = entry.name;
@@ -251,79 +341,291 @@ json tensor_to_json(const tensor_entry & entry, size_t data_offset) {
     node["fileOffset"] = data_offset + entry.offset;
     node["shape"]      = entry.shape;
     node["ndim"]       = ggml_n_dims(entry.tensor);
+    node["layout"]     = {
+        {"width",  entry.layout.width},
+        {"height", entry.layout.height},
+        {"depth",  entry.layout.depth},
+    };
     return node;
 }
 
-std::vector<float> tensor_preview_values(const viewer_state & state, const tensor_entry & entry, size_t count, std::string & error) {
+struct tensor_window_result {
+    size_t offset = 0;
+    size_t count  = 0;
+    size_t total  = 0;
+    float min     = 0.0f;
+    float max     = 0.0f;
     std::vector<float> values;
-    if (count == 0) {
-        return values;
+};
+
+struct tensor_tile_result {
+    size_t x      = 0;
+    size_t y      = 0;
+    size_t slice  = 0;
+    size_t width  = 0;
+    size_t height = 0;
+    size_t stride = 0;
+    size_t offset = 0;
+    size_t valid  = 0;
+    float min     = 0.0f;
+    float max     = 0.0f;
+    std::vector<float> values;
+    std::vector<uint8_t> mask;
+};
+
+bool tensor_window_values(
+        const viewer_state & state,
+        const tensor_entry & entry,
+        size_t offset,
+        size_t count,
+        tensor_window_result & out,
+        std::string & error) {
+    out = {};
+    out.total = entry.n_elements;
+
+    if (count == 0 || entry.n_elements == 0) {
+        return true;
     }
 
-    const ggml_tensor * tensor = entry.tensor;
-    const size_t total = entry.n_elements;
-    if (total == 0) {
-        return values;
+    if (offset >= entry.n_elements) {
+        out.offset = entry.n_elements;
+        return true;
     }
 
-    const size_t take = std::min(count, total);
-
-    const auto * traits = ggml_get_type_traits(tensor->type);
+    const auto * traits = ggml_get_type_traits(entry.tensor->type);
     if (!traits) {
         error = "Unknown tensor type";
-        return {};
+        return false;
     }
 
     const size_t block_size = traits->blck_size > 0 ? traits->blck_size : 1;
-    const size_t blocks = (take + block_size - 1) / block_size;
-    const size_t elements_to_convert = blocks * block_size;
-    const size_t bytes_to_read = blocks * traits->type_size;
+    const size_t type_size  = traits->type_size;
 
+    if (type_size == 0) {
+        error = "Invalid tensor type size";
+        return false;
+    }
+
+    const size_t start_block = offset / block_size;
+    const size_t block_offset = start_block * block_size;
     const size_t tensor_bytes = entry.n_bytes;
-    const size_t available_bytes = std::min(bytes_to_read, tensor_bytes);
+    const size_t start_byte_offset = start_block * type_size;
+
+    if (start_byte_offset > tensor_bytes) {
+        error = "Tensor offset outside data range";
+        return false;
+    }
+
+    const size_t end_index = std::min(entry.n_elements, offset + count);
+    const size_t end_block = (end_index + block_size - 1) / block_size;
+    const size_t requested_blocks = end_block > start_block ? (end_block - start_block) : 1;
+
+    const size_t available_bytes = tensor_bytes - start_byte_offset;
+    const size_t requested_bytes = requested_blocks * type_size;
+    const size_t bytes_to_read = std::min(requested_bytes, available_bytes);
+    const size_t blocks_to_read = bytes_to_read / type_size;
+
+    if (blocks_to_read == 0) {
+        return true;
+    }
+
+    const size_t elements_to_convert = blocks_to_read * block_size;
 
     std::ifstream file(state.model_path, std::ios::binary);
     if (!file) {
         error = "Failed to open model file";
-        return {};
+        return false;
     }
 
-    const size_t absolute_offset = state.data_offset + entry.offset;
-    if (absolute_offset + available_bytes > state.file_size) {
+    const size_t absolute_offset = state.data_offset + entry.offset + start_byte_offset;
+    if (absolute_offset + bytes_to_read > state.file_size) {
         error = "Tensor offset outside file bounds";
-        return {};
+        return false;
     }
 
     file.seekg(static_cast<std::streamoff>(absolute_offset), std::ios::beg);
     std::vector<uint8_t> raw(bytes_to_read, 0);
-    file.read(reinterpret_cast<char *>(raw.data()), static_cast<std::streamsize>(available_bytes));
-    if (file.gcount() < static_cast<std::streamsize>(available_bytes)) {
+    file.read(reinterpret_cast<char *>(raw.data()), static_cast<std::streamsize>(bytes_to_read));
+    if (file.gcount() < static_cast<std::streamsize>(bytes_to_read)) {
         error = "Failed to read tensor data";
-        return {};
+        return false;
     }
 
-    values.resize(elements_to_convert, 0.0f);
+    std::vector<float> converted(elements_to_convert, 0.0f);
 
-    if (tensor->type == GGML_TYPE_F32) {
+    if (entry.tensor->type == GGML_TYPE_F32) {
+        const size_t elements_read = bytes_to_read / sizeof(float);
         const float * src = reinterpret_cast<const float *>(raw.data());
-        std::memcpy(values.data(), src, take * sizeof(float));
-        values.resize(take);
-        return values;
-    }
-
-    if (traits->to_float == nullptr) {
-        // fallback: interpret raw bytes as signed values scaled to float
-        values.resize(take);
-        for (size_t i = 0; i < take; ++i) {
-            values[i] = static_cast<float>(raw[i]);
+        converted.assign(src, src + elements_read);
+    } else if (traits->to_float == nullptr) {
+        converted.resize(bytes_to_read);
+        for (size_t i = 0; i < bytes_to_read; ++i) {
+            converted[i] = static_cast<float>(raw[i]);
         }
-        values.resize(take);
-        return values;
+    } else {
+        traits->to_float(raw.data(), converted.data(), static_cast<int64_t>(elements_to_convert));
     }
 
-    traits->to_float(raw.data(), values.data(), static_cast<int64_t>(elements_to_convert));
-    values.resize(take);
-    return values;
+    const size_t start_index_in_block = offset - block_offset;
+    size_t available_values = converted.size() > start_index_in_block
+        ? converted.size() - start_index_in_block
+        : 0;
+
+    size_t take = std::min(end_index - offset, available_values);
+
+    out.offset = offset;
+    out.count = take;
+
+    if (take == 0) {
+        return true;
+    }
+
+    out.values.resize(take);
+    std::memcpy(out.values.data(), converted.data() + start_index_in_block, take * sizeof(float));
+
+    auto [min_it, max_it] = std::minmax_element(out.values.begin(), out.values.end());
+    out.min = *min_it;
+    out.max = *max_it;
+    return true;
+}
+
+bool tensor_tile_values(
+        const viewer_state & state,
+        const tensor_entry & entry,
+        size_t slice_index,
+        size_t x,
+        size_t y,
+        size_t width,
+        size_t height,
+        tensor_tile_result & out,
+        std::string & error) {
+    out = {};
+
+    const tensor_layout & layout = entry.layout;
+    if (layout.width == 0 || layout.height == 0) {
+        return true;
+    }
+
+    const size_t slice_size = layout.width * layout.height;
+    if (slice_size == 0) {
+        return true;
+    }
+
+    if (layout.depth == 0) {
+        return true;
+    }
+
+    if (slice_index >= layout.depth) {
+        slice_index = layout.depth - 1;
+    }
+
+    if (x >= layout.width) {
+        x = layout.width - 1;
+    }
+    if (y >= layout.height) {
+        y = layout.height - 1;
+    }
+
+    if (width == 0 || height == 0) {
+        return true;
+    }
+
+    width = std::min(width, layout.width - x);
+    height = std::min(height, layout.height - y);
+
+    out.x = x;
+    out.y = y;
+    out.slice = slice_index;
+    out.width = width;
+    out.height = height;
+    out.stride = layout.width;
+
+    if (width == 0 || height == 0) {
+        return true;
+    }
+
+    const size_t base_offset = slice_index * slice_size;
+    if (base_offset >= entry.n_elements) {
+        return true;
+    }
+
+    const size_t start_offset = base_offset + y * layout.width + x;
+    if (start_offset >= entry.n_elements) {
+        return true;
+    }
+
+    const size_t max_available = entry.n_elements - start_offset;
+    if (max_available == 0) {
+        return true;
+    }
+
+    const size_t row_stride = layout.width;
+    const size_t fetch_span = height == 0 ? 0 : (height - 1) * row_stride + width;
+    const size_t fetch_count = std::min(max_available, fetch_span);
+
+    if (fetch_count == 0) {
+        return true;
+    }
+
+    tensor_window_result window;
+    if (!tensor_window_values(state, entry, start_offset, fetch_count, window, error)) {
+        return false;
+    }
+
+    out.offset = start_offset;
+    out.values.assign(width * height, 0.0f);
+    out.mask.assign(width * height, 0);
+    out.valid = 0;
+
+    if (window.count == 0 || window.values.empty()) {
+        return true;
+    }
+
+    size_t src_index = 0;
+    const size_t values_size = window.values.size();
+
+    for (size_t row = 0; row < height && src_index < values_size; ++row) {
+        const size_t dest_row_start = row * width;
+        const size_t available_in_row = row_stride - x;
+        const size_t remaining_src = values_size - src_index;
+        const size_t take = std::min({width, available_in_row, remaining_src});
+
+        if (take == 0) {
+            break;
+        }
+
+        for (size_t col = 0; col < take; ++col) {
+            const float value = window.values[src_index + col];
+            const size_t dest_index = dest_row_start + col;
+            out.values[dest_index] = value;
+            out.mask[dest_index] = 1;
+            if (out.valid == 0) {
+                out.min = value;
+                out.max = value;
+            } else {
+                out.min = std::min(out.min, value);
+                out.max = std::max(out.max, value);
+            }
+            ++out.valid;
+        }
+
+        src_index += take;
+
+        if (row + 1 >= height || src_index >= values_size) {
+            break;
+        }
+
+        const size_t skip = row_stride - take;
+        if (skip == 0) {
+            continue;
+        }
+        if (skip > values_size - src_index) {
+            break;
+        }
+        src_index += skip;
+    }
+
+    return true;
 }
 
 void build_tokenizer_info(viewer_state & state) {
@@ -395,7 +697,7 @@ void setup_routes(httplib::Server & server, std::shared_ptr<viewer_state> state)
         set_json_response(res, tensors_json);
     });
 
-    server.Get(R"(/api/tensors/(.+)/preview)", [state](const httplib::Request & req, httplib::Response & res) {
+    server.Get(R"(/api/tensors/(.+)/raw)", [state](const httplib::Request & req, httplib::Response & res) {
         const std::string name = url_decode(req.matches[1]);
         auto it = state->tensor_index_by_name.find(name);
         if (it == state->tensor_index_by_name.end()) {
@@ -404,27 +706,92 @@ void setup_routes(httplib::Server & server, std::shared_ptr<viewer_state> state)
         }
         const tensor_entry & entry = state->tensors[it->second];
 
-        size_t count = 32;
-        if (auto value = req.get_param_value("count"); !value.empty()) {
+        size_t x = 0;
+        size_t y = 0;
+        size_t width = 1024;
+        size_t height = 1024;
+        size_t slice = 0;
+
+        if (auto value = req.get_param_value("x"); !value.empty()) {
             if (auto parsed = parse_size_t(value)) {
-                count = *parsed;
+                x = *parsed;
+            }
+        }
+        if (auto value = req.get_param_value("y"); !value.empty()) {
+            if (auto parsed = parse_size_t(value)) {
+                y = *parsed;
+            }
+        }
+        if (auto value = req.get_param_value("width"); !value.empty()) {
+            if (auto parsed = parse_size_t(value)) {
+                width = *parsed;
+            }
+        }
+        if (auto value = req.get_param_value("height"); !value.empty()) {
+            if (auto parsed = parse_size_t(value)) {
+                height = *parsed;
+            }
+        }
+        if (auto value = req.get_param_value("slice"); !value.empty()) {
+            if (auto parsed = parse_size_t(value)) {
+                slice = *parsed;
             }
         }
 
+        if (width == 0) {
+            width = 1;
+        }
+        if (height == 0) {
+            height = 1;
+        }
+
+        tensor_tile_result tile;
         std::string error;
-        std::vector<float> preview = tensor_preview_values(*state, entry, count, error);
-        if (!error.empty()) {
-            set_json_response(res, make_error(error), 500);
+        if (!tensor_tile_values(*state, entry, slice, x, y, width, height, tile, error)) {
+            set_json_response(res, make_error(error.empty() ? "failed to read tensor" : error), 500);
             return;
         }
 
         json body;
         body["name"] = entry.name;
-        body["count"] = preview.size();
-        body["total"] = entry.n_elements;
-        body["values"] = preview;
         body["type"] = ggml_type_name(entry.tensor->type);
         body["shape"] = entry.shape;
+        body["total"] = entry.n_elements;
+        body["layout"] = {
+            {"width", entry.layout.width},
+            {"height", entry.layout.height},
+            {"depth", entry.layout.depth},
+        };
+        body["origin"] = {
+            {"x", tile.x},
+            {"y", tile.y},
+            {"slice", tile.slice},
+        };
+        body["viewport"] = {
+            {"width", tile.width},
+            {"height", tile.height},
+        };
+        body["offset"] = tile.offset;
+        body["count"] = tile.width * tile.height;
+
+        if (tile.valid > 0) {
+            body["min"] = tile.min;
+            body["max"] = tile.max;
+        } else {
+            body["min"] = nullptr;
+            body["max"] = nullptr;
+        }
+
+        json values = json::array();
+        for (size_t i = 0; i < tile.values.size(); ++i) {
+            if (i < tile.mask.size() && tile.mask[i]) {
+                values.push_back(tile.values[i]);
+            } else {
+                values.push_back(nullptr);
+            }
+        }
+        body["values"] = std::move(values);
+        body["validCount"] = tile.valid;
         set_json_response(res, body);
     });
 
@@ -511,6 +878,7 @@ viewer_state load_state(const std::string & model_path) {
         entry.n_elements = ggml_nelements(cur);
         entry.n_bytes = ggml_nbytes(cur);
         entry.shape = tensor_shape(cur);
+        entry.layout = compute_tensor_layout(entry.shape, entry.n_elements);
         entry.tensor_index = gguf_find_tensor(state.gguf.get(), entry.name.c_str());
         if (entry.tensor_index >= 0) {
             entry.offset = gguf_get_tensor_offset(state.gguf.get(), entry.tensor_index);

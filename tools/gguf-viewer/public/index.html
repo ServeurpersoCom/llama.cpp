@@ -124,15 +124,76 @@
             color: inherit;
             width: 5rem;
         }
-        .preview-box {
-            margin-top: 1rem;
-            padding: 0.75rem;
-            border-radius: 8px;
+        .heatmap-panel {
+            margin-top: 1.25rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .heatmap-header {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.75rem;
+        }
+        .heatmap-header-title {
+            font-size: 1rem;
+            font-weight: 500;
+            color: #e0e7ff;
+        }
+        .heatmap-canvas-wrapper {
+            position: relative;
+            border-radius: 10px;
+            overflow: hidden;
             border: 1px solid rgba(148, 163, 184, 0.2);
-            background: rgba(15, 23, 42, 0.7);
-            white-space: pre-wrap;
-            font-family: "Fira Code", monospace;
-            overflow-x: auto;
+            background: rgba(15, 23, 42, 0.65);
+            width: 100%;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-sizing: border-box;
+        }
+        #heatmap-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+            image-rendering: pixelated;
+            margin: 0 auto;
+            touch-action: none;
+        }
+        #heatmap-canvas.heatmap-canvas--dragging {
+            cursor: grabbing;
+        }
+        .heatmap-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 1.5rem;
+            font-size: 1.05rem;
+            background: rgba(15, 23, 42, 0.55);
+            color: #cbd5f5;
+        }
+        .heatmap-overlay[hidden] {
+            display: none;
+        }
+        .heatmap-overlay--error {
+            background: rgba(190, 24, 93, 0.35);
+            color: #fee2e2;
+        }
+        .heatmap-overlay--loading {
+            background: rgba(37, 99, 235, 0.35);
+            color: #e0f2fe;
+        }
+        .heatmap-help {
+            font-size: 0.85rem;
+            color: #9ca3af;
+            text-align: center;
         }
         .badge {
             display: inline-flex;
@@ -249,10 +310,6 @@
 
     <section>
         <h2>Tensors</h2>
-        <div class="controls">
-            <label for="tensor-count">Preview elements:</label>
-            <input type="number" id="tensor-count" min="1" value="32" />
-        </div>
         <div class="table-wrapper">
             <table>
                 <thead>
@@ -268,7 +325,17 @@
                 <tbody id="tensor-body"></tbody>
             </table>
         </div>
-        <div class="preview-box" id="tensor-preview">Select a tensor to preview its values.</div>
+        <div class="heatmap-panel">
+            <div class="heatmap-header">
+                <div class="heatmap-header-title" id="heatmap-info">Select a tensor to open the heatmap viewer.</div>
+                <span class="badge" id="heatmap-status" hidden></span>
+            </div>
+            <div class="heatmap-canvas-wrapper">
+                <canvas id="heatmap-canvas" width="1024" height="1024"></canvas>
+                <div class="heatmap-overlay" id="heatmap-overlay">Select a tensor to stream its weights.</div>
+            </div>
+            <div class="heatmap-help" id="heatmap-help">Drag the canvas to explore the tensor. Use the mouse wheel to switch slices when the tensor has depth.</div>
+        </div>
     </section>
 </main>
 <script>
@@ -277,12 +344,84 @@ const modelTitle = document.getElementById("model-title");
 const kvBody = document.getElementById("kv-body");
 const tokenizerContent = document.getElementById("tokenizer-content");
 const tensorBody = document.getElementById("tensor-body");
-const tensorCountInput = document.getElementById("tensor-count");
-const tensorPreviewBox = document.getElementById("tensor-preview");
+const heatmapCanvas = document.getElementById("heatmap-canvas");
+const heatmapCanvasWrapper = document.querySelector(".heatmap-canvas-wrapper");
+const heatmapInfo = document.getElementById("heatmap-info");
+const heatmapStatus = document.getElementById("heatmap-status");
+const heatmapOverlay = document.getElementById("heatmap-overlay");
+const heatmapHelp = document.getElementById("heatmap-help");
+const heatmapCtx = heatmapCanvas.getContext("2d");
+if (heatmapCtx) {
+    heatmapCtx.imageSmoothingEnabled = false;
+}
+let heatmapImageData = null;
+
+const HEATMAP_BACKGROUND = { r: 15, g: 23, b: 42 };
+const HEATMAP_HUE_MAX = 270;
 
 let tensorData = [];
 let tokenizerState = { offset: 0, total: 0, gridSize: 16 };
 const textEncoder = new TextEncoder();
+
+const heatmapState = {
+    tensor: null,
+    layout: { width: 1, height: 1, depth: 1 },
+    windowX: 0,
+    windowY: 0,
+    slice: 0,
+    min: undefined,
+    max: undefined,
+    valid: 0,
+    viewWidth: heatmapCanvas.width,
+    viewHeight: heatmapCanvas.height,
+    controller: null,
+    fetching: false,
+    imageReady: false,
+};
+
+function getViewportDimensions() {
+    const doc = document.documentElement;
+    const width = Math.max(1, Math.floor(doc ? doc.clientWidth : window.innerWidth || 1));
+    const height = Math.max(1, Math.floor(window.innerHeight || (doc ? doc.clientHeight : 1)));
+    return { width, height };
+}
+
+function hslToRgb(h, s, l) {
+    const hue = ((h % 360) + 360) % 360;
+    const chroma = (1 - Math.abs(2 * l - 1)) * s;
+    const hp = hue / 60;
+    const x = chroma * (1 - Math.abs((hp % 2) - 1));
+    let r1 = 0;
+    let g1 = 0;
+    let b1 = 0;
+
+    if (hp >= 0 && hp < 1) {
+        r1 = chroma;
+        g1 = x;
+    } else if (hp >= 1 && hp < 2) {
+        r1 = x;
+        g1 = chroma;
+    } else if (hp >= 2 && hp < 3) {
+        g1 = chroma;
+        b1 = x;
+    } else if (hp >= 3 && hp < 4) {
+        g1 = x;
+        b1 = chroma;
+    } else if (hp >= 4 && hp < 5) {
+        r1 = x;
+        b1 = chroma;
+    } else {
+        r1 = chroma;
+        b1 = x;
+    }
+
+    const m = l - chroma / 2;
+    return {
+        r: Math.round((r1 + m) * 255),
+        g: Math.round((g1 + m) * 255),
+        b: Math.round((b1 + m) * 255),
+    };
+}
 
 async function fetchJSON(url) {
     const res = await fetch(url);
@@ -617,7 +756,7 @@ function renderTensorRow(tensor) {
         <td><code>${JSON.stringify(tensor.shape)}</code></td>
         <td>${tensor.nElements}</td>
         <td>${tensor.fileOffset}</td>
-        <td><button data-name="${encodeURIComponent(tensor.name)}">Preview</button></td>
+        <td><button data-name="${encodeURIComponent(tensor.name)}">Heatmap</button></td>
     `;
     return tr;
 }
@@ -628,24 +767,542 @@ async function loadTensors() {
     tensorData.forEach(tensor => tensorBody.appendChild(renderTensorRow(tensor)));
 }
 
-async function previewTensor(nameEncoded) {
-    try {
-        const count = Math.max(1, Number(tensorCountInput.value) || 32);
-        tensorPreviewBox.textContent = "Loading preview...";
-        const data = await fetchJSON(`/api/tensors/${nameEncoded}/preview?count=${count}`);
-        const header = `${data.name} (${data.type})\nshape: ${JSON.stringify(data.shape)}\nvalues (first ${data.count} of ${data.total}):`;
-        tensorPreviewBox.textContent = `${header}\n${JSON.stringify(data.values, null, 2)}`;
-    } catch (err) {
-        tensorPreviewBox.textContent = `Failed to load tensor preview: ${err.message}`;
+function setHeatmapOverlay(message, mode = "idle") {
+    if (!message) {
+        heatmapOverlay.hidden = true;
+        heatmapOverlay.textContent = "";
+        heatmapOverlay.className = "heatmap-overlay";
+        return;
     }
+    heatmapOverlay.hidden = false;
+    heatmapOverlay.textContent = message;
+    heatmapOverlay.className = `heatmap-overlay${mode !== "idle" ? ` heatmap-overlay--${mode}` : ""}`;
+}
+
+function formatShape(shape) {
+    try {
+        return JSON.stringify(shape);
+    } catch (_) {
+        return "[]";
+    }
+}
+
+function layoutFromTensor(tensor) {
+    const layout = tensor && typeof tensor.layout === "object" ? tensor.layout : {};
+    let width = typeof layout.width === "number" ? layout.width : undefined;
+    let height = typeof layout.height === "number" ? layout.height : undefined;
+    let depth = typeof layout.depth === "number" ? layout.depth : undefined;
+
+    if (!Number.isFinite(width) || width <= 0) {
+        if (Array.isArray(tensor.shape) && tensor.shape.length > 0) {
+            width = tensor.shape[tensor.shape.length - 1];
+        }
+    }
+    if (!Number.isFinite(height) || height <= 0) {
+        if (Array.isArray(tensor.shape) && tensor.shape.length > 1) {
+            height = tensor.shape[tensor.shape.length - 2];
+        } else {
+            height = 1;
+        }
+    }
+    if (!Number.isFinite(depth) || depth <= 0) {
+        depth = 1;
+    }
+
+    width = Math.max(1, Math.floor(width || 1));
+    height = Math.max(1, Math.floor(height || 1));
+    depth = Math.max(1, Math.floor(depth || 1));
+
+    return { width, height, depth };
+}
+
+function updateHeatmapHeader() {
+    if (!heatmapState.tensor) {
+        heatmapInfo.textContent = "Select a tensor to open the heatmap viewer.";
+        heatmapStatus.textContent = "";
+        heatmapStatus.hidden = true;
+        return;
+    }
+
+    const tensor = heatmapState.tensor;
+    const layout = heatmapState.layout || { width: heatmapState.viewWidth, height: heatmapState.viewHeight, depth: 1 };
+    const depth = layout && typeof layout.depth === "number" && layout.depth > 0 ? layout.depth : 1;
+    const layoutWidth = layout && typeof layout.width === "number" && layout.width > 0 ? layout.width : heatmapState.viewWidth;
+    const layoutHeight = layout && typeof layout.height === "number" && layout.height > 0 ? layout.height : heatmapState.viewHeight;
+
+    heatmapInfo.textContent = `${tensor.name} (${tensor.type}) \u2013 shape ${formatShape(tensor.shape)} \u2022 layout ${layoutHeight}×${layoutWidth}`;
+
+    const x0 = heatmapState.windowX;
+    const y0 = heatmapState.windowY;
+    const x1 = Math.min(layoutWidth - 1, x0 + heatmapState.viewWidth - 1);
+    const y1 = Math.min(layoutHeight - 1, y0 + heatmapState.viewHeight - 1);
+    const sliceIndex = heatmapState.slice;
+    const coverageTotal = heatmapState.viewWidth * heatmapState.viewHeight;
+    const coverageText = coverageTotal > 0 ? `${heatmapState.valid}/${coverageTotal}` : "0/0";
+    const minText = Number.isFinite(heatmapState.min) ? heatmapState.min.toFixed(6) : "n/a";
+    const maxText = Number.isFinite(heatmapState.max) ? heatmapState.max.toFixed(6) : "n/a";
+
+    heatmapStatus.textContent = `slice ${sliceIndex + 1}/${depth} • x ${x0} → ${x1} • y ${y0} → ${y1} • cells ${coverageText} • min ${minText} • max ${maxText}`;
+    heatmapStatus.hidden = false;
+}
+
+function ensureHeatmapBuffer(width, height) {
+    const targetWidth = Math.max(1, Math.floor(width));
+    const targetHeight = Math.max(1, Math.floor(height));
+    if (heatmapCanvas.width !== targetWidth || heatmapCanvas.height !== targetHeight) {
+        heatmapCanvas.width = targetWidth;
+        heatmapCanvas.height = targetHeight;
+        if (heatmapCtx) {
+            heatmapCtx.imageSmoothingEnabled = false;
+        }
+        heatmapImageData = null;
+    }
+    if (!heatmapImageData && heatmapCtx) {
+        heatmapImageData = heatmapCtx.createImageData(heatmapCanvas.width, heatmapCanvas.height);
+    }
+}
+
+function syncHeatmapToViewport(fetchAfterResize) {
+    const viewport = getViewportDimensions();
+    if (heatmapCanvasWrapper) {
+        heatmapCanvasWrapper.style.height = `${viewport.height}px`;
+    }
+
+    const wrapperWidth = heatmapCanvasWrapper
+        ? Math.max(1, Math.floor(heatmapCanvasWrapper.clientWidth || heatmapCanvasWrapper.offsetWidth || 1))
+        : Math.max(1, viewport.width - 64);
+
+    const hasTensor = !!heatmapState.tensor;
+    const layoutWidth = hasTensor && heatmapState.layout && heatmapState.layout.width > 0
+        ? heatmapState.layout.width
+        : wrapperWidth;
+    const layoutHeight = hasTensor && heatmapState.layout && heatmapState.layout.height > 0
+        ? heatmapState.layout.height
+        : viewport.height;
+
+    const targetWidth = Math.max(1, Math.min(layoutWidth, wrapperWidth));
+    const targetHeight = Math.max(1, Math.min(layoutHeight, viewport.height));
+
+    const widthChanged = targetWidth !== heatmapState.viewWidth;
+    const heightChanged = targetHeight !== heatmapState.viewHeight;
+
+    if (widthChanged || heightChanged) {
+        heatmapState.viewWidth = targetWidth;
+        heatmapState.viewHeight = targetHeight;
+        ensureHeatmapBuffer(targetWidth, targetHeight);
+        heatmapDragState.offsetX = 0;
+        heatmapDragState.offsetY = 0;
+        heatmapDragState.moved = false;
+        if (hasTensor) {
+            heatmapState.windowX = clampWindowX(heatmapState.windowX);
+            heatmapState.windowY = clampWindowY(heatmapState.windowY);
+            heatmapState.imageReady = false;
+            if (fetchAfterResize) {
+                void fetchHeatmapWindow();
+            } else {
+                clearHeatmapCanvas();
+            }
+        } else {
+            clearHeatmapCanvas();
+        }
+    } else {
+        ensureHeatmapBuffer(targetWidth, targetHeight);
+        if (heatmapState.imageReady) {
+            drawHeatmap();
+        } else {
+            clearHeatmapCanvas();
+        }
+    }
+
+    updateHeatmapHeader();
+}
+
+function clearHeatmapCanvas() {
+    if (!heatmapCtx) {
+        return;
+    }
+    heatmapCtx.fillStyle = `rgb(${HEATMAP_BACKGROUND.r}, ${HEATMAP_BACKGROUND.g}, ${HEATMAP_BACKGROUND.b})`;
+    heatmapCtx.fillRect(0, 0, heatmapCanvas.width, heatmapCanvas.height);
+}
+
+function drawHeatmap(translateX = 0, translateY = 0) {
+    clearHeatmapCanvas();
+    if (!heatmapCtx || !heatmapImageData) {
+        return;
+    }
+    const tx = Math.round(translateX);
+    const ty = Math.round(translateY);
+    heatmapCtx.putImageData(heatmapImageData, tx, ty);
+}
+
+function clampWindowX(value) {
+    const layoutWidth = heatmapState.layout && typeof heatmapState.layout.width === "number" ? heatmapState.layout.width : heatmapState.viewWidth;
+    const max = Math.max(0, layoutWidth - heatmapState.viewWidth);
+    if (!Number.isFinite(value)) {
+        return 0;
+    }
+    return Math.min(Math.max(0, Math.floor(value)), max);
+}
+
+function clampWindowY(value) {
+    const layoutHeight = heatmapState.layout && typeof heatmapState.layout.height === "number" ? heatmapState.layout.height : heatmapState.viewHeight;
+    const max = Math.max(0, layoutHeight - heatmapState.viewHeight);
+    if (!Number.isFinite(value)) {
+        return 0;
+    }
+    return Math.min(Math.max(0, Math.floor(value)), max);
+}
+
+function clampSlice(value) {
+    const depth = heatmapState.layout && typeof heatmapState.layout.depth === "number" && heatmapState.layout.depth > 0
+        ? heatmapState.layout.depth
+        : 1;
+    if (!Number.isFinite(value)) {
+        return 0;
+    }
+    return Math.min(Math.max(0, Math.floor(value)), depth - 1);
+}
+
+function clampDragOffsets() {
+    const layoutWidth = heatmapState.layout && typeof heatmapState.layout.width === "number" ? heatmapState.layout.width : heatmapState.viewWidth;
+    const layoutHeight = heatmapState.layout && typeof heatmapState.layout.height === "number" ? heatmapState.layout.height : heatmapState.viewHeight;
+    const maxWindowX = Math.max(0, layoutWidth - heatmapState.viewWidth);
+    const maxWindowY = Math.max(0, layoutHeight - heatmapState.viewHeight);
+
+    const maxLeft = Math.min(heatmapState.windowX, heatmapState.viewWidth);
+    const maxRight = Math.min(Math.max(0, maxWindowX - heatmapState.windowX), heatmapState.viewWidth);
+    const maxUp = Math.min(heatmapState.windowY, heatmapState.viewHeight);
+    const maxDown = Math.min(Math.max(0, maxWindowY - heatmapState.windowY), heatmapState.viewHeight);
+
+    const clampedX = Math.min(Math.max(heatmapDragState.offsetX, -maxRight), maxLeft);
+    const clampedY = Math.min(Math.max(heatmapDragState.offsetY, -maxDown), maxUp);
+
+    const changed = clampedX !== heatmapDragState.offsetX || clampedY !== heatmapDragState.offsetY;
+    heatmapDragState.offsetX = clampedX;
+    heatmapDragState.offsetY = clampedY;
+    return changed;
+}
+
+async function fetchHeatmapWindow() {
+    if (!heatmapState.tensor) {
+        return;
+    }
+
+    if (heatmapState.controller) {
+        heatmapState.controller.abort();
+    }
+
+    const controller = new AbortController();
+    heatmapState.controller = controller;
+    heatmapState.fetching = true;
+    if (!heatmapState.imageReady) {
+        setHeatmapOverlay("Loading heatmap…", "loading");
+    }
+
+    const tensor = heatmapState.tensor;
+    const layout = heatmapState.layout || { width: heatmapState.viewWidth, height: heatmapState.viewHeight, depth: 1 };
+    heatmapState.slice = clampSlice(heatmapState.slice);
+
+    const params = new URLSearchParams();
+    params.set("x", String(heatmapState.windowX));
+    params.set("y", String(heatmapState.windowY));
+    params.set("width", String(heatmapState.viewWidth));
+    params.set("height", String(heatmapState.viewHeight));
+    if (layout.depth > 1) {
+        params.set("slice", String(heatmapState.slice));
+    }
+
+    try {
+        const res = await fetch(`/api/tensors/${encodeURIComponent(tensor.name)}/raw?${params.toString()}`, {
+            signal: controller.signal,
+        });
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || `Request failed: ${res.status}`);
+        }
+        const data = await res.json();
+        if (controller.signal.aborted) {
+            return;
+        }
+        const layoutNode = data.layout || {};
+        if (typeof layoutNode.width === "number" && layoutNode.width > 0) {
+            heatmapState.layout.width = layoutNode.width;
+        }
+        if (typeof layoutNode.height === "number" && layoutNode.height > 0) {
+            heatmapState.layout.height = layoutNode.height;
+        }
+        if (typeof layoutNode.depth === "number" && layoutNode.depth > 0) {
+            heatmapState.layout.depth = layoutNode.depth;
+        }
+
+        const origin = data.origin || {};
+        if (typeof origin.x === "number") {
+            heatmapState.windowX = clampWindowX(origin.x);
+        } else {
+            heatmapState.windowX = clampWindowX(heatmapState.windowX);
+        }
+        if (typeof origin.y === "number") {
+            heatmapState.windowY = clampWindowY(origin.y);
+        } else {
+            heatmapState.windowY = clampWindowY(heatmapState.windowY);
+        }
+        if (typeof origin.slice === "number") {
+            heatmapState.slice = clampSlice(origin.slice);
+        }
+
+        const viewport = data.viewport || {};
+        let viewWidth = typeof viewport.width === "number" ? viewport.width : heatmapState.viewWidth;
+        let viewHeight = typeof viewport.height === "number" ? viewport.height : heatmapState.viewHeight;
+        viewWidth = Math.max(1, Math.floor(viewWidth));
+        viewHeight = Math.max(1, Math.floor(viewHeight));
+        viewWidth = Math.min(viewWidth, heatmapState.layout.width);
+        viewHeight = Math.min(viewHeight, heatmapState.layout.height);
+
+        if (heatmapState.viewWidth !== viewWidth || heatmapState.viewHeight !== viewHeight) {
+            heatmapState.viewWidth = viewWidth;
+            heatmapState.viewHeight = viewHeight;
+            ensureHeatmapBuffer(viewWidth, viewHeight);
+        }
+
+        heatmapState.windowX = clampWindowX(heatmapState.windowX);
+        heatmapState.windowY = clampWindowY(heatmapState.windowY);
+        heatmapState.slice = clampSlice(heatmapState.slice);
+
+        heatmapState.min = typeof data.min === "number" ? data.min : undefined;
+        heatmapState.max = typeof data.max === "number" ? data.max : undefined;
+        heatmapState.valid = typeof data.validCount === "number" ? data.validCount : 0;
+
+        const values = Array.isArray(data.values) ? data.values : [];
+        updateHeatmapImage(values, heatmapState.min, heatmapState.max);
+        if (!heatmapState.imageReady) {
+            setHeatmapOverlay("Reached tensor boundary.", "idle");
+        } else {
+            setHeatmapOverlay("", "idle");
+        }
+        syncHeatmapToViewport(false);
+    } catch (err) {
+        if (controller.signal.aborted) {
+            return;
+        }
+        setHeatmapOverlay(`Failed to load heatmap: ${err.message}`, "error");
+    } finally {
+        if (heatmapState.controller === controller) {
+            heatmapState.controller = null;
+        }
+        heatmapState.fetching = false;
+    }
+}
+
+function updateHeatmapImage(values, minValue, maxValue) {
+    ensureHeatmapBuffer(heatmapState.viewWidth, heatmapState.viewHeight);
+
+    if (!heatmapCtx || !heatmapImageData) {
+        heatmapState.imageReady = false;
+        heatmapState.valid = 0;
+        return;
+    }
+
+    const totalPixels = heatmapCanvas.width * heatmapCanvas.height;
+    const buffer = heatmapImageData.data;
+    const min = Number.isFinite(minValue) ? minValue : 0;
+    const max = Number.isFinite(maxValue) ? maxValue : min;
+    const span = max - min;
+
+    for (let i = 0; i < totalPixels; ++i) {
+        const idx = i * 4;
+        buffer[idx] = HEATMAP_BACKGROUND.r;
+        buffer[idx + 1] = HEATMAP_BACKGROUND.g;
+        buffer[idx + 2] = HEATMAP_BACKGROUND.b;
+        buffer[idx + 3] = 255;
+    }
+
+    let valid = 0;
+    const limit = Math.min(totalPixels, Array.isArray(values) ? values.length : 0);
+    for (let i = 0; i < limit; ++i) {
+        const value = values[i];
+        if (typeof value !== "number" || !Number.isFinite(value)) {
+            continue;
+        }
+
+        let norm = span > 0 ? (value - min) / span : 0;
+        if (!Number.isFinite(norm)) {
+            norm = 0;
+        }
+        norm = Math.min(1, Math.max(0, norm));
+        const hue = norm * HEATMAP_HUE_MAX;
+        const color = hslToRgb(hue, 1, 0.5);
+
+        const idx = i * 4;
+        buffer[idx] = color.r;
+        buffer[idx + 1] = color.g;
+        buffer[idx + 2] = color.b;
+        buffer[idx + 3] = 255;
+        valid += 1;
+    }
+
+    heatmapState.valid = valid;
+    heatmapState.imageReady = valid > 0;
+    drawHeatmap();
+}
+
+function openHeatmap(nameEncoded) {
+    const name = decodeURIComponent(nameEncoded);
+    const tensor = tensorData.find((item) => item.name === name);
+    if (!tensor) {
+        setHeatmapOverlay("Tensor not found.", "error");
+        return;
+    }
+
+    heatmapState.tensor = tensor;
+    heatmapState.layout = layoutFromTensor(tensor);
+    heatmapState.windowX = 0;
+    heatmapState.windowY = 0;
+    heatmapState.slice = 0;
+    heatmapState.min = undefined;
+    heatmapState.max = undefined;
+    heatmapState.valid = 0;
+    heatmapState.imageReady = false;
+    if (heatmapState.controller) {
+        heatmapState.controller.abort();
+        heatmapState.controller = null;
+    }
+    heatmapState.viewWidth = 1;
+    heatmapState.viewHeight = 1;
+    syncHeatmapToViewport(false);
+    setHeatmapOverlay("Preparing heatmap…", "loading");
+    void fetchHeatmapWindow();
 }
 
 tensorBody.addEventListener("click", (event) => {
     const target = event.target;
     if (target.tagName === "BUTTON" && target.dataset.name) {
-        previewTensor(target.dataset.name);
+        openHeatmap(target.dataset.name);
     }
 });
+
+const heatmapDragState = {
+    active: false,
+    lastX: 0,
+    lastY: 0,
+    offsetX: 0,
+    offsetY: 0,
+    moved: false,
+};
+
+function heatmapCanvasScale() {
+    const rect = heatmapCanvas.getBoundingClientRect();
+    const scaleX = rect.width > 0 ? heatmapCanvas.width / rect.width : 1;
+    const scaleY = rect.height > 0 ? heatmapCanvas.height / rect.height : 1;
+    return { scaleX, scaleY };
+}
+
+heatmapCanvas.addEventListener("mousedown", (event) => {
+    if (!heatmapState.tensor) {
+        return;
+    }
+    event.preventDefault();
+    heatmapDragState.active = true;
+    heatmapDragState.lastX = event.clientX;
+    heatmapDragState.lastY = event.clientY;
+    heatmapDragState.offsetX = 0;
+    heatmapDragState.offsetY = 0;
+    heatmapDragState.moved = false;
+    heatmapCanvas.classList.add("heatmap-canvas--dragging");
+});
+
+window.addEventListener("mousemove", (event) => {
+    if (!heatmapDragState.active) {
+        return;
+    }
+    const { scaleX, scaleY } = heatmapCanvasScale();
+    const dx = (event.clientX - heatmapDragState.lastX) * scaleX;
+    const dy = (event.clientY - heatmapDragState.lastY) * scaleY;
+    heatmapDragState.lastX = event.clientX;
+    heatmapDragState.lastY = event.clientY;
+
+    if (dx === 0 && dy === 0) {
+        return;
+    }
+
+    const beforeX = heatmapDragState.offsetX;
+    const beforeY = heatmapDragState.offsetY;
+    heatmapDragState.offsetX += dx;
+    heatmapDragState.offsetY += dy;
+    clampDragOffsets();
+    if (heatmapDragState.offsetX !== beforeX || heatmapDragState.offsetY !== beforeY) {
+        heatmapDragState.moved = true;
+    }
+
+    if (heatmapState.imageReady) {
+        drawHeatmap(heatmapDragState.offsetX, heatmapDragState.offsetY);
+    }
+});
+
+function endHeatmapDrag() {
+    if (!heatmapDragState.active) {
+        return;
+    }
+    heatmapDragState.active = false;
+    heatmapCanvas.classList.remove("heatmap-canvas--dragging");
+    clampDragOffsets();
+    if (!heatmapDragState.moved) {
+        drawHeatmap();
+        return;
+    }
+
+    const deltaX = -Math.round(heatmapDragState.offsetX);
+    const deltaY = -Math.round(heatmapDragState.offsetY);
+    heatmapDragState.offsetX = 0;
+    heatmapDragState.offsetY = 0;
+    heatmapDragState.moved = false;
+
+    const nextX = clampWindowX(heatmapState.windowX + deltaX);
+    const nextY = clampWindowY(heatmapState.windowY + deltaY);
+
+    if (nextX !== heatmapState.windowX || nextY !== heatmapState.windowY) {
+        heatmapState.windowX = nextX;
+        heatmapState.windowY = nextY;
+        updateHeatmapHeader();
+        void fetchHeatmapWindow();
+    } else {
+        drawHeatmap();
+    }
+}
+
+window.addEventListener("mouseup", endHeatmapDrag);
+heatmapCanvas.addEventListener("mouseleave", () => {
+    if (!heatmapDragState.active) {
+        return;
+    }
+    endHeatmapDrag();
+});
+
+heatmapCanvas.addEventListener("wheel", (event) => {
+    if (!heatmapState.tensor) {
+        return;
+    }
+    const depth = heatmapState.layout && typeof heatmapState.layout.depth === "number" ? heatmapState.layout.depth : 1;
+    if (depth <= 1) {
+        return;
+    }
+    event.preventDefault();
+    const direction = event.deltaY > 0 ? -1 : 1;
+    const magnitude = Math.max(1, Math.round(Math.abs(event.deltaY) / 120));
+    const nextSlice = clampSlice(heatmapState.slice + direction * magnitude);
+    if (nextSlice !== heatmapState.slice) {
+        heatmapState.slice = nextSlice;
+        updateHeatmapHeader();
+        void fetchHeatmapWindow();
+    }
+}, { passive: false });
+
+window.addEventListener("resize", () => {
+    syncHeatmapToViewport(true);
+});
+
+syncHeatmapToViewport(false);
+updateHeatmapHeader();
+setHeatmapOverlay("Select a tensor to stream its weights.");
 
 (async function init() {
     try {
