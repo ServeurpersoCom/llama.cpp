@@ -207,6 +207,48 @@
             display: inline-flex;
             gap: 0.35rem;
         }
+        .heatmap-visualization {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            width: 100%;
+        }
+        .histogram-canvas-wrapper {
+            position: relative;
+            background: #000;
+            width: 100%;
+            height: 512px;
+            box-sizing: border-box;
+        }
+        #histogram-canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background: #000;
+        }
+        .histogram-overlay {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 1rem;
+            background: rgba(4, 8, 15, 0.78);
+            color: #cdd9f4;
+            font-size: 0.85rem;
+        }
+        .histogram-overlay[hidden] {
+            display: none;
+        }
+        .histogram-overlay--error {
+            background: rgba(168, 34, 70, 0.6);
+            color: #ffe4ef;
+        }
+        .histogram-overlay--loading {
+            background: rgba(26, 86, 219, 0.5);
+            color: #e5f2ff;
+        }
         .heatmap-canvas-wrapper {
             position: relative;
             background: #060b13;
@@ -465,9 +507,15 @@
                     <span>Gain / Offset</span>
                 </label>
             </div>
-            <div class="heatmap-canvas-wrapper">
-                <canvas id="heatmap-canvas" width="1024" height="1024"></canvas>
-                <div class="heatmap-overlay" id="heatmap-overlay">Select a tensor to stream its weights.</div>
+            <div class="heatmap-visualization">
+                <div class="heatmap-canvas-wrapper">
+                    <canvas id="heatmap-canvas" width="1024" height="1024"></canvas>
+                    <div class="heatmap-overlay" id="heatmap-overlay">Select a tensor to stream its weights.</div>
+                </div>
+                <div class="histogram-canvas-wrapper">
+                    <canvas id="histogram-canvas" width="1024" height="512"></canvas>
+                    <div class="histogram-overlay" id="histogram-overlay">Select a tensor to generate its histogram.</div>
+                </div>
             </div>
             <div class="heatmap-help" id="heatmap-help">Drag the canvas to explore the tensor. Use the controls to change slices and tune the contrast with the mouse wheel or the ± buttons.</div>
         </section>
@@ -479,6 +527,15 @@ const modelTitle = document.getElementById("model-title");
 const kvBody = document.getElementById("kv-body");
 const tokenizerContent = document.getElementById("tokenizer-content");
 const tensorBody = document.getElementById("tensor-body");
+const histogramCanvasWrapper = document.querySelector(".histogram-canvas-wrapper");
+const histogramCanvas = document.getElementById("histogram-canvas");
+const histogramOverlay = document.getElementById("histogram-overlay");
+const HISTOGRAM_CANVAS_HEIGHT = 512;
+const histogramCtx = histogramCanvas ? histogramCanvas.getContext("2d") : null;
+if (histogramCtx) {
+    histogramCtx.imageSmoothingEnabled = false;
+}
+
 const heatmapCanvas = document.getElementById("heatmap-canvas");
 const heatmapCanvasWrapper = document.querySelector(".heatmap-canvas-wrapper");
 const heatmapInfo = document.getElementById("heatmap-info");
@@ -573,6 +630,205 @@ heatmapControlElements.forEach((element) => {
     }
 });
 let heatmapImageData = null;
+
+const histogramState = {
+    tensor: null,
+    slice: 0,
+    viewWidth: histogramCanvas ? histogramCanvas.width : 0,
+    viewHeight: histogramCanvas ? histogramCanvas.height : 0,
+    bins: [],
+    maxCount: 0,
+    total: 0,
+    rangeMin: Number.NaN,
+    rangeMax: Number.NaN,
+    fetching: false,
+    controller: null,
+};
+
+function clearHistogramCanvas() {
+    if (!histogramCtx || !histogramCanvas) {
+        return;
+    }
+    histogramCtx.fillStyle = "#000";
+    histogramCtx.fillRect(0, 0, histogramCanvas.width, histogramCanvas.height);
+}
+
+function setHistogramOverlay(message, mode = "idle") {
+    if (!histogramOverlay) {
+        return;
+    }
+    if (!message) {
+        histogramOverlay.hidden = true;
+        histogramOverlay.textContent = "";
+        histogramOverlay.className = "histogram-overlay";
+        return;
+    }
+    histogramOverlay.hidden = false;
+    histogramOverlay.textContent = message;
+    histogramOverlay.className = `histogram-overlay${mode !== "idle" ? ` histogram-overlay--${mode}` : ""}`;
+}
+
+function drawHistogram() {
+    if (!histogramCtx || !histogramCanvas) {
+        return;
+    }
+
+    const width = histogramCanvas.width;
+    const height = histogramCanvas.height;
+    histogramCtx.fillStyle = "#000";
+    histogramCtx.fillRect(0, 0, width, height);
+
+    const bins = Array.isArray(histogramState.bins) ? histogramState.bins : [];
+    const maxCount = histogramState.maxCount;
+
+    if (!Array.isArray(bins) || bins.length === 0 || !Number.isFinite(maxCount) || maxCount <= 0) {
+        return;
+    }
+
+    const binWidth = width / bins.length;
+    histogramCtx.fillStyle = "#fff";
+    for (let i = 0; i < bins.length; ++i) {
+        const raw = bins[i];
+        const count = Number.isFinite(raw) ? Number(raw) : 0;
+        if (count <= 0) {
+            continue;
+        }
+        const scale = count / maxCount;
+        const barHeight = Math.max(1, Math.round(scale * height));
+        const x0 = Math.floor(i * binWidth);
+        const x1 = Math.floor((i + 1) * binWidth);
+        const w = Math.max(1, x1 - x0);
+        const y = height - barHeight;
+        histogramCtx.fillRect(x0, y, w, barHeight);
+    }
+}
+
+function syncHistogramToViewport(fetchAfterResize) {
+    if (!histogramCanvas || !histogramCanvasWrapper) {
+        return;
+    }
+    if (histogramCanvasWrapper.offsetParent === null) {
+        return;
+    }
+
+    const targetWidth = Math.max(1, Math.floor(histogramCanvasWrapper.clientWidth || histogramCanvasWrapper.offsetWidth || 1));
+    const targetHeight = HISTOGRAM_CANVAS_HEIGHT;
+
+    const widthChanged = targetWidth !== histogramState.viewWidth;
+    const heightChanged = targetHeight !== histogramState.viewHeight;
+
+    if (widthChanged || heightChanged) {
+        histogramState.viewWidth = targetWidth;
+        histogramState.viewHeight = targetHeight;
+        histogramCanvas.width = targetWidth;
+        histogramCanvas.height = targetHeight;
+        if (histogramCtx) {
+            histogramCtx.imageSmoothingEnabled = false;
+        }
+        histogramState.bins = [];
+        histogramState.maxCount = 0;
+        histogramState.total = 0;
+        clearHistogramCanvas();
+        if (heatmapState.tensor && fetchAfterResize) {
+            void fetchHistogram();
+        }
+        return;
+    }
+
+    if (histogramState.bins.length > 0 && histogramState.maxCount > 0) {
+        drawHistogram();
+    }
+}
+
+async function fetchHistogram() {
+    if (!heatmapState.tensor || !histogramCanvas) {
+        return;
+    }
+
+    if (histogramState.controller) {
+        histogramState.controller.abort();
+        histogramState.controller = null;
+    }
+
+    const width = Math.max(1, Math.floor(histogramState.viewWidth || histogramCanvas.width || 1));
+    const height = Math.max(1, Math.floor(histogramState.viewHeight || histogramCanvas.height || 1));
+
+    const controller = new AbortController();
+    histogramState.controller = controller;
+    histogramState.fetching = true;
+    setHistogramOverlay("Generating histogram…", "loading");
+
+    try {
+        const name = encodeURIComponent(heatmapState.tensor.name);
+        const params = new URLSearchParams();
+        params.set("width", String(width));
+        params.set("height", String(height));
+        params.set("slice", String(heatmapState.slice));
+        const response = await fetch(`api/tensors/${name}/histogram?${params.toString()}`, { signal: controller.signal });
+        if (!response.ok) {
+            throw new Error(`${response.status} ${response.statusText}`.trim());
+        }
+        const data = await response.json();
+        const bins = Array.isArray(data.bins)
+            ? data.bins.map((value) => {
+                const num = Number(value);
+                return Number.isFinite(num) && num > 0 ? num : 0;
+            })
+            : [];
+        const maxCount = Number.isFinite(data.maxCount) ? Number(data.maxCount) : 0;
+        const rangeMin = Number.isFinite(data.min) ? Number(data.min) : Number.NaN;
+        const rangeMax = Number.isFinite(data.max) ? Number(data.max) : Number.NaN;
+        histogramState.tensor = heatmapState.tensor;
+        histogramState.slice = typeof data.slice === "number" ? data.slice : heatmapState.slice;
+        histogramState.bins = bins;
+        histogramState.maxCount = maxCount;
+        histogramState.rangeMin = rangeMin;
+        histogramState.rangeMax = rangeMax;
+        if (Number.isFinite(data.total)) {
+            histogramState.total = Number(data.total);
+        } else {
+            histogramState.total = bins.reduce((sum, value) => sum + value, 0);
+        }
+
+        if (bins.length === 0 || maxCount <= 0) {
+            clearHistogramCanvas();
+            setHistogramOverlay("No histogram data available for this slice.");
+            return;
+        }
+
+        setHistogramOverlay("", "idle");
+        drawHistogram();
+    } catch (err) {
+        if (controller.signal.aborted) {
+            return;
+        }
+        clearHistogramCanvas();
+        setHistogramOverlay(`Failed to load histogram: ${err.message}`, "error");
+    } finally {
+        if (histogramState.controller === controller) {
+            histogramState.controller = null;
+        }
+        histogramState.fetching = false;
+    }
+}
+
+function resetHistogram(message = "Select a tensor to generate its histogram.") {
+    if (histogramState.controller) {
+        histogramState.controller.abort();
+        histogramState.controller = null;
+    }
+    histogramState.tensor = null;
+    histogramState.slice = 0;
+    histogramState.bins = [];
+    histogramState.maxCount = 0;
+    histogramState.total = 0;
+    histogramState.rangeMin = Number.NaN;
+    histogramState.rangeMax = Number.NaN;
+    histogramState.fetching = false;
+    clearHistogramCanvas();
+    setHistogramOverlay(message);
+    syncHistogramToViewport(false);
+}
 
 const HEATMAP_BACKGROUND = { r: 15, g: 23, b: 42 };
 const HEATMAP_HUE_MAX = 270;
@@ -1123,6 +1379,7 @@ function resetViewer(message = NO_MODEL_MESSAGE) {
     tensorData = [];
     tokenizerState = { ...tokenizerState, offset: 0, total: 0 };
     refreshHeatmapTensorSelect();
+    resetHistogram(message);
     resetHeatmap(message);
 }
 
@@ -1575,6 +1832,10 @@ function setHeatmapOverlay(message, mode = "idle") {
 }
 
 function resetHeatmap(message = "Select a tensor to stream its weights.") {
+    const histogramMessage = message === "Select a tensor to stream its weights."
+        ? "Select a tensor to generate its histogram."
+        : message;
+    resetHistogram(histogramMessage);
     if (heatmapState.controller) {
         heatmapState.controller.abort();
         heatmapState.controller = null;
@@ -1700,6 +1961,7 @@ function ensureHeatmapBuffer(width, height) {
 }
 
 function syncHeatmapToViewport(fetchAfterResize) {
+    syncHistogramToViewport(fetchAfterResize && !!heatmapState.tensor);
     if (heatmapCanvasWrapper && heatmapCanvasWrapper.offsetParent === null) {
         return;
     }
@@ -1910,6 +2172,10 @@ async function fetchHeatmapWindow() {
         heatmapState.windowX = clampWindowX(heatmapState.windowX);
         heatmapState.windowY = clampWindowY(heatmapState.windowY);
         heatmapState.slice = clampSlice(heatmapState.slice);
+        if (histogramState.slice !== heatmapState.slice && heatmapState.tensor) {
+            histogramState.slice = heatmapState.slice;
+            void fetchHistogram();
+        }
 
         heatmapState.autoMin = typeof data.min === "number" ? data.min : undefined;
         heatmapState.autoMax = typeof data.max === "number" ? data.max : undefined;
@@ -2012,6 +2278,11 @@ function openHeatmap(nameEncoded) {
     resetHeatmap();
     heatmapState.tensor = tensor;
     heatmapState.layout = layoutFromTensor(tensor);
+    histogramState.tensor = tensor;
+    histogramState.slice = heatmapState.slice;
+    syncHistogramToViewport(false);
+    setHistogramOverlay("Generating histogram…", "loading");
+    void fetchHistogram();
     syncHeatmapToViewport(false);
     syncHeatmapControls();
     setHeatmapOverlay("Preparing heatmap…", "loading");
@@ -2041,6 +2312,10 @@ function commitSliceInput() {
     const nextSlice = clampSlice(value - 1);
     if (nextSlice !== heatmapState.slice) {
         heatmapState.slice = nextSlice;
+        histogramState.slice = nextSlice;
+        if (heatmapState.tensor) {
+            void fetchHistogram();
+        }
         updateHeatmapHeader();
         void fetchHeatmapWindow();
     }
