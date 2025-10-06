@@ -18,6 +18,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <utility>
@@ -42,11 +43,19 @@ struct tensor_entry {
     std::string              name;
     ggml_tensor *            tensor = nullptr;
     int64_t                  tensor_index = -1;
+    size_t                   state_index = 0;
     size_t                   offset = 0;
     size_t                   n_elements = 0;
     size_t                   n_bytes = 0;
     std::vector<int64_t>     shape;
     tensor_layout            layout;
+};
+
+struct tensor_slice_stats {
+    bool   computed = false;
+    size_t valid    = 0;
+    float  min      = 0.0f;
+    float  max      = 0.0f;
 };
 
 struct tokenizer_info {
@@ -57,16 +66,18 @@ struct tokenizer_info {
 };
 
 struct viewer_state {
-    std::string               model_path;
-    std::string               relative_path;
-    size_t                    file_size = 0;
-    gguf_context_ptr          gguf;
-    ggml_context_ptr          tensor_ctx;
-    size_t                    data_offset = 0;
-    size_t                    alignment   = 0;
-    std::vector<tensor_entry> tensors;
-    std::unordered_map<std::string, size_t> tensor_index_by_name;
-    tokenizer_info            tokenizer;
+    std::string                                             model_path;
+    std::string                                             relative_path;
+    size_t                                                  file_size = 0;
+    gguf_context_ptr                                        gguf;
+    ggml_context_ptr                                        tensor_ctx;
+    size_t                                                  data_offset = 0;
+    size_t                                                  alignment   = 0;
+    std::vector<tensor_entry>                               tensors;
+    std::unordered_map<std::string, size_t>                 tensor_index_by_name;
+    tokenizer_info                                          tokenizer;
+    mutable std::mutex                                      slice_cache_mutex;
+    mutable std::vector<std::vector<tensor_slice_stats>>    slice_stats_cache;
 };
 
 struct server_state {
@@ -199,7 +210,7 @@ void set_json_response(httplib::Response & res, const json & body, int status = 
     res.set_content(body.dump(), "application/json");
 }
 
-viewer_state load_state(const std::string & model_path);
+std::shared_ptr<viewer_state> load_state(const std::string & model_path);
 
 json make_error(const std::string & message) {
     json body;
@@ -800,6 +811,86 @@ bool tensor_window_values(
     return true;
 }
 
+bool tensor_slice_statistics(
+        const viewer_state & state,
+        const tensor_entry & entry,
+        size_t slice_index,
+        tensor_slice_stats & out,
+        std::string & error) {
+    out = {};
+
+    const tensor_layout & layout = entry.layout;
+    if (layout.depth == 0) {
+        return true;
+    }
+
+    if (slice_index >= layout.depth) {
+        slice_index = layout.depth - 1;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state.slice_cache_mutex);
+        if (entry.state_index < state.slice_stats_cache.size()) {
+            const auto & tensor_cache = state.slice_stats_cache[entry.state_index];
+            if (slice_index < tensor_cache.size() && tensor_cache[slice_index].computed) {
+                out = tensor_cache[slice_index];
+                return true;
+            }
+        }
+    }
+
+    const size_t slice_size = layout.width * layout.height;
+    if (slice_size == 0) {
+        return true;
+    }
+
+    const size_t base_offset = slice_index * slice_size;
+    if (base_offset >= entry.n_elements) {
+        return true;
+    }
+
+    const size_t slice_available = entry.n_elements - base_offset;
+    if (slice_available == 0) {
+        return true;
+    }
+
+    const size_t slice_count = std::min(slice_size, slice_available);
+    if (slice_count == 0) {
+        return true;
+    }
+
+    tensor_window_result slice_window;
+    if (!tensor_window_values(state, entry, base_offset, slice_count, slice_window, error)) {
+        return false;
+    }
+
+    tensor_slice_stats computed;
+    computed.computed = true;
+    computed.valid = slice_window.count;
+    if (slice_window.count > 0) {
+        computed.min = slice_window.min;
+        computed.max = slice_window.max;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state.slice_cache_mutex);
+        if (state.slice_stats_cache.size() < state.tensors.size()) {
+            state.slice_stats_cache.resize(state.tensors.size());
+        }
+        if (entry.state_index >= state.slice_stats_cache.size()) {
+            state.slice_stats_cache.resize(entry.state_index + 1);
+        }
+        auto & tensor_cache = state.slice_stats_cache[entry.state_index];
+        if (tensor_cache.size() < layout.depth) {
+            tensor_cache.resize(layout.depth);
+        }
+        tensor_cache[slice_index] = computed;
+    }
+
+    out = computed;
+    return true;
+}
+
 bool tensor_tile_values(
         const viewer_state & state,
         const tensor_entry & entry,
@@ -860,21 +951,14 @@ bool tensor_tile_values(
         return true;
     }
 
-    const size_t slice_offset = base_offset;
-    const size_t slice_available = entry.n_elements - slice_offset;
-    if (slice_available > 0) {
-        const size_t slice_count = std::min(slice_size, slice_available);
-        if (slice_count > 0) {
-            tensor_window_result slice_window;
-            if (!tensor_window_values(state, entry, slice_offset, slice_count, slice_window, error)) {
-                return false;
-            }
-            if (slice_window.count > 0) {
-                out.slice_min = slice_window.min;
-                out.slice_max = slice_window.max;
-                out.slice_valid = slice_window.count;
-            }
-        }
+    tensor_slice_stats slice_stats;
+    if (!tensor_slice_statistics(state, entry, slice_index, slice_stats, error)) {
+        return false;
+    }
+    if (slice_stats.valid > 0) {
+        out.slice_min = slice_stats.min;
+        out.slice_max = slice_stats.max;
+        out.slice_valid = slice_stats.valid;
     }
 
     const size_t start_offset = base_offset + y * layout.width + x;
@@ -1183,7 +1267,7 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
         if (!viewer) {
             std::shared_ptr<viewer_state> loaded;
             try {
-                loaded = std::make_shared<viewer_state>(load_state(resolved.string()));
+                loaded = load_state(resolved.string());
             } catch (const std::exception & ex) {
                 set_json_response(res, make_error(ex.what()), 500);
                 return;
@@ -1575,27 +1659,27 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
     });
 }
 
-viewer_state load_state(const std::string & model_path) {
-    viewer_state state;
-    state.model_path = model_path;
-    state.file_size = static_cast<size_t>(fs::file_size(model_path));
+std::shared_ptr<viewer_state> load_state(const std::string & model_path) {
+    auto state = std::make_shared<viewer_state>();
+    state->model_path = model_path;
+    state->file_size = static_cast<size_t>(fs::file_size(model_path));
 
     struct ggml_context * tensor_ctx_raw = nullptr;
     gguf_init_params params;
     params.no_alloc = true;
     params.ctx = &tensor_ctx_raw;
 
-    state.gguf.reset(gguf_init_from_file(model_path.c_str(), params));
-    if (!state.gguf) {
+    state->gguf.reset(gguf_init_from_file(model_path.c_str(), params));
+    if (!state->gguf) {
         throw std::runtime_error("failed to load GGUF metadata");
     }
 
-    state.tensor_ctx.reset(tensor_ctx_raw);
-    state.data_offset = gguf_get_data_offset(state.gguf.get());
-    state.alignment   = gguf_get_alignment(state.gguf.get());
+    state->tensor_ctx.reset(tensor_ctx_raw);
+    state->data_offset = gguf_get_data_offset(state->gguf.get());
+    state->alignment   = gguf_get_alignment(state->gguf.get());
 
     // iterate tensors
-    for (ggml_tensor * cur = ggml_get_first_tensor(state.tensor_ctx.get()); cur != nullptr; cur = ggml_get_next_tensor(state.tensor_ctx.get(), cur)) {
+    for (ggml_tensor * cur = ggml_get_first_tensor(state->tensor_ctx.get()); cur != nullptr; cur = ggml_get_next_tensor(state->tensor_ctx.get(), cur)) {
         tensor_entry entry;
         entry.tensor = cur;
         entry.name = ggml_get_name(cur);
@@ -1603,17 +1687,19 @@ viewer_state load_state(const std::string & model_path) {
         entry.n_bytes = ggml_nbytes(cur);
         entry.shape = tensor_shape(cur);
         entry.layout = compute_tensor_layout(entry.shape, entry.n_elements);
-        entry.tensor_index = gguf_find_tensor(state.gguf.get(), entry.name.c_str());
+        entry.tensor_index = gguf_find_tensor(state->gguf.get(), entry.name.c_str());
         if (entry.tensor_index >= 0) {
-            entry.offset = gguf_get_tensor_offset(state.gguf.get(), entry.tensor_index);
+            entry.offset = gguf_get_tensor_offset(state->gguf.get(), entry.tensor_index);
         } else {
             entry.offset = 0;
         }
-        state.tensor_index_by_name.emplace(entry.name, state.tensors.size());
-        state.tensors.push_back(std::move(entry));
+        entry.state_index = state->tensors.size();
+        state->tensor_index_by_name.emplace(entry.name, entry.state_index);
+        state->slice_stats_cache.emplace_back(entry.layout.depth);
+        state->tensors.push_back(std::move(entry));
     }
 
-    build_tokenizer_info(state);
+    build_tokenizer_info(*state);
     return state;
 }
 

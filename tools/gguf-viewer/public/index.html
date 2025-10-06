@@ -627,7 +627,7 @@ if (heatmapCtx) {
     heatmapCtx.imageSmoothingEnabled = false;
 }
 
-const initialUrlState = (() => {
+function readUrlState() {
     const params = new URLSearchParams(window.location.search);
     const getString = (key) => {
         const value = params.get(key);
@@ -673,25 +673,61 @@ const initialUrlState = (() => {
         x: getInt("x"),
         y: getInt("y"),
     };
-})();
-
-const pendingHeatmapState = {
-    tensor: initialUrlState.tensor,
-    slice: Number.isInteger(initialUrlState.slice) ? Math.max(0, initialUrlState.slice - 1) : null,
-    min: Number.isFinite(initialUrlState.min) ? initialUrlState.min : null,
-    max: Number.isFinite(initialUrlState.max) ? initialUrlState.max : null,
-    grid: typeof initialUrlState.grid === "boolean" ? initialUrlState.grid : null,
-    x: Number.isFinite(initialUrlState.x) ? Math.max(0, initialUrlState.x) : null,
-    y: Number.isFinite(initialUrlState.y) ? Math.max(0, initialUrlState.y) : null,
-    applied: false,
-};
-
-if (heatmapGridToggle && typeof pendingHeatmapState.grid === "boolean") {
-    heatmapGridToggle.checked = pendingHeatmapState.grid;
 }
 
+function buildPendingHeatmapState(state) {
+    return {
+        tensor: state.tensor,
+        slice: Number.isInteger(state.slice) ? Math.max(0, state.slice - 1) : null,
+        min: Number.isFinite(state.min) ? state.min : null,
+        max: Number.isFinite(state.max) ? state.max : null,
+        grid: typeof state.grid === "boolean" ? state.grid : null,
+        x: Number.isFinite(state.x) ? Math.max(0, state.x) : null,
+        y: Number.isFinite(state.y) ? Math.max(0, state.y) : null,
+        applied: false,
+    };
+}
+
+let currentUrlState = readUrlState();
+let pendingHeatmapState = buildPendingHeatmapState(currentUrlState);
+
+function applyPendingHeatmapPreferences() {
+    if (heatmapGridToggle && typeof pendingHeatmapState.grid === "boolean") {
+        heatmapGridToggle.checked = pendingHeatmapState.grid;
+    }
+}
+
+applyPendingHeatmapPreferences();
+
 let urlSyncReady = false;
-let currentModelPath = initialUrlState.model;
+let currentModelPath = currentUrlState.model;
+let backendSelectedModel = null;
+
+async function syncStateFromSearchParams() {
+    const nextState = readUrlState();
+    const modelChanged = nextState.model !== currentModelPath;
+    currentUrlState = nextState;
+    pendingHeatmapState = buildPendingHeatmapState(nextState);
+    applyPendingHeatmapPreferences();
+
+    if (modelChanged) {
+        backendSelectedModel = null;
+        setCurrentModel(nextState.model, { updateBrowser: true, updateUrl: false });
+        if (nextState.model) {
+            pendingHeatmapState.applied = false;
+            try {
+                await refreshAll();
+            } catch (err) {
+                console.error(err);
+            }
+        } else {
+            resetViewer();
+        }
+        return;
+    }
+
+    applyPendingHeatmapStateIfPossible();
+}
 
 function updateUrlParams(updates, options = {}) {
     const { force = false } = options;
@@ -720,6 +756,7 @@ function updateUrlParams(updates, options = {}) {
     const query = params.toString();
     const newUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
     window.history.replaceState(null, "", newUrl);
+    currentUrlState = readUrlState();
 }
 
 function withModel(url, model = currentModelPath) {
@@ -746,7 +783,7 @@ function updateModelUrlState(options = {}) {
 }
 
 function updateHeatmapUrlState(options = {}) {
-    const { force = false } = options;
+    const { force = false, syncPending = false } = options;
     if (!force && !urlSyncReady) {
         return;
     }
@@ -770,6 +807,32 @@ function updateHeatmapUrlState(options = {}) {
         updates.y = Number.isFinite(heatmapState.windowY) ? Math.max(0, Math.floor(heatmapState.windowY)) : null;
     }
     updateUrlParams(updates, { force });
+    if (!syncPending) {
+        return;
+    }
+    if (currentModelPath && heatmapState.tensor) {
+        pendingHeatmapState = {
+            tensor: heatmapState.tensor.name || null,
+            slice: Number.isInteger(heatmapState.slice) ? heatmapState.slice : null,
+            min: Number.isFinite(heatmapState.scaleMin) ? heatmapState.scaleMin : null,
+            max: Number.isFinite(heatmapState.scaleMax) ? heatmapState.scaleMax : null,
+            grid: typeof heatmapState.gridVisible === "boolean" ? heatmapState.gridVisible : null,
+            x: Number.isFinite(heatmapState.windowX) ? Math.max(0, Math.floor(heatmapState.windowX)) : null,
+            y: Number.isFinite(heatmapState.windowY) ? Math.max(0, Math.floor(heatmapState.windowY)) : null,
+            applied: true,
+        };
+    } else {
+        pendingHeatmapState = {
+            tensor: null,
+            slice: null,
+            min: null,
+            max: null,
+            grid: typeof heatmapState.gridVisible === "boolean" ? heatmapState.gridVisible : null,
+            x: null,
+            y: null,
+            applied: true,
+        };
+    }
 }
 
 function syncFullUrlState(options = {}) {
@@ -899,12 +962,17 @@ const tokenTooltipState = {
 
 const DEFAULT_PAGE = "browser";
 const validPages = new Set(Array.from(pageContainers, (page) => page.dataset.pageId));
-let activePage = DEFAULT_PAGE;
+let activePage = null;
 
-function setActivePage(pageId, { updateHash = true } = {}) {
-    const targetPage = validPages.has(pageId) ? pageId : DEFAULT_PAGE;
+function normalizePageId(pageId) {
+    return validPages.has(pageId) ? pageId : DEFAULT_PAGE;
+}
+
+function renderActivePage(pageId) {
+    const targetPage = normalizePageId(pageId);
     const previousPage = activePage;
     activePage = targetPage;
+
     pageContainers.forEach((page) => {
         const isActive = page.dataset.pageId === targetPage;
         page.classList.toggle("page--active", isActive);
@@ -919,10 +987,6 @@ function setActivePage(pageId, { updateHash = true } = {}) {
         }
     });
 
-    if (updateHash && window.location.hash.slice(1) !== targetPage) {
-        window.location.hash = targetPage;
-    }
-
     if (targetPage === "browser" && previousPage !== "browser") {
         void loadModelList();
     }
@@ -934,24 +998,39 @@ function setActivePage(pageId, { updateHash = true } = {}) {
     if (targetPage === "heatmap" || previousPage === "heatmap") {
         syncHeatmapToViewport(!!heatmapState.tensor);
     }
+
+    if (targetPage === "heatmap") {
+        applyPendingHeatmapStateIfPossible();
+    }
+}
+
+function syncPageFromLocation() {
+    const hash = window.location.hash.slice(1);
+    const target = hash && hash.length > 0 ? hash : DEFAULT_PAGE;
+    renderActivePage(target);
 }
 
 tabButtons.forEach((button) => {
     button.addEventListener("click", () => {
         const target = button.dataset.targetPage;
-        if (target) {
-            setActivePage(target);
+        if (!target) {
+            return;
+        }
+        const normalized = normalizePageId(target);
+        if (window.location.hash.slice(1) !== normalized) {
+            window.location.hash = normalized;
+        } else {
+            renderActivePage(normalized);
         }
     });
 });
 
 window.addEventListener("hashchange", () => {
-    const hash = window.location.hash.slice(1);
-    if (hash) {
-        setActivePage(hash, { updateHash: false });
-    } else {
-        setActivePage(DEFAULT_PAGE, { updateHash: false });
-    }
+    syncPageFromLocation();
+});
+
+window.addEventListener("popstate", () => {
+    void syncStateFromSearchParams();
 });
 
 suppressNativeValidation(heatmapMinInput);
@@ -1274,7 +1353,7 @@ const heatmapDragState = {
     moved: false,
 };
 
-setActivePage(window.location.hash.slice(1) || DEFAULT_PAGE, { updateHash: false });
+syncPageFromLocation();
 
 function getSliceBounds() {
     let minBound = Number.isFinite(heatmapState.sliceMinBound) ? heatmapState.sliceMinBound : undefined;
@@ -1404,7 +1483,7 @@ function setHeatmapScale(minValue, maxValue, options = {}) {
         updateHeatmapHeader();
         syncHeatmapControls();
     }
-    updateHeatmapUrlState();
+    updateHeatmapUrlState({ syncPending: true });
 }
 
 function sanitizeStepValue(value) {
@@ -1688,6 +1767,18 @@ function formatTooltipFloat(value) {
     return tooltipFloatFormatter.format(value);
 }
 
+async function requestModelSelection(path) {
+    if (!path) {
+        throw new Error("Model path is required");
+    }
+    const response = await fetchJSON(`api/models/select?model=${encodeURIComponent(path)}`, { method: "POST" });
+    const selected = typeof response?.selected === "string" && response.selected.length > 0
+        ? response.selected
+        : path;
+    backendSelectedModel = selected;
+    return selected;
+}
+
 function createInfoCard(title, value) {
     const div = document.createElement("div");
     div.className = "info-card";
@@ -1704,7 +1795,12 @@ function setCurrentModel(path, options = {}) {
     const { updateBrowser = true, updateUrl = true } = options;
     const normalized = typeof path === "string" && path.length > 0 ? path : null;
     currentModelPath = normalized;
-    modelBrowserState = { ...modelBrowserState, selected: normalized };
+    if (!normalized) {
+        backendSelectedModel = null;
+    }
+    const items = Array.isArray(modelBrowserState.items) ? modelBrowserState.items : [];
+    const updatedItems = items.map((item) => ({ ...item, selected: !!normalized && item.path === normalized }));
+    modelBrowserState = { ...modelBrowserState, selected: normalized, items: updatedItems };
     if (updateBrowser) {
         renderModelBrowser();
     }
@@ -1824,17 +1920,13 @@ async function selectModel(path) {
         return;
     }
     if (currentModelPath && currentModelPath === path) {
-        setActivePage("metadata");
         return;
     }
 
     selectingModel = true;
     let errorMessage = null;
     try {
-        const response = await fetchJSON(`api/models/select?model=${encodeURIComponent(path)}`, { method: "POST" });
-        const selectedPath = typeof response?.selected === "string" && response.selected.length > 0
-            ? response.selected
-            : path;
+        const selectedPath = await requestModelSelection(path);
         setCurrentModel(selectedPath, { updateBrowser: false });
         pendingHeatmapState.applied = true;
         pendingHeatmapState.tensor = null;
@@ -1843,9 +1935,8 @@ async function selectModel(path) {
         pendingHeatmapState.max = null;
         pendingHeatmapState.x = null;
         pendingHeatmapState.y = null;
-        await refreshAll();
+        await refreshAll({ ensureSelected: false });
         await loadModelList();
-        setActivePage("metadata");
     } catch (err) {
         errorMessage = err.status === 409 ? NO_MODEL_MESSAGE : err.message;
     } finally {
@@ -1876,10 +1967,24 @@ function resetViewer(message = NO_MODEL_MESSAGE) {
     resetHeatmap(message);
 }
 
-async function refreshAll() {
+async function refreshAll(options = {}) {
+    const { ensureSelected = true } = options;
     if (!currentModelPath) {
         resetViewer();
         return;
+    }
+
+    let resolvedModel = currentModelPath;
+    if (ensureSelected && backendSelectedModel !== currentModelPath) {
+        try {
+            resolvedModel = await requestModelSelection(currentModelPath);
+        } catch (err) {
+            resetViewer(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
+            throw err;
+        }
+        if (resolvedModel !== currentModelPath) {
+            setCurrentModel(resolvedModel, { updateBrowser: true });
+        }
     }
 
     updateModelUrlState();
@@ -2331,6 +2436,55 @@ function refreshHeatmapTensorSelect() {
     heatmapTensorSelect.disabled = tensorData.length === 0;
 }
 
+function applyPendingHeatmapStateIfPossible() {
+    if (pendingHeatmapState.applied) {
+        return;
+    }
+    if (normalizePageId(activePage || DEFAULT_PAGE) !== "heatmap") {
+        return;
+    }
+    if (!Array.isArray(tensorData) || tensorData.length === 0) {
+        return;
+    }
+
+    pendingHeatmapState.applied = true;
+
+    if (!pendingHeatmapState.tensor) {
+        return;
+    }
+
+    const tensor = tensorData.find((item) => item.name === pendingHeatmapState.tensor);
+    if (!tensor) {
+        return;
+    }
+
+    const options = {};
+    if (Number.isInteger(pendingHeatmapState.slice) && pendingHeatmapState.slice >= 0) {
+        options.initialSlice = pendingHeatmapState.slice;
+    }
+
+    const windowOptions = {};
+    if (Number.isInteger(pendingHeatmapState.x) && pendingHeatmapState.x >= 0) {
+        windowOptions.x = pendingHeatmapState.x;
+    }
+    if (Number.isInteger(pendingHeatmapState.y) && pendingHeatmapState.y >= 0) {
+        windowOptions.y = pendingHeatmapState.y;
+    }
+    if (Object.keys(windowOptions).length > 0) {
+        options.initialWindow = windowOptions;
+    }
+
+    if (Number.isFinite(pendingHeatmapState.min) && Number.isFinite(pendingHeatmapState.max)) {
+        options.initialScale = { min: pendingHeatmapState.min, max: pendingHeatmapState.max };
+    }
+
+    if (typeof pendingHeatmapState.grid === "boolean") {
+        options.initialGrid = pendingHeatmapState.grid;
+    }
+
+    openHeatmap(encodeURIComponent(tensor.name), options);
+}
+
 async function loadTensors() {
     try {
         const data = await fetchJSON(withModel("api/tensors"));
@@ -2342,35 +2496,7 @@ async function loadTensors() {
             tensorData.forEach(tensor => tensorBody.appendChild(renderTensorRow(tensor)));
         }
         refreshHeatmapTensorSelect();
-        if (!pendingHeatmapState.applied) {
-            pendingHeatmapState.applied = true;
-            if (pendingHeatmapState.tensor) {
-                const tensor = tensorData.find((item) => item.name === pendingHeatmapState.tensor);
-                if (tensor) {
-                    const options = {};
-                    if (Number.isInteger(pendingHeatmapState.slice) && pendingHeatmapState.slice >= 0) {
-                        options.initialSlice = pendingHeatmapState.slice;
-                    }
-                    const windowOptions = {};
-                    if (Number.isInteger(pendingHeatmapState.x) && pendingHeatmapState.x >= 0) {
-                        windowOptions.x = pendingHeatmapState.x;
-                    }
-                    if (Number.isInteger(pendingHeatmapState.y) && pendingHeatmapState.y >= 0) {
-                        windowOptions.y = pendingHeatmapState.y;
-                    }
-                    if (Object.keys(windowOptions).length > 0) {
-                        options.initialWindow = windowOptions;
-                    }
-                    if (Number.isFinite(pendingHeatmapState.min) && Number.isFinite(pendingHeatmapState.max)) {
-                        options.initialScale = { min: pendingHeatmapState.min, max: pendingHeatmapState.max };
-                    }
-                    if (typeof pendingHeatmapState.grid === "boolean") {
-                        options.initialGrid = pendingHeatmapState.grid;
-                    }
-                    openHeatmap(encodeURIComponent(tensor.name), options);
-                }
-            }
-        }
+        applyPendingHeatmapStateIfPossible();
     } catch (err) {
         tensorData = [];
         tensorBody.innerHTML = "";
@@ -3019,7 +3145,7 @@ async function fetchHeatmapWindow() {
         ) {
             requestHeatmapValue(heatmapHoverState.globalX, heatmapHoverState.globalY, heatmapState.slice);
         }
-        updateHeatmapUrlState();
+        updateHeatmapUrlState({ syncPending: true });
         syncHeatmapToViewport(false);
     } catch (err) {
         if (controller.signal.aborted) {
@@ -3031,7 +3157,7 @@ async function fetchHeatmapWindow() {
             heatmapState.controller = null;
         }
         heatmapState.fetching = false;
-        updateHeatmapUrlState();
+        updateHeatmapUrlState({ syncPending: true });
     }
 }
 
@@ -3095,7 +3221,6 @@ function openHeatmap(nameEncoded, options = {}) {
         return;
     }
 
-    setActivePage("heatmap");
     resetHeatmap();
     heatmapState.tensor = tensor;
     heatmapState.layout = layoutFromTensor(tensor);
@@ -3135,12 +3260,26 @@ function openHeatmap(nameEncoded, options = {}) {
     syncHeatmapControls();
     setHeatmapOverlay("Preparing heatmap…", "loading");
     void fetchHeatmapWindow();
-    updateHeatmapUrlState();
+    updateHeatmapUrlState({ syncPending: true });
+
+    pendingHeatmapState = {
+        tensor: tensor.name,
+        slice: heatmapState.slice,
+        min: Number.isFinite(heatmapState.scaleMin) ? heatmapState.scaleMin : null,
+        max: Number.isFinite(heatmapState.scaleMax) ? heatmapState.scaleMax : null,
+        grid: typeof heatmapState.gridVisible === "boolean" ? heatmapState.gridVisible : null,
+        x: Number.isFinite(heatmapState.windowX) ? Math.max(0, Math.floor(heatmapState.windowX)) : null,
+        y: Number.isFinite(heatmapState.windowY) ? Math.max(0, Math.floor(heatmapState.windowY)) : null,
+        applied: true,
+    };
 }
 
 tensorBody.addEventListener("click", (event) => {
     const target = event.target;
     if (target.tagName === "BUTTON" && target.dataset.name) {
+        if (normalizePageId(window.location.hash.slice(1)) !== "heatmap") {
+            window.location.hash = "heatmap";
+        }
         openHeatmap(target.dataset.name);
     }
 });
@@ -3167,7 +3306,7 @@ function commitSliceInput() {
         }
         updateHeatmapHeader();
         void fetchHeatmapWindow();
-        updateHeatmapUrlState();
+        updateHeatmapUrlState({ syncPending: true });
     }
 }
 
@@ -3283,7 +3422,7 @@ if (heatmapGridToggle) {
             heatmapState.gridVisible = next;
         }
         syncHeatmapControls();
-        updateHeatmapUrlState();
+        updateHeatmapUrlState({ syncPending: true });
     };
     heatmapGridToggle.addEventListener("change", commitGridVisibility);
     heatmapGridToggle.addEventListener("keydown", (event) => {
@@ -3424,7 +3563,7 @@ function endHeatmapDrag() {
         heatmapState.windowX = nextX;
         heatmapState.windowY = nextY;
         updateHeatmapHeader();
-        updateHeatmapUrlState();
+        updateHeatmapUrlState({ syncPending: true });
         void fetchHeatmapWindow();
     } else {
         drawHeatmap();
