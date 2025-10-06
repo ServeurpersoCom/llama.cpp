@@ -488,6 +488,150 @@ struct tensor_histogram_result {
     std::vector<uint64_t> bins;
 };
 
+struct tensor_value_details {
+    size_t element_index      = 0;
+    size_t element_count      = 0;
+    size_t block_index        = 0;
+    size_t index_in_block     = 0;
+    size_t tensor_byte_offset = 0;
+    size_t file_byte_offset   = 0;
+    float  value              = 0.0f;
+    bool   value_valid        = false;
+};
+
+bool tensor_element_details(
+        const viewer_state & state,
+        const tensor_entry & entry,
+        size_t slice_index,
+        size_t x,
+        size_t y,
+        tensor_value_details & out,
+        std::string & error) {
+    out = {};
+
+    const tensor_layout & layout = entry.layout;
+    if (layout.width == 0 || layout.height == 0 || layout.depth == 0) {
+        error = "invalid tensor layout";
+        return false;
+    }
+
+    if (slice_index >= layout.depth) {
+        slice_index = layout.depth - 1;
+    }
+    if (x >= layout.width) {
+        x = layout.width - 1;
+    }
+    if (y >= layout.height) {
+        y = layout.height - 1;
+    }
+
+    const size_t slice_size = layout.width * layout.height;
+    if (slice_size == 0) {
+        error = "invalid slice size";
+        return false;
+    }
+
+    const size_t element_index = slice_index * slice_size + y * layout.width + x;
+    if (element_index >= entry.n_elements) {
+        error = "element outside tensor";
+        return false;
+    }
+
+    const auto * traits = ggml_get_type_traits(entry.tensor->type);
+    if (!traits) {
+        error = "unknown tensor type";
+        return false;
+    }
+
+    const size_t block_size = traits->blck_size > 0 ? static_cast<size_t>(traits->blck_size) : 1;
+    const size_t type_size  = traits->type_size;
+    if (type_size == 0) {
+        error = "invalid tensor type size";
+        return false;
+    }
+
+    const size_t block_index = element_index / block_size;
+    const size_t index_in_block = element_index % block_size;
+    const size_t block_offset_bytes = block_index * type_size;
+
+    const size_t absolute_offset = state.data_offset + entry.offset + block_offset_bytes;
+    if (absolute_offset + type_size > state.file_size) {
+        error = "tensor data outside file";
+        return false;
+    }
+
+    std::ifstream file(state.model_path, std::ios::binary);
+    if (!file) {
+        error = "failed to open model file";
+        return false;
+    }
+
+    file.seekg(static_cast<std::streamoff>(absolute_offset), std::ios::beg);
+    std::vector<uint8_t> raw_block(type_size);
+    file.read(reinterpret_cast<char *>(raw_block.data()), static_cast<std::streamsize>(type_size));
+    if (file.gcount() < static_cast<std::streamsize>(type_size)) {
+        error = "failed to read tensor block";
+        return false;
+    }
+
+    const size_t elements_in_block = std::min(block_size, entry.n_elements - block_index * block_size);
+    std::vector<float> converted(block_size, 0.0f);
+
+    if (entry.tensor->type == GGML_TYPE_F32) {
+        const auto * src = reinterpret_cast<const float *>(raw_block.data());
+        std::copy(src, src + block_size, converted.begin());
+    } else if (entry.tensor->type == GGML_TYPE_F16) {
+        const auto * src = reinterpret_cast<const ggml_fp16_t *>(raw_block.data());
+        for (size_t i = 0; i < block_size; ++i) {
+            converted[i] = ggml_fp16_to_fp32(src[i]);
+        }
+    } else if (entry.tensor->type == GGML_TYPE_BF16) {
+        const auto * src = reinterpret_cast<const ggml_bf16_t *>(raw_block.data());
+        for (size_t i = 0; i < block_size; ++i) {
+            converted[i] = ggml_bf16_to_fp32(src[i]);
+        }
+    } else if (entry.tensor->type == GGML_TYPE_I8) {
+        const auto * src = reinterpret_cast<const int8_t *>(raw_block.data());
+        for (size_t i = 0; i < block_size; ++i) {
+            converted[i] = static_cast<float>(src[i]);
+        }
+    } else if (entry.tensor->type == GGML_TYPE_I16) {
+        const auto * src = reinterpret_cast<const int16_t *>(raw_block.data());
+        for (size_t i = 0; i < block_size; ++i) {
+            converted[i] = static_cast<float>(src[i]);
+        }
+    } else if (entry.tensor->type == GGML_TYPE_I32) {
+        const auto * src = reinterpret_cast<const int32_t *>(raw_block.data());
+        for (size_t i = 0; i < block_size; ++i) {
+            converted[i] = static_cast<float>(src[i]);
+        }
+    } else if (entry.tensor->type == GGML_TYPE_I64) {
+        const auto * src = reinterpret_cast<const int64_t *>(raw_block.data());
+        for (size_t i = 0; i < block_size; ++i) {
+            converted[i] = static_cast<float>(src[i]);
+        }
+    } else if (traits->to_float) {
+        traits->to_float(raw_block.data(), converted.data(), static_cast<int64_t>(block_size));
+    } else {
+        for (size_t i = 0; i < block_size; ++i) {
+            converted[i] = static_cast<float>(raw_block[i % raw_block.size()]);
+        }
+    }
+
+    const float value = converted[index_in_block];
+
+    out.element_index = element_index;
+    out.element_count = entry.n_elements;
+    out.block_index = block_index;
+    out.index_in_block = index_in_block;
+    out.tensor_byte_offset = entry.offset + block_offset_bytes;
+    out.file_byte_offset = absolute_offset;
+    out.value = value;
+    out.value_valid = index_in_block < elements_in_block;
+
+    return true;
+}
+
 bool tensor_window_values(
         const viewer_state & state,
         const tensor_entry & entry,
@@ -1156,6 +1300,76 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
                 }
             }
 
+            set_json_response(res, body);
+        });
+    });
+
+    server.Get(R"(/api/tensors/(.+)/value)", [state](const httplib::Request & req, httplib::Response & res) {
+        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+            const std::string name = url_decode(req.matches[1]);
+            auto it = viewer->tensor_index_by_name.find(name);
+            if (it == viewer->tensor_index_by_name.end()) {
+                set_json_response(res, make_error("tensor not found"), 404);
+                return;
+            }
+
+            const tensor_entry & entry = viewer->tensors[it->second];
+
+            size_t x = 0;
+            size_t y = 0;
+            size_t slice = 0;
+
+            if (auto value = req.get_param_value("x"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    x = *parsed;
+                }
+            }
+            if (auto value = req.get_param_value("y"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    y = *parsed;
+                }
+            }
+            if (auto value = req.get_param_value("slice"); !value.empty()) {
+                if (auto parsed = parse_size_t(value)) {
+                    slice = *parsed;
+                }
+            }
+
+            tensor_value_details details;
+            std::string error;
+            if (!tensor_element_details(*viewer, entry, slice, x, y, details, error)) {
+                if (error.empty()) {
+                    error = "failed to resolve tensor element";
+                }
+                set_json_response(res, make_error(error), 400);
+                return;
+            }
+
+            const auto * traits = ggml_get_type_traits(entry.tensor->type);
+            const size_t block_size = traits && traits->blck_size > 0 ? static_cast<size_t>(traits->blck_size) : 1;
+
+            json body;
+            body["tensor"] = entry.name;
+            body["type"] = ggml_type_name(entry.tensor->type);
+            body["coordinate"] = {
+                {"x", x},
+                {"y", y},
+                {"slice", slice},
+            };
+            body["index"] = details.element_index;
+            body["count"] = details.element_count;
+            body["block"] = {
+                {"index", details.block_index},
+                {"offset", details.index_in_block},
+                {"size", block_size},
+            };
+            body["tensorOffset"] = details.tensor_byte_offset;
+            body["fileOffset"] = details.file_byte_offset;
+            if (details.value_valid) {
+                body["value"] = details.value;
+            } else {
+                body["value"] = nullptr;
+            }
             set_json_response(res, body);
         });
     });

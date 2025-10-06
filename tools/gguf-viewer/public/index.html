@@ -263,7 +263,7 @@
             display: block;
             width: 100%;
             height: 100%;
-            cursor: grab;
+            cursor: crosshair;
             image-rendering: pixelated;
             touch-action: none;
         }
@@ -299,6 +299,47 @@
             align-items: center;
             justify-content: space-between;
             gap: 0.6rem;
+        }
+        .heatmap-tooltip {
+            position: absolute;
+            max-width: 320px;
+            padding: 0.75rem 0.85rem;
+            background: rgba(12, 17, 27, 0.92);
+            color: #f4f8ff;
+            box-shadow: 0 0.7rem 1.8rem rgba(0, 0, 0, 0.35);
+            pointer-events: none;
+            font-size: 0.78rem;
+            line-height: 1.35;
+            z-index: 5;
+        }
+        .heatmap-tooltip__title {
+            font-weight: 600;
+            margin-bottom: 0.35rem;
+            letter-spacing: 0.015em;
+        }
+        .heatmap-tooltip__grid {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 0.2rem 0.75rem;
+        }
+        .heatmap-tooltip__label {
+            color: rgba(255, 255, 255, 0.7);
+            white-space: nowrap;
+        }
+        .heatmap-tooltip__value {
+            text-align: right;
+            white-space: nowrap;
+        }
+        .heatmap-tooltip__value--wrap {
+            white-space: pre-wrap;
+            word-break: break-word;
+            text-align: left;
+        }
+        .heatmap-tooltip__value--left {
+            text-align: left;
+        }
+        .tooltip-host {
+            position: relative;
         }
         .heatmap-header-title {
             font-size: 0.95rem;
@@ -336,6 +377,7 @@
             display: grid;
             gap: 0.25rem;
             margin-top: 0.6rem;
+            position: relative;
         }
         .token-cell {
             background: #121c30;
@@ -524,6 +566,7 @@
             <div class="heatmap-visualization">
                 <div class="heatmap-canvas-wrapper">
                     <canvas id="heatmap-canvas" width="1024" height="1024"></canvas>
+                    <div class="heatmap-tooltip" id="heatmap-tooltip" hidden></div>
                     <div class="heatmap-overlay" id="heatmap-overlay">Select a tensor to stream its weights.</div>
                 </div>
                 <div class="histogram-canvas-wrapper">
@@ -554,6 +597,7 @@ if (histogramCtx) {
 
 const heatmapCanvas = document.getElementById("heatmap-canvas");
 const heatmapCanvasWrapper = document.querySelector(".heatmap-canvas-wrapper");
+const heatmapTooltip = document.getElementById("heatmap-tooltip");
 const heatmapInfo = document.getElementById("heatmap-info");
 const heatmapStatus = document.getElementById("heatmap-status");
 const heatmapOverlay = document.getElementById("heatmap-overlay");
@@ -583,6 +627,126 @@ if (heatmapCtx) {
     heatmapCtx.imageSmoothingEnabled = false;
 }
 
+const tooltipIntegerFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+const tooltipFloatFormatter = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 6 });
+
+let activeTooltipHost = heatmapCanvasWrapper || null;
+if (activeTooltipHost) {
+    activeTooltipHost.classList.add("tooltip-host");
+}
+
+function setTooltipHost(host) {
+    if (!heatmapTooltip) {
+        activeTooltipHost = null;
+        return;
+    }
+    if (!host) {
+        activeTooltipHost = null;
+        return;
+    }
+    if (!host.classList.contains("tooltip-host")) {
+        host.classList.add("tooltip-host");
+    }
+    if (heatmapTooltip.parentElement !== host) {
+        host.appendChild(heatmapTooltip);
+    }
+    activeTooltipHost = host;
+}
+
+function hideTooltipElement() {
+    if (!heatmapTooltip) {
+        return;
+    }
+    heatmapTooltip.hidden = true;
+    heatmapTooltip.textContent = "";
+}
+
+function renderTooltipContent(titleText, rows = []) {
+    if (!heatmapTooltip) {
+        return;
+    }
+    heatmapTooltip.innerHTML = "";
+
+    if (titleText) {
+        const title = document.createElement("div");
+        title.className = "heatmap-tooltip__title";
+        title.textContent = titleText;
+        heatmapTooltip.appendChild(title);
+    }
+
+    const normalizedRows = Array.isArray(rows)
+        ? rows.filter((row) => row && row.value !== null && row.value !== undefined && row.value !== "")
+        : [];
+
+    if (normalizedRows.length > 0) {
+        const grid = document.createElement("div");
+        grid.className = "heatmap-tooltip__grid";
+
+        normalizedRows.forEach((row) => {
+            const labelEl = document.createElement("div");
+            labelEl.className = "heatmap-tooltip__label";
+            labelEl.textContent = row.label || "";
+
+            const valueEl = document.createElement("div");
+            let valueClass = "heatmap-tooltip__value";
+            if (row.wrap) {
+                valueClass += " heatmap-tooltip__value--wrap";
+            }
+            if (row.align === "left") {
+                valueClass += " heatmap-tooltip__value--left";
+            }
+            valueEl.className = valueClass;
+            valueEl.textContent = typeof row.value === "string" ? row.value : String(row.value);
+
+            grid.appendChild(labelEl);
+            grid.appendChild(valueEl);
+        });
+
+        heatmapTooltip.appendChild(grid);
+    }
+
+    heatmapTooltip.hidden = false;
+}
+
+function positionTooltipWithinHost(host, clientX, clientY) {
+    if (!heatmapTooltip) {
+        return;
+    }
+    const targetHost = host || activeTooltipHost;
+    if (!targetHost) {
+        return;
+    }
+    if (heatmapTooltip.hidden) {
+        return;
+    }
+    const hostRect = targetHost.getBoundingClientRect();
+    const tooltipRect = heatmapTooltip.getBoundingClientRect();
+    const padding = 8;
+    let left = clientX - hostRect.left + 16;
+    let top = clientY - hostRect.top + 16;
+    const width = tooltipRect.width || heatmapTooltip.offsetWidth;
+    const height = tooltipRect.height || heatmapTooltip.offsetHeight;
+    if (left + width + padding > hostRect.width) {
+        left = Math.max(padding, hostRect.width - width - padding);
+    }
+    if (top + height + padding > hostRect.height) {
+        top = Math.max(padding, hostRect.height - height - padding);
+    }
+    if (left < padding) {
+        left = padding;
+    }
+    if (top < padding) {
+        top = padding;
+    }
+    heatmapTooltip.style.left = `${left}px`;
+    heatmapTooltip.style.top = `${top}px`;
+}
+
+const tokenTooltipState = {
+    activeCell: null,
+    host: null,
+};
+
 const DEFAULT_PAGE = "browser";
 const validPages = new Set(Array.from(pageContainers, (page) => page.dataset.pageId));
 let activePage = DEFAULT_PAGE;
@@ -611,6 +775,10 @@ function setActivePage(pageId, { updateHash = true } = {}) {
 
     if (targetPage === "browser" && previousPage !== "browser") {
         void loadModelList();
+    }
+
+    if (previousPage === "tokenizer" && targetPage !== "tokenizer") {
+        hideTokenTooltip();
     }
 
     if (targetPage === "heatmap" || previousPage === "heatmap") {
@@ -926,6 +1094,21 @@ const heatmapState = {
     fetching: false,
     imageReady: false,
     values: [],
+};
+
+const heatmapHoverState = {
+    canvasX: null,
+    canvasY: null,
+    globalX: null,
+    globalY: null,
+    slice: null,
+    requestX: null,
+    requestY: null,
+    requestSlice: null,
+    controller: null,
+    data: null,
+    clientX: null,
+    clientY: null,
 };
 
 const heatmapDragState = {
@@ -1332,6 +1515,24 @@ function formatBytes(bytes) {
     return `${value.toFixed(value >= 100 ? 0 : value >= 10 ? 1 : 2)} ${units[idx]}`;
 }
 
+function formatTooltipInteger(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return String(value);
+    }
+    return tooltipIntegerFormatter.format(value);
+}
+
+function formatTooltipFloat(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        return String(value);
+    }
+    const abs = Math.abs(value);
+    if (abs !== 0 && (abs < 1e-4 || abs >= 1e6)) {
+        return value.toExponential(4);
+    }
+    return tooltipFloatFormatter.format(value);
+}
+
 function createInfoCard(title, value) {
     const div = document.createElement("div");
     div.className = "info-card";
@@ -1391,7 +1592,7 @@ function renderModelBrowser() {
 
         const size = document.createElement("span");
         size.className = "model-meta";
-        size.textContent = Number.isFinite(item.size) ? formatBytes(item.size) : "n/a";
+        size.textContent = Number.isFinite(item.size) ? formatBytes(item.size) : "N/A";
 
         button.appendChild(pathLabel);
         button.appendChild(size);
@@ -1520,12 +1721,12 @@ async function loadInfo() {
             updateSectionHeaderPaths(currentModelDisplayPath, currentModelFullPath);
 
             const cards = [
-                ["File size", Number.isFinite(info.fileSize) ? formatBytes(info.fileSize) : "n/a"],
-                ["GGUF version", info.ggufVersion ?? "n/a"],
-                ["KV entries", info.nKv ?? "n/a"],
-                ["Tensors", info.nTensors ?? "n/a"],
-                ["Alignment", Number.isFinite(info.alignment) ? `${info.alignment} bytes` : "n/a"],
-                ["Data offset", Number.isFinite(info.dataOffset) ? String(info.dataOffset) : "n/a"],
+                ["File size", Number.isFinite(info.fileSize) ? formatBytes(info.fileSize) : "N/A"],
+                ["GGUF version", info.ggufVersion ?? "N/A"],
+                ["KV entries", info.nKv ?? "N/A"],
+                ["Tensors", info.nTensors ?? "N/A"],
+                ["Alignment", Number.isFinite(info.alignment) ? `${info.alignment} bytes` : "N/A"],
+                ["Data offset", Number.isFinite(info.dataOffset) ? String(info.dataOffset) : "N/A"],
             ];
 
             cards.forEach(([title, value]) => {
@@ -1628,22 +1829,48 @@ function tokenToHex(token) {
 
 function formatTokenType(value) {
     if (value === undefined) {
-        return "n/a";
+        return "N/A";
     }
     const label = TOKEN_TYPE_LABELS[value];
     return label ? `${value} (${label})` : String(value);
 }
 
-function formatTokenTooltip(item) {
+function hideTokenTooltip() {
+    tokenTooltipState.activeCell = null;
+    tokenTooltipState.host = null;
+    hideTooltipElement();
+}
+
+function showTokenTooltip(event, cell, item, host) {
+    if (!heatmapTooltip) {
+        return;
+    }
+    setTooltipHost(host);
+    const displayText = formatTokenForDisplay(item.token);
     const hex = tokenToHex(item.token);
-    const score = item.score !== undefined ? item.score.toFixed(6) : "n/a";
-    const type = formatTokenType(item.tokenType);
-    const hexLine = hex ? hex : "(empty)";
-    return `#${item.index}\nHex: ${hexLine}\nScore: ${score}\nType: ${type}`;
+    const rows = [
+        { label: "Text", value: displayText, wrap: true },
+        { label: "Hex", value: hex ? hex : "(empty)", wrap: true },
+        { label: "Score", value: typeof item.score === "number" ? formatTooltipFloat(item.score) : "N/A", align: "left" },
+        { label: "Type", value: formatTokenType(item.tokenType), align: "left" },
+    ];
+    renderTooltipContent(`Token ${formatTooltipInteger(item.index)}`, rows);
+    positionTooltipWithinHost(host, event.clientX, event.clientY);
+    tokenTooltipState.activeCell = cell;
+    tokenTooltipState.host = host;
+}
+
+function updateTokenTooltipPosition(event) {
+    if (!tokenTooltipState.host) {
+        return;
+    }
+    positionTooltipWithinHost(tokenTooltipState.host, event.clientX, event.clientY);
 }
 
 function renderTokenizerGrid(state, data) {
     const container = document.createElement("div");
+
+    hideTokenTooltip();
 
     const controls = document.createElement("div");
     controls.className = "controls tokenizer-controls";
@@ -1712,7 +1939,21 @@ function renderTokenizerGrid(state, data) {
             span.className = "token-text";
             span.textContent = formatTokenForDisplay(item.token);
             cell.appendChild(span);
-            cell.title = formatTokenTooltip(item);
+            cell.addEventListener("mouseenter", (event) => {
+                showTokenTooltip(event, cell, item, grid);
+            });
+            cell.addEventListener("mousemove", (event) => {
+                if (tokenTooltipState.activeCell !== cell) {
+                    showTokenTooltip(event, cell, item, grid);
+                    return;
+                }
+                updateTokenTooltipPosition(event);
+            });
+            cell.addEventListener("mouseleave", () => {
+                if (tokenTooltipState.activeCell === cell) {
+                    hideTokenTooltip();
+                }
+            });
         } else {
             cell.classList.add("token-cell--empty");
             cell.textContent = "";
@@ -1720,6 +1961,12 @@ function renderTokenizerGrid(state, data) {
 
         grid.appendChild(cell);
     }
+
+    grid.addEventListener("mouseleave", () => {
+        if (tokenTooltipState.host === grid) {
+            hideTokenTooltip();
+        }
+    });
 
     container.appendChild(controls);
     container.appendChild(grid);
@@ -1729,6 +1976,7 @@ function renderTokenizerGrid(state, data) {
 
 async function loadTokenizer(offset = tokenizerState.offset) {
     try {
+        hideTokenTooltip();
         const gridSize = Math.max(1, tokenizerState.gridSize);
         const requestedOffset = Math.max(0, Math.floor(Number(offset)) || 0);
         const limit = gridSize * gridSize;
@@ -1919,6 +2167,138 @@ function setHeatmapOverlay(message, mode = "idle") {
     heatmapOverlay.className = `heatmap-overlay${mode !== "idle" ? ` heatmap-overlay--${mode}` : ""}`;
 }
 
+function hideHeatmapTooltip() {
+    if (heatmapHoverState.controller) {
+        heatmapHoverState.controller.abort();
+        heatmapHoverState.controller = null;
+    }
+    heatmapHoverState.canvasX = null;
+    heatmapHoverState.canvasY = null;
+    heatmapHoverState.globalX = null;
+    heatmapHoverState.globalY = null;
+    heatmapHoverState.slice = null;
+    heatmapHoverState.requestX = null;
+    heatmapHoverState.requestY = null;
+    heatmapHoverState.requestSlice = null;
+    heatmapHoverState.data = null;
+    heatmapHoverState.clientX = null;
+    heatmapHoverState.clientY = null;
+    hideTooltipElement();
+}
+
+function updateHeatmapTooltipPosition() {
+    if (!heatmapTooltip || !heatmapCanvasWrapper) {
+        return;
+    }
+    if (heatmapTooltip.hidden) {
+        return;
+    }
+    if (heatmapHoverState.clientX === null || heatmapHoverState.clientY === null) {
+        return;
+    }
+    positionTooltipWithinHost(heatmapCanvasWrapper, heatmapHoverState.clientX, heatmapHoverState.clientY);
+}
+
+function renderHeatmapTooltip() {
+    if (!heatmapTooltip || !heatmapHoverState.data) {
+        return;
+    }
+    setTooltipHost(heatmapCanvasWrapper);
+    const data = heatmapHoverState.data;
+    const coord = data.coordinate || {};
+    const xLabel = formatTooltipInteger(coord.x ?? heatmapHoverState.globalX ?? 0);
+    const yLabel = formatTooltipInteger(coord.y ?? heatmapHoverState.globalY ?? 0);
+    let titleText = `Weight [${xLabel}, ${yLabel}]`;
+    const depth = heatmapState.layout && typeof heatmapState.layout.depth === "number" ? heatmapState.layout.depth : 1;
+    if (depth > 1) {
+        const sliceValue = coord.slice ?? heatmapHoverState.slice ?? 0;
+        titleText += ` · slice ${formatTooltipInteger(sliceValue)}`;
+    }
+    const rows = [];
+    rows.push({ label: "Element", value: `${formatTooltipInteger(data.index)} / ${formatTooltipInteger(data.count)}` });
+    if (typeof data.tensorOffset === "number") {
+        rows.push({ label: "Tensor offset", value: formatTooltipInteger(data.tensorOffset) });
+    }
+    if (typeof data.fileOffset === "number") {
+        rows.push({ label: "File offset", value: formatTooltipInteger(data.fileOffset) });
+    }
+    if (typeof data.value === "number") {
+        rows.push({ label: "Value", value: formatTooltipFloat(data.value) });
+    }
+    renderTooltipContent(titleText, rows);
+    updateHeatmapTooltipPosition();
+}
+
+function showHeatmapTooltipMessage(message) {
+    if (!heatmapTooltip) {
+        return;
+    }
+    setTooltipHost(heatmapCanvasWrapper);
+    renderTooltipContent(message);
+    updateHeatmapTooltipPosition();
+}
+
+function requestHeatmapValue(globalX, globalY, slice) {
+    if (!heatmapState.tensor) {
+        return;
+    }
+    if (heatmapHoverState.controller) {
+        heatmapHoverState.controller.abort();
+        heatmapHoverState.controller = null;
+    }
+    heatmapHoverState.requestX = globalX;
+    heatmapHoverState.requestY = globalY;
+    heatmapHoverState.requestSlice = slice;
+    heatmapHoverState.data = null;
+
+    if (heatmapTooltip && heatmapHoverState.clientX !== null && heatmapHoverState.clientY !== null) {
+        showHeatmapTooltipMessage("Loading…");
+    }
+
+    const controller = new AbortController();
+    heatmapHoverState.controller = controller;
+
+    const params = new URLSearchParams();
+    params.set("x", String(globalX));
+    params.set("y", String(globalY));
+    if (heatmapState.layout && typeof heatmapState.layout.depth === "number" && heatmapState.layout.depth > 1) {
+        params.set("slice", String(slice));
+    }
+
+    const tensorName = encodeURIComponent(heatmapState.tensor.name);
+    fetch(`api/tensors/${tensorName}/value?${params.toString()}`, { signal: controller.signal })
+        .then((res) => {
+            if (!res.ok) {
+                return res.text().then((text) => {
+                    throw new Error(text || `Request failed: ${res.status}`);
+                });
+            }
+            return res.json();
+        })
+        .then((data) => {
+            if (controller.signal.aborted) {
+                return;
+            }
+            heatmapHoverState.controller = null;
+            if (heatmapHoverState.requestX !== globalX || heatmapHoverState.requestY !== globalY || heatmapHoverState.requestSlice !== slice) {
+                return;
+            }
+            heatmapHoverState.data = data;
+            renderHeatmapTooltip();
+        })
+        .catch((err) => {
+            if (controller.signal.aborted) {
+                return;
+            }
+            heatmapHoverState.controller = null;
+            if (heatmapHoverState.requestX !== globalX || heatmapHoverState.requestY !== globalY || heatmapHoverState.requestSlice !== slice) {
+                return;
+            }
+            heatmapHoverState.data = null;
+            showHeatmapTooltipMessage(`Error: ${err.message}`);
+        });
+}
+
 function resetHeatmap(message = "Select a tensor to stream its weights.") {
     const histogramMessage = message === "Select a tensor to stream its weights."
         ? "Select a tensor to generate its histogram."
@@ -1928,6 +2308,7 @@ function resetHeatmap(message = "Select a tensor to stream its weights.") {
         heatmapState.controller.abort();
         heatmapState.controller = null;
     }
+    hideHeatmapTooltip();
     const preserveGrid = !!heatmapState.gridVisible;
     heatmapState.tensor = null;
     heatmapState.layout = { width: 1, height: 1, depth: 1 };
@@ -2389,6 +2770,14 @@ async function fetchHeatmapWindow() {
         } else {
             setHeatmapOverlay("", "idle");
         }
+        if (
+            heatmapHoverState.globalX !== null
+            && heatmapHoverState.globalY !== null
+            && heatmapHoverState.clientX !== null
+            && heatmapHoverState.clientY !== null
+        ) {
+            requestHeatmapValue(heatmapHoverState.globalX, heatmapHoverState.globalY, heatmapState.slice);
+        }
         syncHeatmapToViewport(false);
     } catch (err) {
         if (controller.signal.aborted) {
@@ -2658,6 +3047,7 @@ heatmapCanvas.addEventListener("mousedown", (event) => {
         return;
     }
     event.preventDefault();
+    hideHeatmapTooltip();
     heatmapDragState.active = true;
     heatmapDragState.lastX = event.clientX;
     heatmapDragState.lastY = event.clientY;
@@ -2665,6 +3055,48 @@ heatmapCanvas.addEventListener("mousedown", (event) => {
     heatmapDragState.offsetY = 0;
     heatmapDragState.moved = false;
     heatmapCanvas.classList.add("heatmap-canvas--dragging");
+});
+
+heatmapCanvas.addEventListener("mousemove", (event) => {
+    if (!heatmapState.tensor || !heatmapState.imageReady || heatmapDragState.active) {
+        return;
+    }
+    const rect = heatmapCanvas.getBoundingClientRect();
+    const { scaleX, scaleY } = heatmapCanvasScale();
+    const canvasX = Math.floor((event.clientX - rect.left) * scaleX);
+    const canvasY = Math.floor((event.clientY - rect.top) * scaleY);
+
+    heatmapHoverState.clientX = event.clientX;
+    heatmapHoverState.clientY = event.clientY;
+
+    if (canvasX < 0 || canvasY < 0 || canvasX >= heatmapState.viewWidth || canvasY >= heatmapState.viewHeight) {
+        hideHeatmapTooltip();
+        return;
+    }
+
+    const globalX = heatmapState.windowX + canvasX;
+    const globalY = heatmapState.windowY + canvasY;
+    const slice = heatmapState.slice;
+    const sameCoordinate = heatmapHoverState.globalX === globalX
+        && heatmapHoverState.globalY === globalY
+        && heatmapHoverState.slice === slice;
+
+    heatmapHoverState.canvasX = canvasX;
+    heatmapHoverState.canvasY = canvasY;
+    heatmapHoverState.globalX = globalX;
+    heatmapHoverState.globalY = globalY;
+    heatmapHoverState.slice = slice;
+
+    if (sameCoordinate) {
+        if (heatmapHoverState.data) {
+            renderHeatmapTooltip();
+        } else if (heatmapTooltip && !heatmapTooltip.hidden) {
+            updateHeatmapTooltipPosition();
+        }
+        return;
+    }
+
+    requestHeatmapValue(globalX, globalY, slice);
 });
 
 window.addEventListener("mousemove", (event) => {
@@ -2728,10 +3160,10 @@ function endHeatmapDrag() {
 
 window.addEventListener("mouseup", endHeatmapDrag);
 heatmapCanvas.addEventListener("mouseleave", () => {
-    if (!heatmapDragState.active) {
-        return;
+    hideHeatmapTooltip();
+    if (heatmapDragState.active) {
+        endHeatmapDrag();
     }
-    endHeatmapDrag();
 });
 
 heatmapCanvas.addEventListener("wheel", (event) => {
