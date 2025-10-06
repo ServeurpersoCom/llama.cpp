@@ -57,22 +57,22 @@ struct tokenizer_info {
 };
 
 struct viewer_state {
-    std::string              model_path;
-    size_t                   file_size = 0;
-    gguf_context_ptr         gguf;
-    ggml_context_ptr         tensor_ctx;
-    size_t                   data_offset = 0;
-    size_t                   alignment   = 0;
+    std::string               model_path;
+    std::string               relative_path;
+    size_t                    file_size = 0;
+    gguf_context_ptr          gguf;
+    ggml_context_ptr          tensor_ctx;
+    size_t                    data_offset = 0;
+    size_t                    alignment   = 0;
     std::vector<tensor_entry> tensors;
     std::unordered_map<std::string, size_t> tensor_index_by_name;
-    tokenizer_info           tokenizer;
+    tokenizer_info            tokenizer;
 };
 
 struct server_state {
-    fs::path                                root;
-    std::string                             current_model_relative;
-    std::shared_ptr<viewer_state>           active_viewer;
-    std::mutex                              mutex;
+    fs::path                                                       root;
+    std::unordered_map<std::string, std::shared_ptr<viewer_state>> viewers;
+    std::mutex                                                     mutex;
 };
 
 struct model_descriptor {
@@ -207,19 +207,71 @@ json make_error(const std::string & message) {
     return body;
 }
 
+std::optional<std::string> get_model_parameter(const httplib::Request & req) {
+    if (auto value = req.get_param_value("model"); !value.empty()) {
+        return value;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> normalize_model_key(const fs::path & root, const std::string & value) {
+    if (value.empty()) {
+        return std::nullopt;
+    }
+
+    std::error_code ec;
+    fs::path candidate(value);
+    fs::path resolved = candidate.is_absolute()
+        ? fs::weakly_canonical(candidate, ec)
+        : fs::weakly_canonical(root / candidate, ec);
+    if (ec) {
+        return std::nullopt;
+    }
+
+    auto relative = safe_relative(resolved, root);
+    if (!relative) {
+        return std::nullopt;
+    }
+
+    return relative->generic_string();
+}
+
 template <typename Fn>
-bool with_viewer_state(const std::shared_ptr<server_state> & state, httplib::Response & res, Fn && fn) {
+bool with_viewer_state(const std::shared_ptr<server_state> & state, const httplib::Request & req, httplib::Response & res, Fn && fn) {
+    auto param = get_model_parameter(req);
+    if (!param) {
+        set_json_response(res, make_error("missing model parameter"), 400);
+        return false;
+    }
+
+    const std::string decoded = url_decode(*param);
+    std::vector<std::string> candidate_keys;
+    if (auto normalized = normalize_model_key(state->root, decoded)) {
+        candidate_keys.push_back(*normalized);
+    }
+    candidate_keys.push_back(decoded);
+
     std::shared_ptr<viewer_state> viewer;
     std::string relative;
     {
         std::lock_guard<std::mutex> lock(state->mutex);
-        viewer = state->active_viewer;
-        relative = state->current_model_relative;
+        for (const auto & key : candidate_keys) {
+            auto it = state->viewers.find(key);
+            if (it != state->viewers.end()) {
+                viewer = it->second;
+                if (viewer) {
+                    relative = viewer->relative_path.empty() ? key : viewer->relative_path;
+                }
+                break;
+            }
+        }
     }
+
     if (!viewer) {
-        set_json_response(res, make_error("no model selected"), 409);
+        set_json_response(res, make_error("model not loaded"), 409);
         return false;
     }
+
     fn(viewer, relative);
     return true;
 }
@@ -1049,14 +1101,18 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
         res.set_content(reinterpret_cast<const char *>(index_html), index_html_len, "text/html; charset=utf-8");
     });
 
-    server.Get("/api/models", [state](const httplib::Request &, httplib::Response & res) {
+    server.Get("/api/models", [state](const httplib::Request & req, httplib::Response & res) {
         json body;
         body["root"] = state->root.generic_string();
         json items = json::array();
         std::string selected;
-        {
-            std::lock_guard<std::mutex> lock(state->mutex);
-            selected = state->current_model_relative;
+        if (auto param = get_model_parameter(req)) {
+            const std::string decoded = url_decode(*param);
+            if (auto normalized = normalize_model_key(state->root, decoded)) {
+                selected = *normalized;
+            } else {
+                selected = decoded;
+            }
         }
         auto models = scan_models(state->root);
         for (const auto & item : models) {
@@ -1064,27 +1120,26 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
             entry["path"] = item.relative;
             entry["name"] = item.name;
             entry["size"] = item.size;
-            entry["selected"] = (!selected.empty() && item.relative == selected);
-            items.push_back(entry);
+            if (!selected.empty() && item.relative == selected) {
+                entry["selected"] = true;
+            }
+            items.push_back(std::move(entry));
         }
         body["items"] = std::move(items);
-        body["selected"] = selected;
+        if (!selected.empty()) {
+            body["selected"] = selected;
+        }
         set_json_response(res, body);
     });
 
     server.Post("/api/models/select", [state](const httplib::Request & req, httplib::Response & res) {
-        std::string param;
-        if (auto value = req.get_param_value("model"); !value.empty()) {
-            param = value;
-        } else if (auto value = req.get_param_value("path"); !value.empty()) {
-            param = value;
-        }
-        if (param.empty()) {
+        auto param = get_model_parameter(req);
+        if (!param) {
             set_json_response(res, make_error("missing model parameter"), 400);
             return;
         }
 
-        const std::string decoded = url_decode(param);
+        const std::string decoded = url_decode(*param);
         fs::path candidate(decoded);
         std::error_code ec;
         fs::path resolved = candidate.is_absolute()
@@ -1115,32 +1170,49 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
             return;
         }
 
+        const std::string key = relative->generic_string();
         std::shared_ptr<viewer_state> viewer;
-        try {
-            viewer = std::make_shared<viewer_state>(load_state(resolved.string()));
-        } catch (const std::exception & ex) {
-            set_json_response(res, make_error(ex.what()), 500);
-            return;
-        }
-
         {
             std::lock_guard<std::mutex> lock(state->mutex);
-            state->active_viewer = viewer;
-            state->current_model_relative = relative->generic_string();
+            auto it = state->viewers.find(key);
+            if (it != state->viewers.end()) {
+                viewer = it->second;
+            }
         }
 
-        LOG_INF("Loaded %s with %zu tensors and %lld key/value pairs\n",
-            resolved.string().c_str(),
-            viewer->tensors.size(),
-            (long long)gguf_get_n_kv(viewer->gguf.get()));
+        if (!viewer) {
+            std::shared_ptr<viewer_state> loaded;
+            try {
+                loaded = std::make_shared<viewer_state>(load_state(resolved.string()));
+            } catch (const std::exception & ex) {
+                set_json_response(res, make_error(ex.what()), 500);
+                return;
+            }
+
+            loaded->relative_path = key;
+
+            {
+                std::lock_guard<std::mutex> lock(state->mutex);
+                auto & slot = state->viewers[key];
+                if (!slot) {
+                    slot = loaded;
+                }
+                viewer = slot;
+            }
+
+            LOG_INF("Loaded %s with %zu tensors and %lld key/value pairs\n",
+                resolved.string().c_str(),
+                viewer->tensors.size(),
+                (long long)gguf_get_n_kv(viewer->gguf.get()));
+        }
 
         json body;
-        body["selected"] = relative->generic_string();
+        body["selected"] = key;
         set_json_response(res, body);
     });
 
-    server.Get("/api/info", [state](const httplib::Request &, httplib::Response & res) {
-        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string & relative) {
+    server.Get("/api/info", [state](const httplib::Request & req, httplib::Response & res) {
+        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string & relative) {
             json body;
             body["modelPath"] = viewer->model_path;
             body["relativePath"] = relative;
@@ -1159,7 +1231,7 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
     });
 
     server.Get("/api/kv", [state](const httplib::Request & req, httplib::Response & res) {
-        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
             size_t limit = 8;
             if (auto value = req.get_param_value("preview"); !value.empty()) {
                 if (auto parsed = parse_size_t(value)) {
@@ -1176,8 +1248,8 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
         });
     });
 
-    server.Get(R"(/api/tensors$)", [state](const httplib::Request &, httplib::Response & res) {
-        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+    server.Get(R"(/api/tensors$)", [state](const httplib::Request & req, httplib::Response & res) {
+        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
             json tensors_json = json::array();
             for (const auto & entry : viewer->tensors) {
                 tensors_json.push_back(tensor_to_json(entry, viewer->data_offset));
@@ -1187,7 +1259,7 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
     });
 
     server.Get(R"(/api/tensors/(.+)/raw)", [state](const httplib::Request & req, httplib::Response & res) {
-        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
             const std::string name = url_decode(req.matches[1]);
             auto it = viewer->tensor_index_by_name.find(name);
             if (it == viewer->tensor_index_by_name.end()) {
@@ -1305,7 +1377,7 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
     });
 
     server.Get(R"(/api/tensors/(.+)/value)", [state](const httplib::Request & req, httplib::Response & res) {
-        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
             const std::string name = url_decode(req.matches[1]);
             auto it = viewer->tensor_index_by_name.find(name);
             if (it == viewer->tensor_index_by_name.end()) {
@@ -1375,7 +1447,7 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
     });
 
     server.Get(R"(/api/tensors/(.+)/histogram)", [state](const httplib::Request & req, httplib::Response & res) {
-        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
             const std::string name = url_decode(req.matches[1]);
             auto it = viewer->tensor_index_by_name.find(name);
             if (it == viewer->tensor_index_by_name.end()) {
@@ -1442,7 +1514,7 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
     });
 
     server.Get(R"(/api/tokenizer$)", [state](const httplib::Request & req, httplib::Response & res) {
-        with_viewer_state(state, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
             json body;
             if (viewer->tokenizer.key_tokens < 0) {
                 body["hasTokenizer"] = false;

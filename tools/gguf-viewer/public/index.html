@@ -627,6 +627,156 @@ if (heatmapCtx) {
     heatmapCtx.imageSmoothingEnabled = false;
 }
 
+const initialUrlState = (() => {
+    const params = new URLSearchParams(window.location.search);
+    const getString = (key) => {
+        const value = params.get(key);
+        return value && value.length > 0 ? value : null;
+    };
+    const getInt = (key) => {
+        const value = params.get(key);
+        if (value === null) {
+            return null;
+        }
+        const parsed = Number.parseInt(value, 10);
+        return Number.isFinite(parsed) ? parsed : null;
+    };
+    const getFloat = (key) => {
+        const value = params.get(key);
+        if (value === null) {
+            return null;
+        }
+        const parsed = Number.parseFloat(value);
+        return Number.isFinite(parsed) ? parsed : null;
+    };
+    const getBool = (key) => {
+        const value = params.get(key);
+        if (value === null) {
+            return null;
+        }
+        const lowered = value.toLowerCase();
+        if (value === "1" || lowered === "true") {
+            return true;
+        }
+        if (value === "0" || lowered === "false") {
+            return false;
+        }
+        return null;
+    };
+    return {
+        model: getString("model"),
+        tensor: getString("tensor"),
+        slice: getInt("slice"),
+        min: getFloat("min"),
+        max: getFloat("max"),
+        grid: getBool("grid"),
+        x: getInt("x"),
+        y: getInt("y"),
+    };
+})();
+
+const pendingHeatmapState = {
+    tensor: initialUrlState.tensor,
+    slice: Number.isInteger(initialUrlState.slice) ? Math.max(0, initialUrlState.slice - 1) : null,
+    min: Number.isFinite(initialUrlState.min) ? initialUrlState.min : null,
+    max: Number.isFinite(initialUrlState.max) ? initialUrlState.max : null,
+    grid: typeof initialUrlState.grid === "boolean" ? initialUrlState.grid : null,
+    x: Number.isFinite(initialUrlState.x) ? Math.max(0, initialUrlState.x) : null,
+    y: Number.isFinite(initialUrlState.y) ? Math.max(0, initialUrlState.y) : null,
+    applied: false,
+};
+
+if (heatmapGridToggle && typeof pendingHeatmapState.grid === "boolean") {
+    heatmapGridToggle.checked = pendingHeatmapState.grid;
+}
+
+let urlSyncReady = false;
+let currentModelPath = initialUrlState.model;
+
+function updateUrlParams(updates, options = {}) {
+    const { force = false } = options;
+    if (!force && !urlSyncReady) {
+        return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    let changed = false;
+    for (const [key, value] of Object.entries(updates)) {
+        if (value === null || value === undefined || value === "") {
+            if (params.has(key)) {
+                params.delete(key);
+                changed = true;
+            }
+        } else {
+            const stringValue = String(value);
+            if (params.get(key) !== stringValue) {
+                params.set(key, stringValue);
+                changed = true;
+            }
+        }
+    }
+    if (!changed && !force) {
+        return;
+    }
+    const query = params.toString();
+    const newUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+    window.history.replaceState(null, "", newUrl);
+}
+
+function withModel(url, model = currentModelPath) {
+    if (!model) {
+        return url;
+    }
+    const [base, hashFragment] = url.split("#", 2);
+    const separator = base.includes("?") ? "&" : "?";
+    const next = `${base}${separator}model=${encodeURIComponent(model)}`;
+    return hashFragment ? `${next}#${hashFragment}` : next;
+}
+
+function appendModelParam(params, model = currentModelPath) {
+    if (!model) {
+        return;
+    }
+    params.set("model", model);
+}
+
+function updateModelUrlState(options = {}) {
+    const { force = false } = options;
+    const value = typeof currentModelPath === "string" && currentModelPath.length > 0 ? currentModelPath : null;
+    updateUrlParams({ model: value }, { force });
+}
+
+function updateHeatmapUrlState(options = {}) {
+    const { force = false } = options;
+    if (!force && !urlSyncReady) {
+        return;
+    }
+    const updates = {
+        tensor: null,
+        slice: null,
+        min: null,
+        max: null,
+        grid: heatmapState.gridVisible ? "1" : "0",
+        x: null,
+        y: null,
+    };
+    if (currentModelPath && heatmapState.tensor) {
+        updates.tensor = heatmapState.tensor.name || null;
+        const sliceValue = Number.isInteger(heatmapState.slice) ? heatmapState.slice + 1 : null;
+        updates.slice = sliceValue && sliceValue > 0 ? sliceValue : null;
+        updates.min = Number.isFinite(heatmapState.scaleMin) ? heatmapState.scaleMin : null;
+        updates.max = Number.isFinite(heatmapState.scaleMax) ? heatmapState.scaleMax : null;
+        updates.grid = heatmapState.gridVisible ? "1" : "0";
+        updates.x = Number.isFinite(heatmapState.windowX) ? Math.max(0, Math.floor(heatmapState.windowX)) : null;
+        updates.y = Number.isFinite(heatmapState.windowY) ? Math.max(0, Math.floor(heatmapState.windowY)) : null;
+    }
+    updateUrlParams(updates, { force });
+}
+
+function syncFullUrlState(options = {}) {
+    updateModelUrlState(options);
+    updateHeatmapUrlState(options);
+}
+
 const tooltipIntegerFormatter = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
 const tooltipFloatFormatter = new Intl.NumberFormat(undefined, { maximumSignificantDigits: 6 });
 
@@ -955,6 +1105,9 @@ async function fetchHistogram() {
     if (!heatmapState.tensor || !histogramCanvas) {
         return;
     }
+    if (!currentModelPath) {
+        return;
+    }
 
     if (histogramState.controller) {
         histogramState.controller.abort();
@@ -975,6 +1128,7 @@ async function fetchHistogram() {
         params.set("width", String(width));
         params.set("height", String(height));
         params.set("slice", String(heatmapState.slice));
+        appendModelParam(params);
         const response = await fetch(`api/tensors/${name}/histogram?${params.toString()}`, { signal: controller.signal });
         if (!response.ok) {
             throw new Error(`${response.status} ${response.statusText}`.trim());
@@ -1064,8 +1218,7 @@ const TOKEN_TYPE_LABELS = Object.freeze({
 const NO_MODEL_MESSAGE = "Select a GGUF model to inspect.";
 const LOADING_MESSAGE = "Loading…";
 const BROWSER_EMPTY_MESSAGE = "No GGUF files found in the root directory.";
-let modelBrowserState = { root: "", items: [], selected: null };
-let currentModelPath = null;
+let modelBrowserState = { root: "", items: [], selected: currentModelPath || null };
 let currentModelDisplayPath = null;
 let currentModelFullPath = null;
 let selectingModel = false;
@@ -1086,7 +1239,7 @@ const heatmapState = {
     scaleStep: HEATMAP_STEP_FALLBACK,
     offsetMode: false,
     blockSize: 1,
-    gridVisible: true,
+    gridVisible: typeof pendingHeatmapState.grid === "boolean" ? pendingHeatmapState.grid : true,
     valid: 0,
     viewWidth: heatmapCanvas ? heatmapCanvas.width : 0,
     viewHeight: heatmapCanvas ? heatmapCanvas.height : 0,
@@ -1094,6 +1247,7 @@ const heatmapState = {
     fetching: false,
     imageReady: false,
     values: [],
+    pendingScale: null,
 };
 
 const heatmapHoverState = {
@@ -1250,6 +1404,7 @@ function setHeatmapScale(minValue, maxValue, options = {}) {
         updateHeatmapHeader();
         syncHeatmapControls();
     }
+    updateHeatmapUrlState();
 }
 
 function sanitizeStepValue(value) {
@@ -1545,6 +1700,19 @@ function createInfoCard(title, value) {
     return div;
 }
 
+function setCurrentModel(path, options = {}) {
+    const { updateBrowser = true, updateUrl = true } = options;
+    const normalized = typeof path === "string" && path.length > 0 ? path : null;
+    currentModelPath = normalized;
+    modelBrowserState = { ...modelBrowserState, selected: normalized };
+    if (updateBrowser) {
+        renderModelBrowser();
+    }
+    if (updateUrl) {
+        updateModelUrlState();
+    }
+}
+
 function renderModelBrowser() {
     if (!modelBrowserContainer) {
         return;
@@ -1582,7 +1750,7 @@ function renderModelBrowser() {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "model-button";
-        const isSelected = !!item.selected || (modelBrowserState.selected && modelBrowserState.selected === item.path);
+        const isSelected = !!item.selected;
         button.dataset.selected = isSelected ? "true" : "false";
         button.disabled = selectingModel;
 
@@ -1616,12 +1784,28 @@ async function loadModelList() {
     }
 
     try {
-        const data = await fetchJSON("api/models");
-        const items = Array.isArray(data?.items) ? data.items : [];
+        const data = await fetchJSON(withModel("api/models"));
+        const rawItems = Array.isArray(data?.items) ? data.items : [];
         const rootPath = typeof data?.root === "string" ? data.root : "";
-        const selected = typeof data?.selected === "string" && data.selected.length > 0 ? data.selected : null;
-        modelBrowserState = { root: rootPath, items, selected };
+        let selected = typeof data?.selected === "string" && data.selected.length > 0 ? data.selected : null;
+        if (currentModelPath && currentModelPath.length > 0) {
+            selected = currentModelPath;
+        }
+        const items = rawItems.map((item) => ({
+            path: item.path,
+            name: item.name,
+            size: item.size,
+        }));
+        if (selected && !items.some((item) => item.path === selected)) {
+            selected = null;
+        }
+        modelBrowserState = {
+            root: rootPath,
+            items: items.map((item) => ({ ...item, selected: !!selected && item.path === selected })),
+            selected,
+        };
         currentModelPath = selected;
+        updateModelUrlState();
         renderModelBrowser();
     } catch (err) {
         modelBrowserState = { root: "", items: [], selected: null };
@@ -1647,8 +1831,18 @@ async function selectModel(path) {
     selectingModel = true;
     let errorMessage = null;
     try {
-        await fetchJSON(`api/models/select?model=${encodeURIComponent(path)}`, { method: "POST" });
-        currentModelPath = path;
+        const response = await fetchJSON(`api/models/select?model=${encodeURIComponent(path)}`, { method: "POST" });
+        const selectedPath = typeof response?.selected === "string" && response.selected.length > 0
+            ? response.selected
+            : path;
+        setCurrentModel(selectedPath, { updateBrowser: false });
+        pendingHeatmapState.applied = true;
+        pendingHeatmapState.tensor = null;
+        pendingHeatmapState.slice = null;
+        pendingHeatmapState.min = null;
+        pendingHeatmapState.max = null;
+        pendingHeatmapState.x = null;
+        pendingHeatmapState.y = null;
         await refreshAll();
         await loadModelList();
         setActivePage("metadata");
@@ -1688,6 +1882,7 @@ async function refreshAll() {
         return;
     }
 
+    updateModelUrlState();
     currentModelDisplayPath = null;
     currentModelFullPath = null;
     setInfoMessage(LOADING_MESSAGE);
@@ -1707,7 +1902,7 @@ async function refreshAll() {
 
 async function loadInfo() {
     try {
-        const info = await fetchJSON("api/info");
+        const info = await fetchJSON(withModel("api/info"));
         infoCards.innerHTML = "";
 
         if (info && typeof info === "object") {
@@ -1773,7 +1968,7 @@ function renderKvRow(entry) {
 
 async function loadKv() {
     try {
-        const entries = await fetchJSON("api/kv");
+        const entries = await fetchJSON(withModel("api/kv"));
         kvBody.innerHTML = "";
         if (!Array.isArray(entries) || entries.length === 0) {
             renderTableMessage(kvBody, 3, "No metadata entries found.");
@@ -1978,9 +2173,9 @@ async function loadTokenizer(offset = tokenizerState.offset) {
     try {
         hideTokenTooltip();
         const gridSize = Math.max(1, tokenizerState.gridSize);
-        const requestedOffset = Math.max(0, Math.floor(Number(offset)) || 0);
+        const requestedOffset = Math.max(0, Math.floor(Number.isFinite(offset) ? offset : 0));
         const limit = gridSize * gridSize;
-        const data = await fetchJSON(`api/tokenizer?offset=${requestedOffset}&limit=${limit}`);
+        const data = await fetchJSON(withModel(`api/tokenizer?offset=${requestedOffset}&limit=${limit}`));
         tokenizerContent.innerHTML = "";
         if (!data || typeof data !== "object" || !data.hasTokenizer) {
             setTokenizerMessage("Tokenizer metadata not found in this model.");
@@ -1988,8 +2183,8 @@ async function loadTokenizer(offset = tokenizerState.offset) {
         }
         tokenizerState = {
             ...tokenizerState,
-            offset: data.offset,
-            total: data.total,
+            offset: Number.isFinite(data.offset) ? data.offset : requestedOffset,
+            total: Number.isFinite(data.total) ? data.total : 0,
         };
 
         if (!Array.isArray(data.items)) {
@@ -2138,7 +2333,7 @@ function refreshHeatmapTensorSelect() {
 
 async function loadTensors() {
     try {
-        const data = await fetchJSON("api/tensors");
+        const data = await fetchJSON(withModel("api/tensors"));
         tensorData = Array.isArray(data) ? data : [];
         tensorBody.innerHTML = "";
         if (tensorData.length === 0) {
@@ -2147,11 +2342,41 @@ async function loadTensors() {
             tensorData.forEach(tensor => tensorBody.appendChild(renderTensorRow(tensor)));
         }
         refreshHeatmapTensorSelect();
+        if (!pendingHeatmapState.applied) {
+            pendingHeatmapState.applied = true;
+            if (pendingHeatmapState.tensor) {
+                const tensor = tensorData.find((item) => item.name === pendingHeatmapState.tensor);
+                if (tensor) {
+                    const options = {};
+                    if (Number.isInteger(pendingHeatmapState.slice) && pendingHeatmapState.slice >= 0) {
+                        options.initialSlice = pendingHeatmapState.slice;
+                    }
+                    const windowOptions = {};
+                    if (Number.isInteger(pendingHeatmapState.x) && pendingHeatmapState.x >= 0) {
+                        windowOptions.x = pendingHeatmapState.x;
+                    }
+                    if (Number.isInteger(pendingHeatmapState.y) && pendingHeatmapState.y >= 0) {
+                        windowOptions.y = pendingHeatmapState.y;
+                    }
+                    if (Object.keys(windowOptions).length > 0) {
+                        options.initialWindow = windowOptions;
+                    }
+                    if (Number.isFinite(pendingHeatmapState.min) && Number.isFinite(pendingHeatmapState.max)) {
+                        options.initialScale = { min: pendingHeatmapState.min, max: pendingHeatmapState.max };
+                    }
+                    if (typeof pendingHeatmapState.grid === "boolean") {
+                        options.initialGrid = pendingHeatmapState.grid;
+                    }
+                    openHeatmap(encodeURIComponent(tensor.name), options);
+                }
+            }
+        }
     } catch (err) {
         tensorData = [];
         tensorBody.innerHTML = "";
         renderTableMessage(tensorBody, 6, err.status === 409 ? NO_MODEL_MESSAGE : err.message);
         refreshHeatmapTensorSelect();
+        pendingHeatmapState.applied = true;
     }
 }
 
@@ -2242,6 +2467,9 @@ function requestHeatmapValue(globalX, globalY, slice) {
     if (!heatmapState.tensor) {
         return;
     }
+    if (!currentModelPath) {
+        return;
+    }
     if (heatmapHoverState.controller) {
         heatmapHoverState.controller.abort();
         heatmapHoverState.controller = null;
@@ -2264,6 +2492,7 @@ function requestHeatmapValue(globalX, globalY, slice) {
     if (heatmapState.layout && typeof heatmapState.layout.depth === "number" && heatmapState.layout.depth > 1) {
         params.set("slice", String(slice));
     }
+    appendModelParam(params);
 
     const tensorName = encodeURIComponent(heatmapState.tensor.name);
     fetch(`api/tensors/${tensorName}/value?${params.toString()}`, { signal: controller.signal })
@@ -2332,6 +2561,7 @@ function resetHeatmap(message = "Select a tensor to stream its weights.") {
     heatmapState.values = [];
     heatmapState.viewWidth = heatmapCanvas.width;
     heatmapState.viewHeight = heatmapCanvas.height;
+    heatmapState.pendingScale = null;
     if (heatmapGainOffsetToggle) {
         heatmapGainOffsetToggle.checked = false;
     }
@@ -2342,6 +2572,7 @@ function resetHeatmap(message = "Select a tensor to stream its weights.") {
     clearHeatmapCanvas();
     updateHeatmapHeader();
     setHeatmapOverlay(message);
+    updateHeatmapUrlState();
     syncHeatmapToViewport(false);
 }
 
@@ -2662,6 +2893,9 @@ async function fetchHeatmapWindow() {
     if (!heatmapState.tensor) {
         return;
     }
+    if (!currentModelPath) {
+        return;
+    }
 
     if (heatmapState.controller) {
         heatmapState.controller.abort();
@@ -2686,6 +2920,7 @@ async function fetchHeatmapWindow() {
     if (layout.depth > 1) {
         params.set("slice", String(heatmapState.slice));
     }
+    appendModelParam(params);
 
     try {
         const res = await fetch(`api/tensors/${encodeURIComponent(tensor.name)}/raw?${params.toString()}`, {
@@ -2760,6 +2995,12 @@ async function fetchHeatmapWindow() {
             heatmapState.scaleMax = clamped.max;
         }
 
+        if (heatmapState.pendingScale && Number.isFinite(heatmapState.pendingScale.min) && Number.isFinite(heatmapState.pendingScale.max)) {
+            const pending = heatmapState.pendingScale;
+            heatmapState.pendingScale = null;
+            setHeatmapScale(pending.min, pending.max);
+        }
+
         const values = Array.isArray(data.values) ? data.values : [];
         heatmapState.values = values;
         updateHeatmapImage(values, heatmapState.scaleMin, heatmapState.scaleMax);
@@ -2778,6 +3019,7 @@ async function fetchHeatmapWindow() {
         ) {
             requestHeatmapValue(heatmapHoverState.globalX, heatmapHoverState.globalY, heatmapState.slice);
         }
+        updateHeatmapUrlState();
         syncHeatmapToViewport(false);
     } catch (err) {
         if (controller.signal.aborted) {
@@ -2789,6 +3031,7 @@ async function fetchHeatmapWindow() {
             heatmapState.controller = null;
         }
         heatmapState.fetching = false;
+        updateHeatmapUrlState();
     }
 }
 
@@ -2844,7 +3087,7 @@ function updateHeatmapImage(values, minValue, maxValue) {
     drawHeatmap();
 }
 
-function openHeatmap(nameEncoded) {
+function openHeatmap(nameEncoded, options = {}) {
     const name = decodeURIComponent(nameEncoded);
     const tensor = tensorData.find((item) => item.name === name);
     if (!tensor) {
@@ -2857,6 +3100,32 @@ function openHeatmap(nameEncoded) {
     heatmapState.tensor = tensor;
     heatmapState.layout = layoutFromTensor(tensor);
     heatmapState.blockSize = getTensorBlockSize(tensor);
+    if (typeof options.initialGrid === "boolean") {
+        heatmapState.gridVisible = options.initialGrid;
+        if (heatmapGridToggle) {
+            heatmapGridToggle.checked = options.initialGrid;
+        }
+    }
+    if (Number.isInteger(options.initialSlice) && options.initialSlice >= 0) {
+        heatmapState.slice = clampSlice(options.initialSlice);
+        histogramState.slice = heatmapState.slice;
+        if (heatmapSliceInput) {
+            heatmapSliceInput.value = String(heatmapState.slice + 1);
+        }
+    } else {
+        histogramState.slice = heatmapState.slice;
+    }
+    if (options.initialWindow && typeof options.initialWindow === "object") {
+        if (Number.isInteger(options.initialWindow.x) && options.initialWindow.x >= 0) {
+            heatmapState.windowX = clampWindowX(options.initialWindow.x);
+        }
+        if (Number.isInteger(options.initialWindow.y) && options.initialWindow.y >= 0) {
+            heatmapState.windowY = clampWindowY(options.initialWindow.y);
+        }
+    }
+    if (options.initialScale && Number.isFinite(options.initialScale.min) && Number.isFinite(options.initialScale.max)) {
+        heatmapState.pendingScale = { min: options.initialScale.min, max: options.initialScale.max };
+    }
     histogramState.tensor = tensor;
     histogramState.slice = heatmapState.slice;
     syncHistogramToViewport(false);
@@ -2866,6 +3135,7 @@ function openHeatmap(nameEncoded) {
     syncHeatmapControls();
     setHeatmapOverlay("Preparing heatmap…", "loading");
     void fetchHeatmapWindow();
+    updateHeatmapUrlState();
 }
 
 tensorBody.addEventListener("click", (event) => {
@@ -2897,6 +3167,7 @@ function commitSliceInput() {
         }
         updateHeatmapHeader();
         void fetchHeatmapWindow();
+        updateHeatmapUrlState();
     }
 }
 
@@ -3012,6 +3283,7 @@ if (heatmapGridToggle) {
             heatmapState.gridVisible = next;
         }
         syncHeatmapControls();
+        updateHeatmapUrlState();
     };
     heatmapGridToggle.addEventListener("change", commitGridVisibility);
     heatmapGridToggle.addEventListener("keydown", (event) => {
@@ -3152,6 +3424,7 @@ function endHeatmapDrag() {
         heatmapState.windowX = nextX;
         heatmapState.windowY = nextY;
         updateHeatmapHeader();
+        updateHeatmapUrlState();
         void fetchHeatmapWindow();
     } else {
         drawHeatmap();
@@ -3187,12 +3460,13 @@ resetViewer();
 
 (async function init() {
     await loadModelList();
-    if (modelBrowserState.selected) {
-        currentModelPath = modelBrowserState.selected;
+    if (currentModelPath) {
         await refreshAll();
     } else {
         resetViewer();
     }
+    urlSyncReady = true;
+    syncFullUrlState({ force: true });
 })();
 </script>
 </body>
