@@ -18,7 +18,7 @@
         main {
             width: 100%;
             box-sizing: border-box;
-            padding: 0.85rem 1rem 1.25rem;
+            padding: 0.4rem 1rem 1.25rem;
             display: flex;
             flex-direction: column;
             gap: 0.75rem;
@@ -41,8 +41,10 @@
         .tabs {
             display: flex;
             align-items: center;
+            justify-content: center;
             gap: 0.35rem;
-            padding: 0.6rem 1rem;
+            padding: 0.4rem 0;
+            margin: 0 auto;
             background: transparent;
             width: 100%;
             box-sizing: border-box;
@@ -103,15 +105,44 @@
         }
         .model-title {
             display: flex;
-            flex-wrap: wrap;
+            flex-wrap: nowrap;
             gap: 0.5rem;
             align-items: baseline;
+        }
+        .model-title__label {
+            flex: 0 0 auto;
+            white-space: nowrap;
+        }
+        .model-status {
+            display: inline-flex;
+            align-items: baseline;
+            gap: 0.35rem;
+            font-size: 0.8rem;
+            color: #9fb4d9;
+            flex: 0 1 auto;
+            min-width: 0;
+        }
+        .model-status[hidden] {
+            display: none;
+        }
+        .model-status--message {
+            color: #8ea2c8;
+            white-space: nowrap;
         }
         .model-path {
             font-size: 0.8rem;
             color: #9fb4d9;
             background: #0a111f;
             padding: 0.2rem 0.45rem;
+            display: inline-flex;
+            align-items: center;
+            max-width: 100%;
+        }
+        .model-status .model-path code {
+            display: block;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .table-wrapper {
             background: #060a13;
@@ -213,6 +244,12 @@
             gap: 0.5rem;
             width: 100%;
         }
+        .statistics-visualization {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            width: 100%;
+        }
         .histogram-canvas-wrapper {
             position: relative;
             background: #000;
@@ -293,13 +330,6 @@
             background: rgba(26, 86, 219, 0.5);
             color: #e5f2ff;
         }
-        .heatmap-header {
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            justify-content: space-between;
-            gap: 0.6rem;
-        }
         .heatmap-tooltip {
             position: absolute;
             max-width: 320px;
@@ -341,15 +371,21 @@
         .tooltip-host {
             position: relative;
         }
-        .heatmap-header-title {
-            font-size: 0.95rem;
-            font-weight: 500;
-            color: #d3dcfb;
-        }
         .heatmap-status {
             font-size: 0.75rem;
             color: #9fb4d9;
             white-space: nowrap;
+            display: inline-flex;
+            align-items: baseline;
+            flex: 0 0 auto;
+        }
+        .statistics-status {
+            font-size: 0.75rem;
+            color: #9fb4d9;
+            white-space: nowrap;
+            display: inline-flex;
+            align-items: baseline;
+            flex: 0 0 auto;
         }
         .badge {
             display: inline-flex;
@@ -435,6 +471,14 @@
         .browser-info {
             font-size: 0.75rem;
             color: #8ea2c8;
+            display: inline-flex;
+            align-items: baseline;
+            white-space: nowrap;
+        }
+        .browser-info code {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
         }
         .empty-note {
             font-size: 0.85rem;
@@ -458,13 +502,14 @@
     <button type="button" class="tab-button" data-target-page="tokenizer">Tokenizer</button>
     <button type="button" class="tab-button" data-target-page="tensors">Tensors</button>
     <button type="button" class="tab-button" data-target-page="heatmap">Heatmap</button>
+    <button type="button" class="tab-button" data-target-page="statistics">Statistics</button>
 </nav>
 <main>
     <div class="page page--active" data-page-id="browser">
         <section>
             <h2 id="browser-title" class="model-title">
-                GGUF Browser
-                <span class="browser-info" id="model-browser-root" hidden></span>
+                <span class="model-title__label" id="browser-title-label">GGUF Browser</span>
+                <span class="model-status browser-info" id="model-browser-root" hidden></span>
             </h2>
             <div id="model-browser"></div>
         </section>
@@ -472,7 +517,10 @@
 
     <div class="page" data-page-id="metadata">
         <section id="model-info">
-            <h2 id="model-title" class="model-title">Model overview</h2>
+            <h2 id="model-title" class="model-title">
+                <span class="model-title__label" id="model-title-label">Model overview</span>
+                <span class="model-status" id="model-status" hidden></span>
+            </h2>
             <div class="info-cards" id="info-cards"></div>
         </section>
 
@@ -495,14 +543,20 @@
 
     <div class="page" data-page-id="tokenizer">
         <section class="tokenizer-section">
-            <h2 id="tokenizer-title" class="model-title">Tokenizer</h2>
+            <h2 id="tokenizer-title" class="model-title">
+                <span class="model-title__label" id="tokenizer-title-label">Tokenizer</span>
+                <span class="model-status" id="tokenizer-status" hidden></span>
+            </h2>
             <div id="tokenizer-content"></div>
         </section>
     </div>
 
     <div class="page" data-page-id="tensors">
         <section>
-            <h2 id="tensors-title" class="model-title">Tensors</h2>
+            <h2 id="tensors-title" class="model-title">
+                <span class="model-title__label" id="tensors-title-label">Tensors</span>
+                <span class="model-status" id="tensors-status" hidden></span>
+            </h2>
             <div class="table-wrapper">
                 <table>
                     <thead>
@@ -523,10 +577,11 @@
 
     <div class="page" data-page-id="heatmap">
         <section>
-            <h2 id="heatmap-title" class="model-title">Heatmap</h2>
-            <div class="heatmap-header">
-                <div class="heatmap-header-title" id="heatmap-info">Select a tensor to open the heatmap viewer.</div>
-            </div>
+            <h2 id="heatmap-title" class="model-title">
+                <span class="model-title__label" id="heatmap-title-label">Heatmap</span>
+                <span class="model-status" id="heatmap-section-status" hidden></span>
+                <span class="heatmap-status" id="heatmap-status" hidden></span>
+            </h2>
             <div class="heatmap-controls" id="heatmap-controls" hidden>
                 <label>
                     <span>Tensor</span>
@@ -544,7 +599,10 @@
                     <span>Max</span>
                     <input type="number" id="heatmap-max-input" value="1" step="0.0001">
                 </label>
-                <button id="heatmap-auto-button" type="button">Auto</button>
+                <button id="heatmap-auto-button" type="button">SLICE</button>
+                <button id="heatmap-p1-button" type="button">P1</button>
+                <button id="heatmap-p5-button" type="button">P5</button>
+                <button id="heatmap-p10-button" type="button">P10</button>
                 <label>
                     <span>Step</span>
                     <input type="number" id="heatmap-step-input" value="0.01" step="0.0001">
@@ -555,13 +613,12 @@
                 </div>
                 <label class="heatmap-toggle">
                     <input type="checkbox" id="heatmap-gain-offset-toggle">
-                    <span>Gain / Offset</span>
+                    <span>Offset</span>
                 </label>
                 <label class="heatmap-toggle">
                     <input type="checkbox" id="heatmap-grid-toggle" checked>
                     <span>Quant Grid</span>
                 </label>
-                <span class="heatmap-status" id="heatmap-status" hidden></span>
             </div>
             <div class="heatmap-visualization">
                 <div class="heatmap-canvas-wrapper">
@@ -569,6 +626,18 @@
                     <div class="heatmap-tooltip" id="heatmap-tooltip" hidden></div>
                     <div class="heatmap-overlay" id="heatmap-overlay">Select a tensor to stream its weights.</div>
                 </div>
+            </div>
+        </section>
+    </div>
+
+    <div class="page" data-page-id="statistics">
+        <section>
+            <h2 id="statistics-title" class="model-title">
+                <span class="model-title__label" id="statistics-title-label">Statistics</span>
+                <span class="model-status" id="statistics-section-status" hidden></span>
+                <span class="statistics-status" id="statistics-status" hidden></span>
+            </h2>
+            <div class="statistics-visualization">
                 <div class="histogram-canvas-wrapper">
                     <canvas id="histogram-canvas" width="1024" height="512"></canvas>
                     <div class="histogram-overlay" id="histogram-overlay">Select a tensor to generate its histogram.</div>
@@ -579,10 +648,6 @@
 </main>
 <script>
 const infoCards = document.getElementById("info-cards");
-const modelTitle = document.getElementById("model-title");
-const tokenizerTitle = document.getElementById("tokenizer-title");
-const tensorsTitle = document.getElementById("tensors-title");
-const heatmapTitle = document.getElementById("heatmap-title");
 const kvBody = document.getElementById("kv-body");
 const tokenizerContent = document.getElementById("tokenizer-content");
 const tensorBody = document.getElementById("tensor-body");
@@ -590,6 +655,8 @@ const histogramCanvasWrapper = document.querySelector(".histogram-canvas-wrapper
 const histogramCanvas = document.getElementById("histogram-canvas");
 const histogramOverlay = document.getElementById("histogram-overlay");
 const HISTOGRAM_CANVAS_HEIGHT = 512;
+const STATISTICS_DEFAULT_HEADER_MESSAGE = "Select a tensor to generate its histogram.";
+let statisticsHeaderMessage = STATISTICS_DEFAULT_HEADER_MESSAGE;
 const histogramCtx = histogramCanvas ? histogramCanvas.getContext("2d") : null;
 if (histogramCtx) {
     histogramCtx.imageSmoothingEnabled = false;
@@ -598,8 +665,8 @@ if (histogramCtx) {
 const heatmapCanvas = document.getElementById("heatmap-canvas");
 const heatmapCanvasWrapper = document.querySelector(".heatmap-canvas-wrapper");
 const heatmapTooltip = document.getElementById("heatmap-tooltip");
-const heatmapInfo = document.getElementById("heatmap-info");
 const heatmapStatus = document.getElementById("heatmap-status");
+const statisticsStatus = document.getElementById("statistics-status");
 const heatmapOverlay = document.getElementById("heatmap-overlay");
 const heatmapControls = document.getElementById("heatmap-controls");
 const heatmapTensorSelect = document.getElementById("heatmap-tensor-select");
@@ -607,6 +674,9 @@ const heatmapSliceInput = document.getElementById("heatmap-slice-input");
 const heatmapMinInput = document.getElementById("heatmap-min-input");
 const heatmapMaxInput = document.getElementById("heatmap-max-input");
 const heatmapAutoButton = document.getElementById("heatmap-auto-button");
+const heatmapP1Button = document.getElementById("heatmap-p1-button");
+const heatmapP5Button = document.getElementById("heatmap-p5-button");
+const heatmapP10Button = document.getElementById("heatmap-p10-button");
 const heatmapStepInput = document.getElementById("heatmap-step-input");
 const heatmapTightenButton = document.getElementById("heatmap-tighten-button");
 const heatmapWidenButton = document.getElementById("heatmap-widen-button");
@@ -616,12 +686,26 @@ const tabButtons = document.querySelectorAll(".tab-button");
 const pageContainers = document.querySelectorAll(".page");
 const modelBrowserContainer = document.getElementById("model-browser");
 const modelBrowserRoot = document.getElementById("model-browser-root");
+const modelTitleLabel = document.getElementById("model-title-label");
+const tokenizerTitleLabel = document.getElementById("tokenizer-title-label");
+const tensorsTitleLabel = document.getElementById("tensors-title-label");
+const heatmapTitleLabel = document.getElementById("heatmap-title-label");
+const statisticsTitleLabel = document.getElementById("statistics-title-label");
+const modelStatusIndicator = document.getElementById("model-status");
+const tokenizerStatusIndicator = document.getElementById("tokenizer-status");
+const tensorsStatusIndicator = document.getElementById("tensors-status");
+const heatmapSectionStatus = document.getElementById("heatmap-section-status");
+const statisticsSectionStatus = document.getElementById("statistics-section-status");
 const sectionTitles = [
-    { element: modelTitle, label: "Model overview" },
-    { element: tokenizerTitle, label: "Tokenizer" },
-    { element: tensorsTitle, label: "Tensors" },
-    { element: heatmapTitle, label: "Heatmap" },
+    { key: "model", label: "Model overview", labelElement: modelTitleLabel, statusElement: modelStatusIndicator },
+    { key: "tokenizer", label: "Tokenizer", labelElement: tokenizerTitleLabel, statusElement: tokenizerStatusIndicator },
+    { key: "tensors", label: "Tensors", labelElement: tensorsTitleLabel, statusElement: tensorsStatusIndicator },
+    { key: "heatmap", label: "Heatmap", labelElement: heatmapTitleLabel, statusElement: heatmapSectionStatus },
+    { key: "statistics", label: "Statistics", labelElement: statisticsTitleLabel, statusElement: statisticsSectionStatus },
 ];
+const sectionStatusMessages = new Map();
+let currentModelDisplayPath = null;
+let currentModelFullPath = null;
 const heatmapCtx = heatmapCanvas.getContext("2d");
 if (heatmapCtx) {
     heatmapCtx.imageSmoothingEnabled = false;
@@ -880,16 +964,21 @@ function renderTooltipContent(titleText, rows = []) {
     }
     heatmapTooltip.innerHTML = "";
 
+    const normalizedRows = Array.isArray(rows)
+        ? rows.filter((row) => row && row.value !== null && row.value !== undefined && row.value !== "")
+        : [];
+
+    if (!titleText && normalizedRows.length === 0) {
+        hideTooltipElement();
+        return;
+    }
+
     if (titleText) {
         const title = document.createElement("div");
         title.className = "heatmap-tooltip__title";
         title.textContent = titleText;
         heatmapTooltip.appendChild(title);
     }
-
-    const normalizedRows = Array.isArray(rows)
-        ? rows.filter((row) => row && row.value !== null && row.value !== undefined && row.value !== "")
-        : [];
 
     if (normalizedRows.length > 0) {
         const grid = document.createElement("div");
@@ -995,11 +1084,23 @@ function renderActivePage(pageId) {
         hideTokenTooltip();
     }
 
-    if (targetPage === "heatmap" || previousPage === "heatmap") {
+    const heatmapActive = targetPage === "heatmap";
+    const heatmapWasActive = previousPage === "heatmap";
+    if (heatmapActive) {
         syncHeatmapToViewport(!!heatmapState.tensor);
+    } else if (heatmapWasActive) {
+        syncHeatmapToViewport(false);
     }
 
-    if (targetPage === "heatmap") {
+    const statisticsActive = targetPage === "statistics";
+    const statisticsWasActive = previousPage === "statistics";
+    if (statisticsActive) {
+        syncHistogramToViewport(!!heatmapState.tensor);
+    } else if (statisticsWasActive) {
+        syncHistogramToViewport(false);
+    }
+
+    if (heatmapActive) {
         applyPendingHeatmapStateIfPossible();
     }
 }
@@ -1199,7 +1300,10 @@ async function fetchHistogram() {
     const controller = new AbortController();
     histogramState.controller = controller;
     histogramState.fetching = true;
-    setHistogramOverlay("Generating histogram…", "loading");
+    const loadingMessage = "Generating histogram…";
+    statisticsHeaderMessage = loadingMessage;
+    updateStatisticsHeader();
+    setHistogramOverlay(loadingMessage, "loading");
 
     try {
         const name = encodeURIComponent(heatmapState.tensor.name);
@@ -1235,19 +1339,27 @@ async function fetchHistogram() {
         }
 
         if (bins.length === 0 || maxCount <= 0) {
+            const emptyMessage = "No histogram data available for this slice.";
             clearHistogramCanvas();
-            setHistogramOverlay("No histogram data available for this slice.");
+            setHistogramOverlay(emptyMessage);
+            statisticsHeaderMessage = emptyMessage;
+            updateStatisticsHeader();
             return;
         }
 
         setHistogramOverlay("", "idle");
         drawHistogram();
+        statisticsHeaderMessage = STATISTICS_DEFAULT_HEADER_MESSAGE;
+        updateStatisticsHeader();
     } catch (err) {
         if (controller.signal.aborted) {
             return;
         }
         clearHistogramCanvas();
-        setHistogramOverlay(`Failed to load histogram: ${err.message}`, "error");
+        const errorMessage = `Failed to load histogram: ${err.message}`;
+        setHistogramOverlay(errorMessage, "error");
+        statisticsHeaderMessage = errorMessage;
+        updateStatisticsHeader();
     } finally {
         if (histogramState.controller === controller) {
             histogramState.controller = null;
@@ -1256,7 +1368,7 @@ async function fetchHistogram() {
     }
 }
 
-function resetHistogram(message = "Select a tensor to generate its histogram.") {
+function resetHistogram(message = STATISTICS_DEFAULT_HEADER_MESSAGE) {
     if (histogramState.controller) {
         histogramState.controller.abort();
         histogramState.controller = null;
@@ -1271,6 +1383,8 @@ function resetHistogram(message = "Select a tensor to generate its histogram.") 
     histogramState.fetching = false;
     clearHistogramCanvas();
     setHistogramOverlay(message);
+    statisticsHeaderMessage = message;
+    updateStatisticsHeader();
     syncHistogramToViewport(false);
 }
 
@@ -1297,9 +1411,9 @@ const TOKEN_TYPE_LABELS = Object.freeze({
 const NO_MODEL_MESSAGE = "Select a GGUF model to inspect.";
 const LOADING_MESSAGE = "Loading…";
 const BROWSER_EMPTY_MESSAGE = "No GGUF files found in the root directory.";
+const HEATMAP_DEFAULT_HEADER_MESSAGE = "Select a tensor to open the heatmap viewer.";
+const HEATMAP_DEFAULT_STREAM_MESSAGE = "Select a tensor to stream its weights.";
 let modelBrowserState = { root: "", items: [], selected: currentModelPath || null };
-let currentModelDisplayPath = null;
-let currentModelFullPath = null;
 let selectingModel = false;
 
 const heatmapState = {
@@ -1328,6 +1442,8 @@ const heatmapState = {
     values: [],
     pendingScale: null,
 };
+
+let heatmapHeaderMessage = HEATMAP_DEFAULT_HEADER_MESSAGE;
 
 const heatmapHoverState = {
     canvasX: null,
@@ -1486,6 +1602,54 @@ function setHeatmapScale(minValue, maxValue, options = {}) {
     updateHeatmapUrlState({ syncPending: true });
 }
 
+function percentile(sortedValues, percentile) {
+    if (!Array.isArray(sortedValues) || sortedValues.length === 0) {
+        return null;
+    }
+    if (sortedValues.length === 1) {
+        return sortedValues[0];
+    }
+    const clampedPercentile = Math.min(100, Math.max(0, percentile));
+    const rank = (clampedPercentile / 100) * (sortedValues.length - 1);
+    const lowerIndex = Math.floor(rank);
+    const upperIndex = Math.ceil(rank);
+    if (lowerIndex === upperIndex) {
+        return sortedValues[lowerIndex];
+    }
+    const weight = rank - lowerIndex;
+    const lowerValue = sortedValues[lowerIndex];
+    const upperValue = sortedValues[upperIndex];
+    return lowerValue + (upperValue - lowerValue) * weight;
+}
+
+function getHeatmapPercentileRange(lowerPercent) {
+    if (!Array.isArray(heatmapState.values) || heatmapState.values.length === 0) {
+        return null;
+    }
+    const finiteValues = heatmapState.values.filter((value) => typeof value === "number" && Number.isFinite(value));
+    if (finiteValues.length === 0) {
+        return null;
+    }
+    const sortedValues = finiteValues.slice().sort((a, b) => a - b);
+    const lower = percentile(sortedValues, lowerPercent);
+    const upper = percentile(sortedValues, 100 - lowerPercent);
+    if (!Number.isFinite(lower) || !Number.isFinite(upper)) {
+        return null;
+    }
+    return { min: lower, max: upper };
+}
+
+function applyHeatmapPercentileRange(lowerPercent) {
+    if (!heatmapState.tensor || !heatmapState.imageReady) {
+        return;
+    }
+    const range = getHeatmapPercentileRange(lowerPercent);
+    if (!range) {
+        return;
+    }
+    setHeatmapScale(range.min, range.max);
+}
+
 function sanitizeStepValue(value) {
     if (!Number.isFinite(value) || value <= 0) {
         return HEATMAP_STEP_FALLBACK;
@@ -1619,6 +1783,17 @@ function syncHeatmapControls() {
         const hasAuto = Number.isFinite(heatmapState.autoMin) && Number.isFinite(heatmapState.autoMax);
         heatmapAutoButton.disabled = !ready || !hasAuto;
     }
+
+    const hasPercentiles = ready && heatmapState.valid > 0;
+    if (heatmapP1Button) {
+        heatmapP1Button.disabled = !hasPercentiles;
+    }
+    if (heatmapP5Button) {
+        heatmapP5Button.disabled = !hasPercentiles;
+    }
+    if (heatmapP10Button) {
+        heatmapP10Button.disabled = !hasPercentiles;
+    }
 }
 
 function getViewportDimensions() {
@@ -1692,12 +1867,24 @@ function renderTableMessage(body, span, message) {
 function updateSectionHeaderPaths(displayPath, fullPath) {
     const resolvedDisplay = typeof displayPath === "string" && displayPath.length > 0 ? displayPath : null;
     const resolvedFull = typeof fullPath === "string" && fullPath.length > 0 ? fullPath : null;
-    sectionTitles.forEach(({ element, label }) => {
-        if (!element) {
+    sectionTitles.forEach(({ key, label, labelElement, statusElement }) => {
+        if (labelElement) {
+            labelElement.textContent = label;
+        }
+        if (!statusElement) {
             return;
         }
-        element.textContent = label;
+        const message = sectionStatusMessages.get(key);
+        statusElement.classList.remove("model-status--message");
+        statusElement.innerHTML = "";
+        if (typeof message === "string" && message.length > 0) {
+            statusElement.textContent = message;
+            statusElement.classList.add("model-status--message");
+            statusElement.hidden = false;
+            return;
+        }
         if (!resolvedDisplay) {
+            statusElement.hidden = true;
             return;
         }
         const pathBadge = document.createElement("span");
@@ -1708,17 +1895,40 @@ function updateSectionHeaderPaths(displayPath, fullPath) {
         const pathCode = document.createElement("code");
         pathCode.textContent = resolvedDisplay;
         pathBadge.appendChild(pathCode);
-        element.appendChild(pathBadge);
+        statusElement.appendChild(pathBadge);
+        statusElement.hidden = false;
     });
 }
 
-function setInfoMessage(message) {
+function setSectionStatus(key, message) {
+    if (!key) {
+        return;
+    }
+    if (typeof message === "string" && message.length > 0) {
+        sectionStatusMessages.set(key, message);
+    } else {
+        sectionStatusMessages.delete(key);
+    }
     updateSectionHeaderPaths(currentModelDisplayPath, currentModelFullPath);
+}
+
+function setInfoMessage(message) {
+    setSectionStatus("model", message);
     renderEmptyNote(infoCards, message);
 }
 
 function setTokenizerMessage(message) {
+    setSectionStatus("tokenizer", message);
     renderEmptyNote(tokenizerContent, message);
+}
+
+function setTensorsMessage(message) {
+    if (!tensorBody) {
+        return;
+    }
+    tensorBody.innerHTML = "";
+    renderTableMessage(tensorBody, 6, message);
+    setSectionStatus("tensors", message);
 }
 
 async function fetchJSON(url, options) {
@@ -1821,12 +2031,9 @@ function renderModelBrowser() {
         const hasRoot = typeof modelBrowserState.root === "string" && modelBrowserState.root.length > 0;
         modelBrowserRoot.hidden = !hasRoot;
         if (hasRoot) {
-            const label = document.createElement("span");
-            label.textContent = "Root: ";
             const code = document.createElement("code");
             code.textContent = modelBrowserState.root;
-            label.appendChild(code);
-            modelBrowserRoot.appendChild(label);
+            modelBrowserRoot.appendChild(code);
         }
     }
 
@@ -1936,7 +2143,6 @@ async function selectModel(path) {
         pendingHeatmapState.x = null;
         pendingHeatmapState.y = null;
         await refreshAll({ ensureSelected: false });
-        await loadModelList();
     } catch (err) {
         errorMessage = err.status === 409 ? NO_MODEL_MESSAGE : err.message;
     } finally {
@@ -1958,8 +2164,7 @@ function resetViewer(message = NO_MODEL_MESSAGE) {
     kvBody.innerHTML = "";
     renderTableMessage(kvBody, 3, message);
     setTokenizerMessage(message);
-    tensorBody.innerHTML = "";
-    renderTableMessage(tensorBody, 6, message);
+    setTensorsMessage(message);
     tensorData = [];
     tokenizerState = { ...tokenizerState, offset: 0, total: 0 };
     refreshHeatmapTensorSelect();
@@ -1994,8 +2199,7 @@ async function refreshAll(options = {}) {
     kvBody.innerHTML = "";
     renderTableMessage(kvBody, 3, LOADING_MESSAGE);
     setTokenizerMessage(LOADING_MESSAGE);
-    tensorBody.innerHTML = "";
-    renderTableMessage(tensorBody, 6, LOADING_MESSAGE);
+    setTensorsMessage(LOADING_MESSAGE);
     tokenizerState = { ...tokenizerState, offset: 0, total: 0 };
     resetHeatmap();
 
@@ -2018,7 +2222,7 @@ async function loadInfo() {
             currentModelFullPath = typeof info.modelPath === "string" && info.modelPath.length > 0
                 ? info.modelPath
                 : null;
-            updateSectionHeaderPaths(currentModelDisplayPath, currentModelFullPath);
+            setSectionStatus("model", null);
 
             const cards = [
                 ["File size", Number.isFinite(info.fileSize) ? formatBytes(info.fileSize) : "N/A"],
@@ -2306,6 +2510,7 @@ async function loadTokenizer(offset = tokenizerState.offset) {
 
         const layout = renderTokenizerGrid(tokenizerState, data);
         tokenizerContent.appendChild(layout.container);
+        setSectionStatus("tokenizer", null);
 
         const step = tokenizerState.gridSize * tokenizerState.gridSize;
         const nextOffset = tokenizerState.offset + step;
@@ -2489,18 +2694,18 @@ async function loadTensors() {
     try {
         const data = await fetchJSON(withModel("api/tensors"));
         tensorData = Array.isArray(data) ? data : [];
-        tensorBody.innerHTML = "";
         if (tensorData.length === 0) {
-            renderTableMessage(tensorBody, 6, "No tensors available.");
+            setTensorsMessage("No tensors available.");
         } else {
+            tensorBody.innerHTML = "";
+            setSectionStatus("tensors", null);
             tensorData.forEach(tensor => tensorBody.appendChild(renderTensorRow(tensor)));
         }
         refreshHeatmapTensorSelect();
         applyPendingHeatmapStateIfPossible();
     } catch (err) {
         tensorData = [];
-        tensorBody.innerHTML = "";
-        renderTableMessage(tensorBody, 6, err.status === 409 ? NO_MODEL_MESSAGE : err.message);
+        setTensorsMessage(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
         refreshHeatmapTensorSelect();
         pendingHeatmapState.applied = true;
     }
@@ -2605,10 +2810,6 @@ function requestHeatmapValue(globalX, globalY, slice) {
     heatmapHoverState.requestSlice = slice;
     heatmapHoverState.data = null;
 
-    if (heatmapTooltip && heatmapHoverState.clientX !== null && heatmapHoverState.clientY !== null) {
-        showHeatmapTooltipMessage("Loading…");
-    }
-
     const controller = new AbortController();
     heatmapHoverState.controller = controller;
 
@@ -2654,10 +2855,12 @@ function requestHeatmapValue(globalX, globalY, slice) {
         });
 }
 
-function resetHeatmap(message = "Select a tensor to stream its weights.") {
-    const histogramMessage = message === "Select a tensor to stream its weights."
-        ? "Select a tensor to generate its histogram."
+function resetHeatmap(message = HEATMAP_DEFAULT_STREAM_MESSAGE) {
+    const isDefaultStreamMessage = message === HEATMAP_DEFAULT_STREAM_MESSAGE;
+    const histogramMessage = isDefaultStreamMessage
+        ? STATISTICS_DEFAULT_HEADER_MESSAGE
         : message;
+    heatmapHeaderMessage = isDefaultStreamMessage ? HEATMAP_DEFAULT_HEADER_MESSAGE : message;
     resetHistogram(histogramMessage);
     if (heatmapState.controller) {
         heatmapState.controller.abort();
@@ -2755,10 +2958,59 @@ function getTensorBlockSize(tensor) {
     return Math.max(1, Math.floor(raw));
 }
 
+function updateStatisticsHeader() {
+    if (!statisticsStatus) {
+        return;
+    }
+
+    const hasHistogram = !!(heatmapState.tensor
+        && Array.isArray(histogramState.bins)
+        && histogramState.bins.length > 0
+        && Number.isFinite(histogramState.maxCount)
+        && histogramState.maxCount > 0);
+
+    if (!hasHistogram) {
+        const message = typeof statisticsHeaderMessage === "string" && statisticsHeaderMessage.length > 0
+            ? statisticsHeaderMessage
+            : STATISTICS_DEFAULT_HEADER_MESSAGE;
+        setSectionStatus("statistics", message);
+        statisticsStatus.textContent = "";
+        statisticsStatus.hidden = true;
+        return;
+    }
+
+    setSectionStatus("statistics", null);
+    statisticsHeaderMessage = STATISTICS_DEFAULT_HEADER_MESSAGE;
+
+    const parts = [];
+    parts.push(`Bins ${formatTooltipInteger(histogramState.bins.length)}`);
+
+    if (Number.isFinite(histogramState.total)) {
+        parts.push(`Total ${formatTooltipInteger(histogramState.total)}`);
+    }
+
+    if (Number.isFinite(histogramState.rangeMin)
+        && Number.isFinite(histogramState.rangeMax)
+        && histogramState.rangeMax >= histogramState.rangeMin) {
+        const minLabel = formatTooltipFloat(histogramState.rangeMin);
+        const maxLabel = formatTooltipFloat(histogramState.rangeMax);
+        parts.push(`Range ${minLabel} - ${maxLabel}`);
+    }
+
+    statisticsStatus.textContent = parts.join(" | ");
+    statisticsStatus.hidden = parts.length === 0;
+}
+
 function updateHeatmapHeader() {
+    if (!heatmapStatus) {
+        return;
+    }
+
     if (!heatmapState.tensor) {
-        heatmapInfo.hidden = false;
-        heatmapInfo.textContent = "Select a tensor to open the heatmap viewer.";
+        const message = typeof heatmapHeaderMessage === "string" && heatmapHeaderMessage.length > 0
+            ? heatmapHeaderMessage
+            : HEATMAP_DEFAULT_HEADER_MESSAGE;
+        setSectionStatus("heatmap", message);
         heatmapStatus.textContent = "";
         heatmapStatus.hidden = true;
         return;
@@ -2768,8 +3020,8 @@ function updateHeatmapHeader() {
     const layoutWidth = layout && typeof layout.width === "number" && layout.width > 0 ? layout.width : heatmapState.viewWidth;
     const layoutHeight = layout && typeof layout.height === "number" && layout.height > 0 ? layout.height : heatmapState.viewHeight;
 
-    heatmapInfo.textContent = "";
-    heatmapInfo.hidden = true;
+    setSectionStatus("heatmap", null);
+    heatmapHeaderMessage = HEATMAP_DEFAULT_HEADER_MESSAGE;
 
     const x0 = heatmapState.windowX;
     const y0 = heatmapState.windowY;
@@ -2804,7 +3056,6 @@ function ensureHeatmapBuffer(width, height) {
 }
 
 function syncHeatmapToViewport(fetchAfterResize) {
-    syncHistogramToViewport(fetchAfterResize && !!heatmapState.tensor);
     if (heatmapCanvasWrapper && heatmapCanvasWrapper.offsetParent === null) {
         return;
     }
@@ -3383,6 +3634,24 @@ if (heatmapAutoButton) {
     });
 }
 
+if (heatmapP1Button) {
+    heatmapP1Button.addEventListener("click", () => {
+        applyHeatmapPercentileRange(1);
+    });
+}
+
+if (heatmapP5Button) {
+    heatmapP5Button.addEventListener("click", () => {
+        applyHeatmapPercentileRange(5);
+    });
+}
+
+if (heatmapP10Button) {
+    heatmapP10Button.addEventListener("click", () => {
+        applyHeatmapPercentileRange(10);
+    });
+}
+
 if (heatmapStepInput) {
     const commitStepInput = () => {
         commitHeatmapStep(heatmapStepInput.value);
@@ -3592,6 +3861,8 @@ heatmapCanvas.addEventListener("wheel", (event) => {
 
 window.addEventListener("resize", () => {
     syncHeatmapToViewport(true);
+    const statisticsVisible = normalizePageId(activePage || DEFAULT_PAGE) === "statistics";
+    syncHistogramToViewport(statisticsVisible && !!heatmapState.tensor);
 });
 
 syncHeatmapToViewport(false);
