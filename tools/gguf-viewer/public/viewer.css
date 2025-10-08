@@ -555,19 +555,6 @@ select:focus {
     padding: 0.15rem 0.4rem;
     border-radius: 4px;
 }
-.architecture-block-nav__button {
-    background: #10213d;
-    border: 1px solid #20355c;
-    color: #d3dbf7;
-    padding: 0.2rem 0.6rem;
-    border-radius: 4px;
-    font-size: 0.72rem;
-    cursor: pointer;
-}
-.architecture-block-nav__button:disabled {
-    opacity: 0.5;
-    cursor: default;
-}
 .architecture-block__title {
     font-size: 0.82rem;
     font-weight: 600;
@@ -609,9 +596,10 @@ select:focus {
     color: #b7c6e6;
 }
 .architecture-tensor__actions {
-    display: flex;
-    flex-wrap: wrap;
+    display: inline-flex;
     gap: 0.3rem;
+    justify-content: flex-end;
+    margin-left: auto;
 }
 .architecture-tensor--mismatch {
     border-left-color: #f59f80;
