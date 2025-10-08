@@ -597,7 +597,7 @@
             statisticsButton.textContent = "Statistics";
             actions.appendChild(statisticsButton);
 
-            li.appendChild(actions);
+            header.appendChild(actions);
         }
         return li;
     }
@@ -823,12 +823,6 @@
             navControls.className = "architecture-block-nav__controls";
             navContainer.appendChild(navControls);
 
-            const prevButton = document.createElement("button");
-            prevButton.type = "button";
-            prevButton.className = "architecture-block-nav__button";
-            prevButton.textContent = "Prev";
-            navControls.appendChild(prevButton);
-
             const selectLabel = document.createElement("label");
             selectLabel.className = "architecture-block-nav__label";
             selectLabel.textContent = "Block";
@@ -843,9 +837,13 @@
             selectLabel.appendChild(select);
             navControls.appendChild(selectLabel);
 
+            const prevButton = document.createElement("button");
+            prevButton.type = "button";
+            prevButton.textContent = "Prev";
+            navControls.appendChild(prevButton);
+
             const nextButton = document.createElement("button");
             nextButton.type = "button";
-            nextButton.className = "architecture-block-nav__button";
             nextButton.textContent = "Next";
             navControls.appendChild(nextButton);
 
