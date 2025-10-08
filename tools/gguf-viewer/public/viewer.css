@@ -29,7 +29,6 @@ h2 {
     font-size: 0.9rem;
     font-weight: 600;
     letter-spacing: 0.05em;
-    text-transform: uppercase;
     color: #8ea2c8;
 }
 .tabs {
@@ -50,7 +49,6 @@ h2 {
     padding: 0.3rem 0.6rem;
     font-size: 0.8rem;
     letter-spacing: 0.05em;
-    text-transform: uppercase;
     cursor: pointer;
     font-weight: 500;
 }
@@ -89,7 +87,6 @@ h2 {
     margin: 0;
     font-size: 0.7rem;
     letter-spacing: 0.08em;
-    text-transform: uppercase;
     color: #8ea2c8;
 }
 .info-card p {
@@ -161,7 +158,6 @@ tbody tr:nth-of-type(2n) {
 thead th {
     font-size: 0.72rem;
     letter-spacing: 0.06em;
-    text-transform: uppercase;
     color: #8ea2c8;
 }
 code {
@@ -176,7 +172,6 @@ button {
     color: inherit;
     padding: 0.3rem 0.65rem;
     font-size: 0.78rem;
-    text-transform: uppercase;
     letter-spacing: 0.05em;
     cursor: pointer;
 }
@@ -189,6 +184,14 @@ button:disabled {
     cursor: not-allowed;
     background: #0f1625;
     opacity: 0.6;
+}
+.tensor-table-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+}
+.tensor-table-actions button {
+    flex: 0 0 auto;
 }
 .controls {
     display: flex;
@@ -390,7 +393,6 @@ select:focus {
     color: #a8bee5;
     font-size: 0.68rem;
     letter-spacing: 0.06em;
-    text-transform: uppercase;
 }
 .tokenizer-controls {
     align-items: center;
@@ -515,7 +517,6 @@ select:focus {
     margin: 0;
     font-size: 0.75rem;
     letter-spacing: 0.08em;
-    text-transform: uppercase;
     color: #8ea2c8;
 }
 .architecture-block {
@@ -533,10 +534,6 @@ select:focus {
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
-}
-.architecture-block-nav__summary {
-    font-size: 0.74rem;
-    color: #9fb4d9;
 }
 .architecture-block-nav__controls {
     display: flex;
@@ -584,7 +581,6 @@ select:focus {
 .architecture-subgroup__title {
     font-size: 0.72rem;
     letter-spacing: 0.06em;
-    text-transform: uppercase;
     color: #9fb4d9;
 }
 .architecture-tensor {
@@ -612,6 +608,11 @@ select:focus {
 .architecture-tensor__note {
     color: #b7c6e6;
 }
+.architecture-tensor__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+}
 .architecture-tensor--mismatch {
     border-left-color: #f59f80;
 }
@@ -638,7 +639,6 @@ select:focus {
     color: #a8bee5;
     font-size: 0.65rem;
     letter-spacing: 0.06em;
-    text-transform: uppercase;
 }
 .architecture-badge--mismatch {
     background: #c2413a;

@@ -577,6 +577,28 @@
             note.textContent = options.note;
             li.appendChild(note);
         }
+        if (tensor.name) {
+            const actions = document.createElement("div");
+            actions.className = "architecture-tensor__actions";
+
+            const encodedName = encodeURIComponent(tensor.name);
+
+            const heatmapButton = document.createElement("button");
+            heatmapButton.type = "button";
+            heatmapButton.dataset.action = "heatmap";
+            heatmapButton.dataset.name = encodedName;
+            heatmapButton.textContent = "Heatmap";
+            actions.appendChild(heatmapButton);
+
+            const statisticsButton = document.createElement("button");
+            statisticsButton.type = "button";
+            statisticsButton.dataset.action = "statistics";
+            statisticsButton.dataset.name = encodedName;
+            statisticsButton.textContent = "Statistics";
+            actions.appendChild(statisticsButton);
+
+            li.appendChild(actions);
+        }
         return li;
     }
 
@@ -863,7 +885,6 @@
                 currentPosition = position;
                 const blockIndex = blockIndices[position];
                 select.value = String(blockIndex);
-                navSummary.textContent = `Showing block ${blockIndex} (${position + 1} of ${blockIndices.length})`;
                 prevButton.disabled = position === 0;
                 nextButton.disabled = position === blockIndices.length - 1;
 
@@ -992,7 +1013,7 @@
                     displayName: "output.weight",
                     variant: "info",
                     badgeLabel: "info",
-                    note: "No dedicated tensor exported; logits projection is fused or quantized in the GGUF payload.",
+                    note: "Output projection not found. Logits are likely computed via tied embeddings (token_embd.weight) or integrated into the final transformer block.",
                 }),
             );
         }

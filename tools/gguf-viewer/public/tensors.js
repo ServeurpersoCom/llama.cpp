@@ -9,13 +9,17 @@ function setTensorsMessage(message) {
 
 function renderTensorRow(tensor) {
     const tr = document.createElement("tr");
+    const encodedName = encodeURIComponent(tensor.name);
     tr.innerHTML = `
         <td><code>${tensor.name}</code></td>
         <td>${tensor.type}</td>
         <td><code>${formatShape(tensor.shape)}</code></td>
         <td>${tensor.nElements}</td>
         <td>${tensor.fileOffset}</td>
-        <td><button data-name="${encodeURIComponent(tensor.name)}">Heatmap</button></td>
+        <td class="tensor-table-actions">
+            <button type="button" data-action="heatmap" data-name="${encodedName}">Heatmap</button>
+            <button type="button" data-action="statistics" data-name="${encodedName}">Statistics</button>
+        </td>
     `;
     return tr;
 }

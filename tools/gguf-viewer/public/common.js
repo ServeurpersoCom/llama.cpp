@@ -26,7 +26,7 @@ const heatmapTensorSelect = document.getElementById("heatmap-tensor-select");
 const heatmapSliceInput = document.getElementById("heatmap-slice-input");
 const heatmapMinInput = document.getElementById("heatmap-min-input");
 const heatmapMaxInput = document.getElementById("heatmap-max-input");
-const heatmapAutoButton = document.getElementById("heatmap-auto-button");
+const heatmapSliceButton = document.getElementById("heatmap-slice-button");
 const heatmapP1Button = document.getElementById("heatmap-p1-button");
 const heatmapP5Button = document.getElementById("heatmap-p5-button");
 const heatmapP10Button = document.getElementById("heatmap-p10-button");
@@ -498,7 +498,7 @@ const heatmapControlElements = [
     heatmapSliceInput,
     heatmapMinInput,
     heatmapMaxInput,
-    heatmapAutoButton,
+    heatmapSliceButton,
     heatmapStepInput,
     heatmapTightenButton,
     heatmapWidenButton,
@@ -563,10 +563,10 @@ const heatmapState = {
     windowX: 0,
     windowY: 0,
     slice: 0,
-    autoMin: undefined,
-    autoMax: undefined,
-    sliceMinBound: undefined,
-    sliceMaxBound: undefined,
+    viewMin: undefined,
+    viewMax: undefined,
+    sliceMin: undefined,
+    sliceMax: undefined,
     scaleMin: -1,
     scaleMax: 1,
     scaleInitialized: false,
@@ -613,8 +613,8 @@ const heatmapDragState = {
 syncPageFromLocation();
 
 function getSliceBounds() {
-    let minBound = Number.isFinite(heatmapState.sliceMinBound) ? heatmapState.sliceMinBound : undefined;
-    let maxBound = Number.isFinite(heatmapState.sliceMaxBound) ? heatmapState.sliceMaxBound : undefined;
+    let minBound = Number.isFinite(heatmapState.sliceMin) ? heatmapState.sliceMin : undefined;
+    let maxBound = Number.isFinite(heatmapState.sliceMax) ? heatmapState.sliceMax : undefined;
 
     if (minBound !== undefined && maxBound !== undefined && minBound > maxBound) {
         const tmp = minBound;
@@ -676,7 +676,10 @@ function sanitizeScale(minValue, maxValue) {
         min = Number.isFinite(heatmapState.scaleMin) ? heatmapState.scaleMin : undefined;
     }
     if (!Number.isFinite(min)) {
-        min = Number.isFinite(heatmapState.autoMin) ? heatmapState.autoMin : undefined;
+        min = Number.isFinite(heatmapState.viewMin) ? heatmapState.viewMin : undefined;
+    }
+    if (!Number.isFinite(min)) {
+        min = Number.isFinite(heatmapState.sliceMin) ? heatmapState.sliceMin : undefined;
     }
     if (!Number.isFinite(min)) {
         min = minBound;
@@ -690,7 +693,10 @@ function sanitizeScale(minValue, maxValue) {
         max = Number.isFinite(heatmapState.scaleMax) ? heatmapState.scaleMax : undefined;
     }
     if (!Number.isFinite(max)) {
-        max = Number.isFinite(heatmapState.autoMax) ? heatmapState.autoMax : undefined;
+        max = Number.isFinite(heatmapState.viewMax) ? heatmapState.viewMax : undefined;
+    }
+    if (!Number.isFinite(max)) {
+        max = Number.isFinite(heatmapState.sliceMax) ? heatmapState.sliceMax : undefined;
     }
     if (!Number.isFinite(max)) {
         max = maxBound;
@@ -920,9 +926,9 @@ function syncHeatmapControls() {
         heatmapMaxInput.disabled = !ready;
     }
 
-    if (heatmapAutoButton) {
-        const hasAuto = Number.isFinite(heatmapState.autoMin) && Number.isFinite(heatmapState.autoMax);
-        heatmapAutoButton.disabled = !ready || !hasAuto;
+    if (heatmapSliceButton) {
+        const hasSliceScale = Number.isFinite(heatmapState.sliceMin) && Number.isFinite(heatmapState.sliceMax);
+        heatmapSliceButton.disabled = !ready || !hasSliceScale;
     }
 
     const hasPercentiles = ready && heatmapState.valid > 0;
