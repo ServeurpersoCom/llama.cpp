@@ -435,8 +435,8 @@ tensor_layout compute_tensor_layout(const std::vector<int64_t> & shape, size_t n
         layout.width = width;
         layout.height = height;
     } else if (shape.size() == 2) {
-        layout.width = static_cast<size_t>(std::max<int64_t>(1, shape.back()));
-        layout.height = static_cast<size_t>(std::max<int64_t>(1, shape.front()));
+        layout.width = static_cast<size_t>(std::max<int64_t>(1, shape.front()));
+        layout.height = static_cast<size_t>(std::max<int64_t>(1, shape.back()));
     } else {
         const size_t depth = static_cast<size_t>(std::max<int64_t>(1, shape.back()));
         size_t width = static_cast<size_t>(std::max<int64_t>(1, shape[shape.size() - 2]));

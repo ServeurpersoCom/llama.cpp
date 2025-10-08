@@ -160,10 +160,10 @@ function resetHeatmap(message = HEATMAP_DEFAULT_STREAM_MESSAGE) {
     heatmapState.windowX = 0;
     heatmapState.windowY = 0;
     heatmapState.slice = 0;
-    heatmapState.autoMin = undefined;
-    heatmapState.autoMax = undefined;
-    heatmapState.sliceMinBound = undefined;
-    heatmapState.sliceMaxBound = undefined;
+    heatmapState.viewMin = undefined;
+    heatmapState.viewMax = undefined;
+    heatmapState.sliceMin = undefined;
+    heatmapState.sliceMax = undefined;
     heatmapState.scaleMin = -1;
     heatmapState.scaleMax = 1;
     heatmapState.scaleInitialized = false;
@@ -213,12 +213,12 @@ function layoutFromTensor(tensor) {
 
     if (!Number.isFinite(width) || width <= 0) {
         if (Array.isArray(tensor.shape) && tensor.shape.length > 0) {
-            width = tensor.shape[tensor.shape.length - 1];
+            width = Number(tensor.shape[0]);
         }
     }
     if (!Number.isFinite(height) || height <= 0) {
         if (Array.isArray(tensor.shape) && tensor.shape.length > 1) {
-            height = tensor.shape[tensor.shape.length - 2];
+            height = Number(tensor.shape[1]);
         } else {
             height = 1;
         }
@@ -274,7 +274,7 @@ function updateHeatmapHeader() {
     const coverageTotal = heatmapState.viewWidth * heatmapState.viewHeight;
     const coverageText = coverageTotal > 0 ? `${heatmapState.valid}/${coverageTotal}` : "0/0";
     const statusParts = [
-        `Layout ${layoutHeight} x ${layoutWidth}`,
+        `Layout ${layoutWidth} x ${layoutHeight}`,
         `X ${x0} - ${x1}`,
         `Y ${y0} - ${y1}`,
         `Cells ${coverageText}`,
@@ -603,13 +603,13 @@ async function fetchHeatmapWindow() {
             void fetchHistogram();
         }
 
-        heatmapState.autoMin = typeof data.min === "number" ? data.min : undefined;
-        heatmapState.autoMax = typeof data.max === "number" ? data.max : undefined;
-        heatmapState.sliceMinBound = typeof data.sliceMin === "number" ? data.sliceMin : undefined;
-        heatmapState.sliceMaxBound = typeof data.sliceMax === "number" ? data.sliceMax : undefined;
+        heatmapState.viewMin = typeof data.min === "number" ? data.min : undefined;
+        heatmapState.viewMax = typeof data.max === "number" ? data.max : undefined;
+        heatmapState.sliceMin = typeof data.sliceMin === "number" ? data.sliceMin : undefined;
+        heatmapState.sliceMax = typeof data.sliceMax === "number" ? data.sliceMax : undefined;
 
         if (!heatmapState.scaleInitialized) {
-            setHeatmapScale(heatmapState.autoMin, heatmapState.autoMax, { reapply: false, sync: false });
+            setHeatmapScale(heatmapState.viewMin, heatmapState.viewMax, { reapply: false, sync: false });
         } else {
             const clamped = sanitizeScale(heatmapState.scaleMin, heatmapState.scaleMax);
             heatmapState.scaleMin = clamped.min;
@@ -770,15 +770,31 @@ function openHeatmap(nameEncoded, options = {}) {
 }
 
 
+function handleTensorAction(target) {
+    if (!target || target.tagName !== "BUTTON" || !target.dataset.name) {
+        return;
+    }
+
+    const action = target.dataset.action || "heatmap";
+    const destination = action === "statistics" ? "statistics" : "heatmap";
+    const current = normalizePageId(window.location.hash.slice(1));
+    if (current !== destination) {
+        window.location.hash = destination;
+    }
+    openHeatmap(target.dataset.name);
+}
+
 tensorBody.addEventListener("click", (event) => {
     const target = event.target;
-    if (target.tagName === "BUTTON" && target.dataset.name) {
-        if (normalizePageId(window.location.hash.slice(1)) !== "heatmap") {
-            window.location.hash = "heatmap";
-        }
-        openHeatmap(target.dataset.name);
-    }
+    handleTensorAction(target);
 });
+
+if (architectureContent) {
+    architectureContent.addEventListener("click", (event) => {
+        const target = event.target;
+        handleTensorAction(target);
+    });
+}
 
 function commitSliceInput() {
     if (!heatmapSliceInput || !heatmapState.tensor) {
@@ -867,15 +883,15 @@ if (heatmapMaxInput) {
     });
 }
 
-if (heatmapAutoButton) {
-    heatmapAutoButton.addEventListener("click", () => {
+if (heatmapSliceButton) {
+    heatmapSliceButton.addEventListener("click", () => {
         if (!heatmapState.tensor) {
             return;
         }
-        if (!Number.isFinite(heatmapState.autoMin) || !Number.isFinite(heatmapState.autoMax)) {
+        if (!Number.isFinite(heatmapState.sliceMin) || !Number.isFinite(heatmapState.sliceMax)) {
             return;
         }
-        setHeatmapScale(heatmapState.autoMin, heatmapState.autoMax);
+        setHeatmapScale(heatmapState.sliceMin, heatmapState.sliceMax);
     });
 }
 
