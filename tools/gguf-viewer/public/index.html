@@ -493,6 +493,167 @@
         .badge + .badge {
             margin-left: 0.35rem;
         }
+        .architecture-tree {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
+        }
+        .architecture-list {
+            list-style: none;
+            margin: 0;
+            padding-left: 1.1rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .architecture-group {
+            background: #060b15;
+            padding: 0.55rem 0.7rem;
+            border-left: 2px solid #1e2a42;
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .architecture-group__title {
+            margin: 0;
+            font-size: 0.75rem;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: #8ea2c8;
+        }
+        .architecture-block {
+            background: #081022;
+            padding: 0.5rem 0.6rem;
+            border-left: 2px solid #243354;
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+        }
+        .architecture-block-nav {
+            background: #081022;
+            padding: 0.45rem 0.55rem;
+            border-left: 2px solid #243354;
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .architecture-block-nav__summary {
+            font-size: 0.74rem;
+            color: #9fb4d9;
+        }
+        .architecture-block-nav__controls {
+            display: flex;
+            align-items: center;
+            gap: 0.45rem;
+            flex-wrap: wrap;
+        }
+        .architecture-block-nav__label {
+            font-size: 0.72rem;
+            color: #d3dbf7;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .architecture-block-nav__select {
+            background: #0e1a33;
+            border: 1px solid #1e2a42;
+            color: #d3dbf7;
+            padding: 0.15rem 0.4rem;
+            border-radius: 4px;
+        }
+        .architecture-block-nav__button {
+            background: #10213d;
+            border: 1px solid #20355c;
+            color: #d3dbf7;
+            padding: 0.2rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.72rem;
+            cursor: pointer;
+        }
+        .architecture-block-nav__button:disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+        .architecture-block__title {
+            font-size: 0.82rem;
+            font-weight: 600;
+            color: #d3dbf7;
+        }
+        .architecture-subgroup {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+        .architecture-subgroup__title {
+            font-size: 0.72rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: #9fb4d9;
+        }
+        .architecture-tensor {
+            display: flex;
+            flex-direction: column;
+            gap: 0.18rem;
+            background: #0b1424;
+            padding: 0.35rem 0.55rem;
+            border-left: 2px solid transparent;
+        }
+        .architecture-tensor__header {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+        }
+        .architecture-tensor__shape,
+        .architecture-tensor__expected,
+        .architecture-tensor__note {
+            font-size: 0.72rem;
+            color: #9fb4d9;
+        }
+        .architecture-tensor__expected {
+            color: #7aa2e8;
+        }
+        .architecture-tensor__note {
+            color: #b7c6e6;
+        }
+        .architecture-tensor--mismatch {
+            border-left-color: #f59f80;
+        }
+        .architecture-tensor--missing {
+            border-left-color: #ef4444;
+            background: rgba(168, 34, 70, 0.24);
+        }
+        .architecture-tensor--info {
+            border-left-color: #5a7ddb;
+            background: rgba(48, 85, 170, 0.18);
+        }
+        .architecture-note {
+            font-size: 0.72rem;
+            color: #9fb4d9;
+            background: #0a111f;
+            padding: 0.35rem 0.55rem;
+            border-left: 2px solid #23324f;
+        }
+        .architecture-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.12rem 0.4rem;
+            background: #132036;
+            color: #a8bee5;
+            font-size: 0.65rem;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+        .architecture-badge--mismatch {
+            background: #c2413a;
+            color: #ffe7e3;
+        }
+        .architecture-badge--info {
+            background: #27416f;
+            color: #d9e3fb;
+        }
 </style>
 </head>
 <body>
@@ -501,6 +662,7 @@
     <button type="button" class="tab-button" data-target-page="metadata">Metadata</button>
     <button type="button" class="tab-button" data-target-page="tokenizer">Tokenizer</button>
     <button type="button" class="tab-button" data-target-page="tensors">Tensors</button>
+    <button type="button" class="tab-button" data-target-page="architecture">Architecture</button>
     <button type="button" class="tab-button" data-target-page="heatmap">Heatmap</button>
     <button type="button" class="tab-button" data-target-page="statistics">Statistics</button>
 </nav>
@@ -575,6 +737,16 @@
         </section>
     </div>
 
+    <div class="page" data-page-id="architecture">
+        <section>
+            <h2 id="architecture-title" class="model-title">
+                <span class="model-title__label" id="architecture-title-label">Architecture</span>
+                <span class="model-status" id="architecture-status" hidden></span>
+            </h2>
+            <div id="architecture-content"></div>
+        </section>
+    </div>
+
     <div class="page" data-page-id="heatmap">
         <section>
             <h2 id="heatmap-title" class="model-title">
@@ -646,11 +818,13 @@
         </section>
     </div>
 </main>
+<script src="architecture.js"></script>
 <script>
 const infoCards = document.getElementById("info-cards");
 const kvBody = document.getElementById("kv-body");
 const tokenizerContent = document.getElementById("tokenizer-content");
 const tensorBody = document.getElementById("tensor-body");
+const architectureContent = document.getElementById("architecture-content");
 const histogramCanvasWrapper = document.querySelector(".histogram-canvas-wrapper");
 const histogramCanvas = document.getElementById("histogram-canvas");
 const histogramOverlay = document.getElementById("histogram-overlay");
@@ -689,17 +863,20 @@ const modelBrowserRoot = document.getElementById("model-browser-root");
 const modelTitleLabel = document.getElementById("model-title-label");
 const tokenizerTitleLabel = document.getElementById("tokenizer-title-label");
 const tensorsTitleLabel = document.getElementById("tensors-title-label");
+const architectureTitleLabel = document.getElementById("architecture-title-label");
 const heatmapTitleLabel = document.getElementById("heatmap-title-label");
 const statisticsTitleLabel = document.getElementById("statistics-title-label");
 const modelStatusIndicator = document.getElementById("model-status");
 const tokenizerStatusIndicator = document.getElementById("tokenizer-status");
 const tensorsStatusIndicator = document.getElementById("tensors-status");
+const architectureStatusIndicator = document.getElementById("architecture-status");
 const heatmapSectionStatus = document.getElementById("heatmap-section-status");
 const statisticsSectionStatus = document.getElementById("statistics-section-status");
 const sectionTitles = [
     { key: "model", label: "Model overview", labelElement: modelTitleLabel, statusElement: modelStatusIndicator },
     { key: "tokenizer", label: "Tokenizer", labelElement: tokenizerTitleLabel, statusElement: tokenizerStatusIndicator },
     { key: "tensors", label: "Tensors", labelElement: tensorsTitleLabel, statusElement: tensorsStatusIndicator },
+    { key: "architecture", label: "Architecture", labelElement: architectureTitleLabel, statusElement: architectureStatusIndicator },
     { key: "heatmap", label: "Heatmap", labelElement: heatmapTitleLabel, statusElement: heatmapSectionStatus },
     { key: "statistics", label: "Statistics", labelElement: statisticsTitleLabel, statusElement: statisticsSectionStatus },
 ];
@@ -1398,6 +1575,9 @@ const HEATMAP_SCALE_DECIMALS = 4;
 const VIEWPORT_MARGIN = 64;
 
 let tensorData = [];
+let modelMetadataEntries = [];
+let architectureMetadataLoaded = false;
+let architectureTensorsLoaded = false;
 let tokenizerState = { offset: 0, total: 0, gridSize: 16 };
 const textEncoder = new TextEncoder();
 const TOKEN_TYPE_LABELS = Object.freeze({
@@ -1931,6 +2111,50 @@ function setTensorsMessage(message) {
     setSectionStatus("tensors", message);
 }
 
+function setArchitectureMessage(message) {
+    if (!architectureContent) {
+        return;
+    }
+    if (typeof message === "string" && message.length > 0) {
+        renderEmptyNote(architectureContent, message);
+    } else {
+        architectureContent.innerHTML = "";
+    }
+    setSectionStatus("architecture", message);
+}
+
+function tryRenderArchitecture() {
+    if (!architectureContent) {
+        return;
+    }
+    if (!architectureMetadataLoaded || !architectureTensorsLoaded) {
+        return;
+    }
+    if (!Array.isArray(modelMetadataEntries) || modelMetadataEntries.length === 0) {
+        setArchitectureMessage("No metadata entries available.");
+        return;
+    }
+    if (!Array.isArray(tensorData) || tensorData.length === 0) {
+        setArchitectureMessage("No tensors available.");
+        return;
+    }
+    const module = window.llamaViewerArchitecture;
+    if (!module || typeof module.render !== "function") {
+        setArchitectureMessage("Architecture module unavailable.");
+        return;
+    }
+    architectureContent.innerHTML = "";
+    const result = module.render({
+        metadata: modelMetadataEntries,
+        tensors: tensorData,
+        target: architectureContent,
+    });
+    const statusMessage = result && typeof result.statusMessage === "string" && result.statusMessage.length > 0
+        ? result.statusMessage
+        : null;
+    setSectionStatus("architecture", statusMessage);
+}
+
 async function fetchJSON(url, options) {
     const res = await fetch(url, options);
     if (!res.ok) {
@@ -2165,7 +2389,11 @@ function resetViewer(message = NO_MODEL_MESSAGE) {
     renderTableMessage(kvBody, 3, message);
     setTokenizerMessage(message);
     setTensorsMessage(message);
+    setArchitectureMessage(message);
     tensorData = [];
+    modelMetadataEntries = [];
+    architectureMetadataLoaded = false;
+    architectureTensorsLoaded = false;
     tokenizerState = { ...tokenizerState, offset: 0, total: 0 };
     refreshHeatmapTensorSelect();
     resetHistogram(message);
@@ -2200,7 +2428,11 @@ async function refreshAll(options = {}) {
     renderTableMessage(kvBody, 3, LOADING_MESSAGE);
     setTokenizerMessage(LOADING_MESSAGE);
     setTensorsMessage(LOADING_MESSAGE);
+    setArchitectureMessage(LOADING_MESSAGE);
     tokenizerState = { ...tokenizerState, offset: 0, total: 0 };
+    modelMetadataEntries = [];
+    architectureMetadataLoaded = false;
+    architectureTensorsLoaded = false;
     resetHeatmap();
 
     await loadInfo();
@@ -2251,7 +2483,7 @@ async function loadInfo() {
 function renderKvRow(entry) {
     const tr = document.createElement("tr");
     const typeText = entry.type === "GGUF_TYPE_ARRAY"
-        ? `${entry.type}<br/><span class="badge">${entry.arrayType} × ${entry.length}</span>`
+        ? `${entry.type}<br/><span class="badge">${entry.arrayType} x ${entry.length}</span>`
         : entry.type;
     tr.innerHTML = `
         <td><code>${entry.key}</code></td>
@@ -2279,14 +2511,21 @@ async function loadKv() {
     try {
         const entries = await fetchJSON(withModel("api/kv"));
         kvBody.innerHTML = "";
+        modelMetadataEntries = Array.isArray(entries) ? entries : [];
+        architectureMetadataLoaded = true;
         if (!Array.isArray(entries) || entries.length === 0) {
             renderTableMessage(kvBody, 3, "No metadata entries found.");
+            setArchitectureMessage("No metadata entries available.");
             return;
         }
         entries.forEach(entry => kvBody.appendChild(renderKvRow(entry)));
+        tryRenderArchitecture();
     } catch (err) {
         kvBody.innerHTML = "";
         renderTableMessage(kvBody, 3, err.status === 409 ? NO_MODEL_MESSAGE : err.message);
+        modelMetadataEntries = [];
+        architectureMetadataLoaded = false;
+        setArchitectureMessage(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
     }
 }
 
@@ -2694,18 +2933,23 @@ async function loadTensors() {
     try {
         const data = await fetchJSON(withModel("api/tensors"));
         tensorData = Array.isArray(data) ? data : [];
+        architectureTensorsLoaded = true;
         if (tensorData.length === 0) {
             setTensorsMessage("No tensors available.");
+            setArchitectureMessage("No tensors available.");
         } else {
             tensorBody.innerHTML = "";
             setSectionStatus("tensors", null);
             tensorData.forEach(tensor => tensorBody.appendChild(renderTensorRow(tensor)));
+            tryRenderArchitecture();
         }
         refreshHeatmapTensorSelect();
         applyPendingHeatmapStateIfPossible();
     } catch (err) {
         tensorData = [];
+        architectureTensorsLoaded = false;
         setTensorsMessage(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
+        setArchitectureMessage(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
         refreshHeatmapTensorSelect();
         pendingHeatmapState.applied = true;
     }
@@ -2768,7 +3012,7 @@ function renderHeatmapTooltip() {
     const depth = heatmapState.layout && typeof heatmapState.layout.depth === "number" ? heatmapState.layout.depth : 1;
     if (depth > 1) {
         const sliceValue = coord.slice ?? heatmapHoverState.slice ?? 0;
-        titleText += ` · slice ${formatTooltipInteger(sliceValue)}`;
+        titleText += ` - slice ${formatTooltipInteger(sliceValue)}`;
     }
     const rows = [];
     rows.push({ label: "Element", value: `${formatTooltipInteger(data.index)} / ${formatTooltipInteger(data.count)}` });
