@@ -103,6 +103,18 @@ function updateStatisticsHeader() {
         parts.push(`Total ${formatTooltipInteger(histogramState.total)}`);
     }
 
+    if (Number.isFinite(histogramState.zeroCount) && histogramState.zeroCount > 0) {
+        parts.push(`Zeros ${formatTooltipInteger(histogramState.zeroCount)}`);
+    }
+
+    const clippedLow = Number.isFinite(histogramState.clippedLow) ? histogramState.clippedLow : 0;
+    const clippedHigh = Number.isFinite(histogramState.clippedHigh) ? histogramState.clippedHigh : 0;
+    if (clippedLow > 0 || clippedHigh > 0) {
+        const lowLabel = formatTooltipInteger(clippedLow);
+        const highLabel = formatTooltipInteger(clippedHigh);
+        parts.push(`Outliers ${lowLabel} low / ${highLabel} high`);
+    }
+
     if (Number.isFinite(histogramState.rangeMin)
         && Number.isFinite(histogramState.rangeMax)
         && histogramState.rangeMax >= histogramState.rangeMin) {
@@ -140,6 +152,9 @@ function syncHistogramToViewport(fetchAfterResize) {
         histogramState.bins = [];
         histogramState.maxCount = 0;
         histogramState.total = 0;
+        histogramState.clippedLow = 0;
+        histogramState.clippedHigh = 0;
+        histogramState.zeroCount = 0;
         clearHistogramCanvas();
         if (heatmapState.tensor && fetchAfterResize) {
             void fetchHistogram();
@@ -197,12 +212,18 @@ async function fetchHistogram() {
         const maxCount = Number.isFinite(data.maxCount) ? Number(data.maxCount) : 0;
         const rangeMin = Number.isFinite(data.min) ? Number(data.min) : Number.NaN;
         const rangeMax = Number.isFinite(data.max) ? Number(data.max) : Number.NaN;
+        const clippedLow = Number.isFinite(data.clippedLow) ? Number(data.clippedLow) : 0;
+        const clippedHigh = Number.isFinite(data.clippedHigh) ? Number(data.clippedHigh) : 0;
+        const zeroCount = Number.isFinite(data.zeroCount) ? Number(data.zeroCount) : 0;
         histogramState.tensor = heatmapState.tensor;
         histogramState.slice = typeof data.slice === "number" ? data.slice : heatmapState.slice;
         histogramState.bins = bins;
         histogramState.maxCount = maxCount;
         histogramState.rangeMin = rangeMin;
         histogramState.rangeMax = rangeMax;
+        histogramState.clippedLow = clippedLow;
+        histogramState.clippedHigh = clippedHigh;
+        histogramState.zeroCount = zeroCount;
         if (Number.isFinite(data.total)) {
             histogramState.total = Number(data.total);
         } else {
@@ -249,6 +270,9 @@ function resetHistogram(message = STATISTICS_DEFAULT_HEADER_MESSAGE) {
     histogramState.bins = [];
     histogramState.maxCount = 0;
     histogramState.total = 0;
+    histogramState.clippedLow = 0;
+    histogramState.clippedHigh = 0;
+    histogramState.zeroCount = 0;
     histogramState.rangeMin = Number.NaN;
     histogramState.rangeMax = Number.NaN;
     histogramState.fetching = false;

@@ -809,11 +809,14 @@ struct tensor_tile_result {
 };
 
 struct tensor_histogram_result {
-    size_t slice      = 0;
-    uint64_t total    = 0;
-    uint64_t max_bin  = 0;
-    float range_min   = 0.0f;
-    float range_max   = 0.0f;
+    size_t slice        = 0;
+    uint64_t total      = 0;
+    uint64_t max_bin    = 0;
+    uint64_t clipped_lo = 0;
+    uint64_t clipped_hi = 0;
+    uint64_t zero_count = 0;
+    float range_min     = 0.0f;
+    float range_max     = 0.0f;
     std::vector<uint64_t> bins;
 };
 
@@ -1543,6 +1546,9 @@ bool tensor_slice_histogram(
         out.bins.assign(bin_count, 0);
         out.total = 0;
         out.max_bin = 0;
+        out.clipped_lo = 0;
+        out.clipped_hi = 0;
+        out.zero_count = 0;
         out.range_min = 0.0f;
         out.range_max = 0.0f;
         return true;
@@ -1558,6 +1564,9 @@ bool tensor_slice_histogram(
     out.bins.assign(bin_count, 0);
     out.total = 0;
     out.max_bin = 0;
+    out.clipped_lo = 0;
+    out.clipped_hi = 0;
+    out.zero_count = 0;
     out.range_min = stats.min;
     out.range_max = stats.max;
 
@@ -1569,6 +1578,8 @@ bool tensor_slice_histogram(
     const float range_max = stats.max;
     const bool has_valid_range = std::isfinite(range_min) && std::isfinite(range_max);
     const float span = range_max - range_min;
+    const bool can_use_range = has_valid_range && span > 0.0f && bin_count > 1;
+    const bool can_filter_zero = can_use_range;
 
     size_t remaining = slice_count;
     size_t current_off = base_offset;
@@ -1588,8 +1599,24 @@ bool tensor_slice_histogram(
                 continue;
             }
 
+            if (can_use_range) {
+                if (value < range_min) {
+                    out.clipped_lo += 1;
+                    continue;
+                }
+                if (value > range_max) {
+                    out.clipped_hi += 1;
+                    continue;
+                }
+            }
+
+            if (can_filter_zero && value == 0.0f) {
+                out.zero_count += 1;
+                continue;
+            }
+
             size_t bin_index = 0;
-            if (has_valid_range && span > 0.0f && bin_count > 1) {
+            if (can_use_range) {
                 float normalized = (value - range_min) / span;
                 if (normalized <= 0.0f) {
                     bin_index = 0;
@@ -2016,6 +2043,9 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
             body["range"] = { {"min", histogram.range_min}, {"max", histogram.range_max} };
             body["maxCount"] = histogram.max_bin;
             body["total"] = histogram.total;
+            body["clippedLow"] = histogram.clipped_lo;
+            body["clippedHigh"] = histogram.clipped_hi;
+            body["zeroCount"] = histogram.zero_count;
             body["min"] = histogram.range_min;
             body["max"] = histogram.range_max;
             body["bins"] = std::move(bins);
