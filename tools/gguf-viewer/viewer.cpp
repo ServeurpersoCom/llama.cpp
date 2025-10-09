@@ -8,6 +8,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <charconv>
 #include <cmath>
@@ -24,6 +25,7 @@
 #include <utility>
 #include <vector>
 #include <cstring>
+#include <limits>
 
 #include "index.html.hpp"
 
@@ -90,6 +92,33 @@ struct server_state {
 
 constexpr float SLICE_PERCENTILE_LOWER = 0.01f;
 constexpr float SLICE_PERCENTILE_UPPER = 0.99f;
+constexpr size_t SLICE_STAT_MAX_CHUNK_ELEMENTS = 1u << 18;
+
+constexpr unsigned PERCENTILE_TOTAL_BITS = 32;
+constexpr unsigned PERCENTILE_RADIX_BITS = 8;
+constexpr unsigned PERCENTILE_BUCKETS = 1u << PERCENTILE_RADIX_BITS;
+constexpr unsigned PERCENTILE_PASSES = (PERCENTILE_TOTAL_BITS + PERCENTILE_RADIX_BITS - 1) / PERCENTILE_RADIX_BITS;
+
+uint32_t float_to_ordered_key(float value) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    if ((bits & 0x80000000u) != 0) {
+        return ~bits;
+    }
+    return bits ^ 0x80000000u;
+}
+
+float ordered_key_to_float(uint32_t key) {
+    uint32_t bits = 0;
+    if ((key & 0x80000000u) != 0) {
+        bits = key ^ 0x80000000u;
+    } else {
+        bits = ~key;
+    }
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
 
 struct model_descriptor {
     std::string relative;
@@ -766,78 +795,6 @@ struct tensor_window_result {
     std::vector<float> values;
 };
 
-struct percentile_range {
-    size_t finite_count = 0;
-    float  lower        = 0.0f;
-    float  upper        = 0.0f;
-    bool   has_range    = false;
-};
-
-percentile_range compute_percentile_range(
-        const std::vector<float> & values,
-        float lower_fraction,
-        float upper_fraction) {
-    percentile_range result;
-
-    if (values.empty()) {
-        return result;
-    }
-
-    std::vector<float> finite_values;
-    finite_values.reserve(values.size());
-    for (float value : values) {
-        if (std::isfinite(value)) {
-            finite_values.push_back(value);
-        }
-    }
-
-    result.finite_count = finite_values.size();
-    if (finite_values.empty()) {
-        return result;
-    }
-
-    std::sort(finite_values.begin(), finite_values.end());
-
-    const auto sample_percentile = [&](float fraction) {
-        fraction = std::clamp(fraction, 0.0f, 1.0f);
-        if (finite_values.size() == 1) {
-            return finite_values.front();
-        }
-
-        const float rank = fraction * static_cast<float>(finite_values.size() - 1);
-        const size_t lower_index = static_cast<size_t>(std::floor(rank));
-        const size_t upper_index = std::min(finite_values.size() - 1, lower_index + 1);
-        const float weight = rank - static_cast<float>(lower_index);
-        const float lower_value = finite_values[lower_index];
-        const float upper_value = finite_values[upper_index];
-        return lower_value + (upper_value - lower_value) * weight;
-    };
-
-    result.lower = sample_percentile(lower_fraction);
-    result.upper = sample_percentile(upper_fraction);
-    result.has_range = true;
-    return result;
-}
-
-tensor_slice_stats summarize_tensor_slice(
-        const std::vector<float> & values,
-        float lower_fraction,
-        float upper_fraction) {
-    tensor_slice_stats stats;
-    stats.computed = true;
-    stats.lower_percent = lower_fraction * 100.0f;
-    stats.upper_percent = upper_fraction * 100.0f;
-
-    const auto percentile = compute_percentile_range(values, lower_fraction, upper_fraction);
-    stats.valid = percentile.finite_count;
-    if (percentile.has_range) {
-        stats.min = percentile.lower;
-        stats.max = percentile.upper;
-    }
-
-    return stats;
-}
-
 struct tensor_tile_result {
     size_t x      = 0;
     size_t y      = 0;
@@ -1158,15 +1115,241 @@ bool tensor_slice_statistics(
         return true;
     }
 
-    tensor_window_result slice_window;
-    if (!tensor_window_values(state, entry, base_offset, slice_count, slice_window, error)) {
+    auto stream_finite_values = [&](auto && fn) -> bool {
+        size_t remaining = slice_count;
+        size_t current_off = base_offset;
+        while (remaining > 0) {
+            const size_t chunk = std::min(remaining, SLICE_STAT_MAX_CHUNK_ELEMENTS);
+            tensor_window_result slice_window;
+            if (!tensor_window_values(state, entry, current_off, chunk, slice_window, error)) {
+                return false;
+            }
+            if (slice_window.count == 0) {
+                break;
+            }
+            for (float value : slice_window.values) {
+                if (!std::isfinite(value)) {
+                    continue;
+                }
+                fn(value);
+            }
+            current_off += slice_window.count;
+            remaining -= slice_window.count;
+        }
+        return true;
+    };
+
+    size_t valid_count = 0;
+    float min_value = std::numeric_limits<float>::infinity();
+    float max_value = -std::numeric_limits<float>::infinity();
+
+    if (!stream_finite_values([&](float value) {
+            if (value < min_value) {
+                min_value = value;
+            }
+            if (value > max_value) {
+                max_value = value;
+            }
+            ++valid_count;
+        })) {
         return false;
     }
 
-    tensor_slice_stats computed = summarize_tensor_slice(
-            slice_window.values,
-            SLICE_PERCENTILE_LOWER,
-            SLICE_PERCENTILE_UPPER);
+    tensor_slice_stats computed;
+    computed.computed = true;
+    computed.lower_percent = SLICE_PERCENTILE_LOWER * 100.0f;
+    computed.upper_percent = SLICE_PERCENTILE_UPPER * 100.0f;
+    computed.valid = valid_count;
+
+    if (valid_count == 0) {
+        store_cached_slice_stats(state, entry, slice_index, computed);
+        out = computed;
+        return true;
+    }
+
+    if (valid_count == 1) {
+        computed.min = min_value;
+        computed.max = max_value;
+        store_cached_slice_stats(state, entry, slice_index, computed);
+        out = computed;
+        return true;
+    }
+
+    struct percentile_target {
+        double fraction = 0.0;
+        double exact_rank = 0.0;
+        uint64_t lower_rank = 0;
+        uint64_t upper_rank = 0;
+        double weight = 0.0;
+    };
+
+    const double max_index = static_cast<double>(valid_count - 1);
+
+    auto make_target = [&](double fraction) {
+        percentile_target target;
+        const double clamped = std::clamp(fraction, 0.0, 1.0);
+        target.fraction = clamped;
+        target.exact_rank = clamped * max_index;
+        target.lower_rank = static_cast<uint64_t>(std::floor(target.exact_rank));
+        target.upper_rank = static_cast<uint64_t>(std::ceil(target.exact_rank));
+        if (target.upper_rank >= valid_count) {
+            target.upper_rank = valid_count - 1;
+        }
+        if (target.lower_rank >= valid_count) {
+            target.lower_rank = valid_count - 1;
+        }
+        target.weight = target.exact_rank - static_cast<double>(target.lower_rank);
+        return target;
+    };
+
+    const auto lower_target = make_target(SLICE_PERCENTILE_LOWER);
+    const auto upper_target = make_target(SLICE_PERCENTILE_UPPER);
+
+    std::vector<uint64_t> required_ranks;
+    required_ranks.push_back(lower_target.lower_rank);
+    if (lower_target.upper_rank != lower_target.lower_rank) {
+        required_ranks.push_back(lower_target.upper_rank);
+    }
+    required_ranks.push_back(upper_target.lower_rank);
+    if (upper_target.upper_rank != upper_target.lower_rank) {
+        required_ranks.push_back(upper_target.upper_rank);
+    }
+    std::sort(required_ranks.begin(), required_ranks.end());
+    required_ranks.erase(std::unique(required_ranks.begin(), required_ranks.end()), required_ranks.end());
+
+    std::unordered_map<uint64_t, float> rank_values;
+    rank_values.reserve(required_ranks.size());
+
+    if (!required_ranks.empty()) {
+        struct percentile_rank_query {
+            uint64_t target_rank = 0;
+            uint64_t rank = 0;
+            uint32_t range_start = 0;
+            uint32_t range_end = std::numeric_limits<uint32_t>::max();
+            uint32_t resolved_key = 0;
+            bool resolved = false;
+        };
+
+        std::vector<percentile_rank_query> queries;
+        queries.reserve(required_ranks.size());
+        for (uint64_t rank : required_ranks) {
+            percentile_rank_query query;
+            query.target_rank = rank;
+            query.rank = rank;
+            queries.push_back(query);
+        }
+
+        for (unsigned pass = 0; pass < PERCENTILE_PASSES; ++pass) {
+            const unsigned shift = PERCENTILE_TOTAL_BITS - PERCENTILE_RADIX_BITS * (pass + 1);
+            std::vector<std::array<uint64_t, PERCENTILE_BUCKETS>> counts(queries.size());
+            for (auto & bucket_counts : counts) {
+                bucket_counts.fill(0);
+            }
+
+            if (!stream_finite_values([&](float value) {
+                    const uint32_t key = float_to_ordered_key(value);
+                    for (size_t i = 0; i < queries.size(); ++i) {
+                        auto & query = queries[i];
+                        if (query.resolved) {
+                            continue;
+                        }
+                        if (key < query.range_start || key > query.range_end) {
+                            continue;
+                        }
+                        const unsigned bucket = shift >= PERCENTILE_TOTAL_BITS
+                            ? 0u
+                            : ((key >> shift) & (PERCENTILE_BUCKETS - 1));
+                        counts[i][bucket] += 1;
+                    }
+                })) {
+                return false;
+            }
+
+            for (size_t i = 0; i < queries.size(); ++i) {
+                auto & query = queries[i];
+                if (query.resolved) {
+                    continue;
+                }
+                const auto & bucket_counts = counts[i];
+                uint64_t cumulative = 0;
+                uint64_t cumulative_before = 0;
+                unsigned selected_bucket = 0;
+                bool found = false;
+
+                for (unsigned bucket = 0; bucket < PERCENTILE_BUCKETS; ++bucket) {
+                    const uint64_t bucket_count = bucket_counts[bucket];
+                    if (bucket_count == 0) {
+                        continue;
+                    }
+                    if (query.rank < cumulative + bucket_count) {
+                        cumulative_before = cumulative;
+                        cumulative += bucket_count;
+                        selected_bucket = bucket;
+                        found = true;
+                        break;
+                    }
+                    cumulative += bucket_count;
+                }
+
+                if (!found) {
+                    continue;
+                }
+
+                query.rank -= cumulative_before;
+
+                const uint64_t segment_size = shift == 0 ? 1u : (1u << shift);
+                const uint64_t bucket_start = static_cast<uint64_t>(query.range_start) + segment_size * selected_bucket;
+                uint64_t bucket_end = bucket_start + segment_size - 1;
+                if (bucket_end > query.range_end) {
+                    bucket_end = query.range_end;
+                }
+                query.range_start = static_cast<uint32_t>(bucket_start);
+                query.range_end = static_cast<uint32_t>(bucket_end);
+                if (shift == 0) {
+                    query.resolved = true;
+                    query.resolved_key = static_cast<uint32_t>(bucket_start);
+                }
+            }
+        }
+
+        for (const auto & query : queries) {
+            const uint32_t key = query.resolved ? query.resolved_key : query.range_start;
+            rank_values.emplace(query.target_rank, ordered_key_to_float(key));
+        }
+    }
+
+    auto value_for_rank = [&](uint64_t rank) -> float {
+        auto it = rank_values.find(rank);
+        if (it != rank_values.end()) {
+            return it->second;
+        }
+        return min_value;
+    };
+
+    auto resolve_percentile = [&](const percentile_target & target) -> float {
+        const float lower_value = value_for_rank(target.lower_rank);
+        const float upper_value = value_for_rank(target.upper_rank);
+        if (target.lower_rank == target.upper_rank) {
+            return lower_value;
+        }
+        return static_cast<float>(lower_value + (upper_value - lower_value) * target.weight);
+    };
+
+    float lower_value = resolve_percentile(lower_target);
+    float upper_value = resolve_percentile(upper_target);
+
+    if (!std::isfinite(lower_value) || lower_value < min_value) {
+        lower_value = min_value;
+    }
+    if (!std::isfinite(upper_value) || upper_value > max_value) {
+        upper_value = max_value;
+    }
+    if (lower_value > upper_value) {
+        std::swap(lower_value, upper_value);
+    }
+
+    computed.min = lower_value;
+    computed.max = upper_value;
 
     store_cached_slice_stats(state, entry, slice_index, computed);
 
@@ -1358,88 +1541,82 @@ bool tensor_slice_histogram(
     if (have_cached_stats && (!stats.computed || stats.valid == 0)) {
         out.slice = slice_index;
         out.bins.assign(bin_count, 0);
+        out.total = 0;
+        out.max_bin = 0;
+        out.range_min = 0.0f;
+        out.range_max = 0.0f;
         return true;
     }
 
-    tensor_window_result window;
-    if (!tensor_window_values(state, entry, base_offset, slice_count, window, error)) {
-        return false;
-    }
-
     if (!have_cached_stats) {
-        stats = summarize_tensor_slice(window.values, SLICE_PERCENTILE_LOWER, SLICE_PERCENTILE_UPPER);
-        store_cached_slice_stats(state, entry, slice_index, stats);
+        if (!tensor_slice_statistics(state, entry, slice_index, stats, error)) {
+            return false;
+        }
     }
 
     out.slice = slice_index;
     out.bins.assign(bin_count, 0);
+    out.total = 0;
+    out.max_bin = 0;
+    out.range_min = stats.min;
+    out.range_max = stats.max;
 
     if (!stats.computed || stats.valid == 0) {
         return true;
     }
 
-    out.range_min = stats.min;
-    out.range_max = stats.max;
+    const float range_min = stats.min;
+    const float range_max = stats.max;
+    const bool has_valid_range = std::isfinite(range_min) && std::isfinite(range_max);
+    const float span = range_max - range_min;
 
-    if (!std::isfinite(out.range_min) || !std::isfinite(out.range_max)) {
-        return true;
-    }
+    size_t remaining = slice_count;
+    size_t current_off = base_offset;
 
-    if (out.range_max < out.range_min) {
-        std::swap(out.range_max, out.range_min);
-    }
-
-    if (out.range_max == out.range_min) {
-        if (bin_count == 0) {
-            return true;
+    while (remaining > 0) {
+        const size_t chunk = std::min(remaining, SLICE_STAT_MAX_CHUNK_ELEMENTS);
+        tensor_window_result window;
+        if (!tensor_window_values(state, entry, current_off, chunk, window, error)) {
+            return false;
+        }
+        if (window.count == 0) {
+            break;
         }
 
-        uint64_t finite_count = 0;
         for (float value : window.values) {
-            if (std::isfinite(value)) {
-                ++finite_count;
+            if (!std::isfinite(value)) {
+                continue;
             }
+
+            size_t bin_index = 0;
+            if (has_valid_range && span > 0.0f && bin_count > 1) {
+                float normalized = (value - range_min) / span;
+                if (normalized <= 0.0f) {
+                    bin_index = 0;
+                } else if (normalized >= 1.0f) {
+                    bin_index = bin_count - 1;
+                } else {
+                    bin_index = static_cast<size_t>(normalized * static_cast<float>(bin_count));
+                    if (bin_index >= bin_count) {
+                        bin_index = bin_count - 1;
+                    }
+                }
+            }
+
+            out.bins[bin_index] += 1;
+            if (out.bins[bin_index] > out.max_bin) {
+                out.max_bin = out.bins[bin_index];
+            }
+            out.total += 1;
         }
 
-        if (finite_count == 0) {
-            return true;
-        }
-
-        const size_t index = std::min(bin_count - 1, bin_count / 2);
-        out.bins[index] = finite_count;
-        out.max_bin = finite_count;
-        out.total = finite_count;
-        return true;
+        current_off += window.count;
+        remaining -= window.count;
     }
 
-    const float span = out.range_max - out.range_min;
-    if (!std::isfinite(span) || span <= 0.0f) {
-        return true;
-    }
-
-    const float bin_scale = static_cast<float>(bin_count) / span;
-
-    for (float value : window.values) {
-        if (!std::isfinite(value)) {
-            continue;
-        }
-
-        if (value < out.range_min || value > out.range_max) {
-            continue;
-        }
-
-        const float relative = (value - out.range_min) * bin_scale;
-        size_t index = relative < 0.0f ? 0 : static_cast<size_t>(relative);
-        if (index >= bin_count) {
-            index = bin_count - 1;
-        }
-
-        uint64_t & bin = out.bins[index];
-        bin += 1;
-        out.total += 1;
-        if (bin > out.max_bin) {
-            out.max_bin = bin;
-        }
+    if (!has_valid_range || span <= 0.0f) {
+        out.range_min = has_valid_range ? range_min : 0.0f;
+        out.range_max = has_valid_range ? range_max : 0.0f;
     }
 
     return true;
