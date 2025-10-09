@@ -92,9 +92,11 @@ function requestHeatmapValue(globalX, globalY, slice) {
         heatmapHoverState.controller.abort();
         heatmapHoverState.controller = null;
     }
+    const baseSlice = Number.isFinite(slice) ? slice : heatmapState.slice;
+    const requestSlice = clampSlice(baseSlice);
     heatmapHoverState.requestX = globalX;
     heatmapHoverState.requestY = globalY;
-    heatmapHoverState.requestSlice = slice;
+    heatmapHoverState.requestSlice = requestSlice;
     heatmapHoverState.data = null;
 
     const controller = new AbortController();
@@ -103,9 +105,7 @@ function requestHeatmapValue(globalX, globalY, slice) {
     const params = new URLSearchParams();
     params.set("x", String(globalX));
     params.set("y", String(globalY));
-    if (heatmapState.layout && typeof heatmapState.layout.depth === "number" && heatmapState.layout.depth > 1) {
-        params.set("slice", String(slice));
-    }
+    params.set("slice", String(requestSlice));
     appendModelParam(params);
 
     const tensorName = encodeURIComponent(heatmapState.tensor.name);
@@ -123,7 +123,7 @@ function requestHeatmapValue(globalX, globalY, slice) {
                 return;
             }
             heatmapHoverState.controller = null;
-            if (heatmapHoverState.requestX !== globalX || heatmapHoverState.requestY !== globalY || heatmapHoverState.requestSlice !== slice) {
+            if (heatmapHoverState.requestX !== globalX || heatmapHoverState.requestY !== globalY || heatmapHoverState.requestSlice !== requestSlice) {
                 return;
             }
             heatmapHoverState.data = data;
@@ -134,7 +134,7 @@ function requestHeatmapValue(globalX, globalY, slice) {
                 return;
             }
             heatmapHoverState.controller = null;
-            if (heatmapHoverState.requestX !== globalX || heatmapHoverState.requestY !== globalY || heatmapHoverState.requestSlice !== slice) {
+            if (heatmapHoverState.requestX !== globalX || heatmapHoverState.requestY !== globalY || heatmapHoverState.requestSlice !== requestSlice) {
                 return;
             }
             heatmapHoverState.data = null;
@@ -152,6 +152,10 @@ function resetHeatmap(message = HEATMAP_DEFAULT_STREAM_MESSAGE) {
     if (heatmapState.controller) {
         heatmapState.controller.abort();
         heatmapState.controller = null;
+    }
+    if (heatmapState.sliceController) {
+        heatmapState.sliceController.abort();
+        heatmapState.sliceController = null;
     }
     hideHeatmapTooltip();
     const preserveGrid = !!heatmapState.gridVisible;
@@ -178,6 +182,7 @@ function resetHeatmap(message = HEATMAP_DEFAULT_STREAM_MESSAGE) {
     heatmapState.viewWidth = heatmapCanvas.width;
     heatmapState.viewHeight = heatmapCanvas.height;
     heatmapState.pendingScale = null;
+    heatmapState.sliceRequestId = 0;
     if (heatmapGainOffsetToggle) {
         heatmapGainOffsetToggle.checked = false;
     }
@@ -532,15 +537,14 @@ async function fetchHeatmapWindow() {
     const tensor = heatmapState.tensor;
     const layout = heatmapState.layout || { width: heatmapState.viewWidth, height: heatmapState.viewHeight, depth: 1 };
     heatmapState.slice = clampSlice(heatmapState.slice);
+    const requestedSlice = heatmapState.slice;
 
     const params = new URLSearchParams();
     params.set("x", String(heatmapState.windowX));
     params.set("y", String(heatmapState.windowY));
     params.set("width", String(heatmapState.viewWidth));
     params.set("height", String(heatmapState.viewHeight));
-    if (layout.depth > 1) {
-        params.set("slice", String(heatmapState.slice));
-    }
+    params.set("slice", String(requestedSlice));
     appendModelParam(params);
 
     try {
@@ -577,8 +581,9 @@ async function fetchHeatmapWindow() {
         } else {
             heatmapState.windowY = clampWindowY(heatmapState.windowY);
         }
+        let nextSlice = heatmapState.slice;
         if (typeof origin.slice === "number") {
-            heatmapState.slice = clampSlice(origin.slice);
+            nextSlice = clampSlice(origin.slice);
         }
 
         const viewport = data.viewport || {};
@@ -597,17 +602,29 @@ async function fetchHeatmapWindow() {
 
         heatmapState.windowX = clampWindowX(heatmapState.windowX);
         heatmapState.windowY = clampWindowY(heatmapState.windowY);
-        heatmapState.slice = clampSlice(heatmapState.slice);
+        nextSlice = clampSlice(nextSlice);
+        const previousSlice = heatmapState.slice;
+        heatmapState.slice = nextSlice;
+        const sliceChanged = heatmapState.slice !== previousSlice;
+        if (sliceChanged) {
+            if (heatmapState.sliceController) {
+                heatmapState.sliceController.abort();
+                heatmapState.sliceController = null;
+            }
+            heatmapState.sliceRequestId = (heatmapState.sliceRequestId || 0) + 1;
+            heatmapState.sliceMin = undefined;
+            heatmapState.sliceMax = undefined;
+        }
         if (histogramState.slice !== heatmapState.slice && heatmapState.tensor) {
             histogramState.slice = heatmapState.slice;
             void fetchHistogram();
         }
+        if (sliceChanged) {
+            void fetchSliceProperties();
+        }
 
         heatmapState.viewMin = typeof data.min === "number" ? data.min : undefined;
         heatmapState.viewMax = typeof data.max === "number" ? data.max : undefined;
-        heatmapState.sliceMin = typeof data.sliceMin === "number" ? data.sliceMin : undefined;
-        heatmapState.sliceMax = typeof data.sliceMax === "number" ? data.sliceMax : undefined;
-
         if (!heatmapState.scaleInitialized) {
             setHeatmapScale(heatmapState.viewMin, heatmapState.viewMax, { reapply: false, sync: false });
         } else {
@@ -653,6 +670,91 @@ async function fetchHeatmapWindow() {
         }
         heatmapState.fetching = false;
         updateHeatmapUrlState({ syncPending: true });
+    }
+}
+
+async function fetchSliceProperties(options = {}) {
+    if (!heatmapState.tensor) {
+        return null;
+    }
+    if (!currentModelPath) {
+        return null;
+    }
+
+    if (heatmapState.sliceController) {
+        heatmapState.sliceController.abort();
+    }
+
+    const controller = new AbortController();
+    const requestId = (heatmapState.sliceRequestId || 0) + 1;
+    heatmapState.sliceController = controller;
+    heatmapState.sliceRequestId = requestId;
+
+    const params = new URLSearchParams();
+    const requestedSlice = Number.isInteger(options.slice)
+        ? clampSlice(options.slice)
+        : clampSlice(heatmapState.slice);
+    params.set("slice", String(requestedSlice));
+    appendModelParam(params);
+
+    try {
+        const res = await fetch(`api/tensors/${encodeURIComponent(heatmapState.tensor.name)}/slice/properties?${params.toString()}`, {
+            signal: controller.signal,
+        });
+        if (!res.ok) {
+            const text = await res.text();
+            throw new Error(text || `Request failed: ${res.status}`);
+        }
+        const data = await res.json();
+        if (controller.signal.aborted || heatmapState.sliceRequestId !== requestId) {
+            return null;
+        }
+
+        if (heatmapState.sliceController === controller) {
+            heatmapState.sliceController = null;
+        }
+
+        const hasMin = typeof data.min === "number" && Number.isFinite(data.min);
+        const hasMax = typeof data.max === "number" && Number.isFinite(data.max);
+        heatmapState.sliceMin = hasMin ? data.min : undefined;
+        heatmapState.sliceMax = hasMax ? data.max : undefined;
+
+        const valid = typeof data.valid === "number" && data.valid > 0 ? data.valid : 0;
+
+        if (options.applyScale) {
+            if (hasMin && hasMax && valid > 0) {
+                setHeatmapScale(data.min, data.max);
+            } else {
+                const reason = valid > 0
+                    ? "Slice scale unavailable."
+                    : "Slice has no finite values to scale.";
+                heatmapHeaderMessage = reason;
+                updateHeatmapHeader();
+            }
+        }
+
+        syncHeatmapControls();
+        return {
+            slice: typeof data.slice === "number" ? data.slice : requestedSlice,
+            min: heatmapState.sliceMin,
+            max: heatmapState.sliceMax,
+            valid,
+        };
+    } catch (err) {
+        if (controller.signal.aborted || heatmapState.sliceRequestId !== requestId) {
+            return null;
+        }
+        if (heatmapState.sliceController === controller) {
+            heatmapState.sliceController = null;
+        }
+        if (options.applyScale) {
+            const message = err instanceof Error ? err.message : String(err);
+            heatmapHeaderMessage = `Slice scale request failed: ${message}`;
+            updateHeatmapHeader();
+        }
+        console.error("Failed to fetch slice properties", err);
+        syncHeatmapControls();
+        return null;
     }
 }
 
@@ -811,6 +913,13 @@ function commitSliceInput() {
     heatmapSliceInput.value = String(value);
     const nextSlice = clampSlice(value - 1);
     if (nextSlice !== heatmapState.slice) {
+        if (heatmapState.sliceController) {
+            heatmapState.sliceController.abort();
+            heatmapState.sliceController = null;
+        }
+        heatmapState.sliceRequestId = (heatmapState.sliceRequestId || 0) + 1;
+        heatmapState.sliceMin = undefined;
+        heatmapState.sliceMax = undefined;
         heatmapState.slice = nextSlice;
         histogramState.slice = nextSlice;
         if (heatmapState.tensor) {
@@ -888,10 +997,11 @@ if (heatmapSliceButton) {
         if (!heatmapState.tensor) {
             return;
         }
-        if (!Number.isFinite(heatmapState.sliceMin) || !Number.isFinite(heatmapState.sliceMax)) {
+        if (Number.isFinite(heatmapState.sliceMin) && Number.isFinite(heatmapState.sliceMax)) {
+            setHeatmapScale(heatmapState.sliceMin, heatmapState.sliceMax);
             return;
         }
-        setHeatmapScale(heatmapState.sliceMin, heatmapState.sliceMax);
+        void fetchSliceProperties({ applyScale: true });
     });
 }
 

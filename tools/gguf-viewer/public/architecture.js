@@ -585,6 +585,7 @@
 
             const heatmapButton = document.createElement("button");
             heatmapButton.type = "button";
+            heatmapButton.className = "viewer-button";
             heatmapButton.dataset.action = "heatmap";
             heatmapButton.dataset.name = encodedName;
             heatmapButton.textContent = "Heatmap";
@@ -592,6 +593,7 @@
 
             const statisticsButton = document.createElement("button");
             statisticsButton.type = "button";
+            statisticsButton.className = "viewer-button";
             statisticsButton.dataset.action = "statistics";
             statisticsButton.dataset.name = encodedName;
             statisticsButton.textContent = "Statistics";
@@ -839,11 +841,13 @@
 
             const prevButton = document.createElement("button");
             prevButton.type = "button";
+            prevButton.className = "viewer-button";
             prevButton.textContent = "Prev";
             navControls.appendChild(prevButton);
 
             const nextButton = document.createElement("button");
             nextButton.type = "button";
+            nextButton.className = "viewer-button";
             nextButton.textContent = "Next";
             navControls.appendChild(nextButton);
 

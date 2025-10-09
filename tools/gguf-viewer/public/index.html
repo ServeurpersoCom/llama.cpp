@@ -7,13 +7,13 @@
 </head>
 <body>
 <nav class="tabs" aria-label="Viewer sections">
-    <button type="button" class="tab-button tab-button--active" data-target-page="browser">Browser</button>
-    <button type="button" class="tab-button" data-target-page="metadata">Metadata</button>
-    <button type="button" class="tab-button" data-target-page="tokenizer">Tokenizer</button>
-    <button type="button" class="tab-button" data-target-page="tensors">Tensors</button>
-    <button type="button" class="tab-button" data-target-page="architecture">Architecture</button>
-    <button type="button" class="tab-button" data-target-page="heatmap">Heatmap</button>
-    <button type="button" class="tab-button" data-target-page="statistics">Statistics</button>
+    <button type="button" class="viewer-button tab-button tab-button--active" data-target-page="browser">Browser</button>
+    <button type="button" class="viewer-button tab-button" data-target-page="metadata">Metadata</button>
+    <button type="button" class="viewer-button tab-button" data-target-page="tokenizer">Tokenizer</button>
+    <button type="button" class="viewer-button tab-button" data-target-page="tensors">Tensors</button>
+    <button type="button" class="viewer-button tab-button" data-target-page="architecture">Architecture</button>
+    <button type="button" class="viewer-button tab-button" data-target-page="heatmap">Heatmap</button>
+    <button type="button" class="viewer-button tab-button" data-target-page="statistics">Statistics</button>
 </nav>
 <main>
     <div class="page page--active" data-page-id="browser">
@@ -120,17 +120,17 @@
                     <span>Max</span>
                     <input type="number" id="heatmap-max-input" value="1" step="0.0001">
                 </label>
-                <button id="heatmap-slice-button" type="button">SLICE</button>
-                <button id="heatmap-p1-button" type="button">P1</button>
-                <button id="heatmap-p5-button" type="button">P5</button>
-                <button id="heatmap-p10-button" type="button">P10</button>
+                <button id="heatmap-slice-button" class="viewer-button" type="button">SLICE</button>
+                <button id="heatmap-p1-button" class="viewer-button" type="button">P1</button>
+                <button id="heatmap-p5-button" class="viewer-button" type="button">P5</button>
+                <button id="heatmap-p10-button" class="viewer-button" type="button">P10</button>
                 <label>
                     <span>Step</span>
                     <input type="number" id="heatmap-step-input" value="0.001" step="0.0001">
                 </label>
                 <div class="button-group">
-                    <button id="heatmap-widen-button" type="button">−</button>
-                    <button id="heatmap-tighten-button" type="button">+</button>
+                    <button id="heatmap-widen-button" class="viewer-button" type="button">−</button>
+                    <button id="heatmap-tighten-button" class="viewer-button" type="button">+</button>
                 </div>
                 <label class="heatmap-toggle">
                     <input type="checkbox" id="heatmap-gain-offset-toggle">

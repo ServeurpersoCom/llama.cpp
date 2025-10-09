@@ -1,22 +1,7 @@
-async function requestModelSelection(path) {
-    if (!path) {
-        throw new Error("Model path is required");
-    }
-    const response = await fetchJSON(`api/models/select?model=${encodeURIComponent(path)}`, { method: "POST" });
-    const selected = typeof response?.selected === "string" && response.selected.length > 0
-        ? response.selected
-        : path;
-    backendSelectedModel = selected;
-    return selected;
-}
-
 function setCurrentModel(path, options = {}) {
     const { updateBrowser = true, updateUrl = true } = options;
     const normalized = typeof path === "string" && path.length > 0 ? path : null;
     currentModelPath = normalized;
-    if (!normalized) {
-        backendSelectedModel = null;
-    }
     const items = Array.isArray(modelBrowserState.items) ? modelBrowserState.items : [];
     const updatedItems = items.map((item) => ({ ...item, selected: !!normalized && item.path === normalized }));
     modelBrowserState = { ...modelBrowserState, selected: normalized, items: updatedItems };
@@ -61,7 +46,7 @@ function renderModelBrowser() {
 
         const button = document.createElement("button");
         button.type = "button";
-        button.className = "model-button";
+        button.className = "viewer-button model-button";
         const isSelected = !!item.selected;
         button.dataset.selected = isSelected ? "true" : "false";
         button.disabled = selectingModel;
@@ -140,9 +125,9 @@ async function selectModel(path) {
 
     selectingModel = true;
     let errorMessage = null;
+    const previousPath = currentModelPath;
     try {
-        const selectedPath = await requestModelSelection(path);
-        setCurrentModel(selectedPath, { updateBrowser: false });
+        setCurrentModel(path, { updateBrowser: false, updateUrl: false });
         pendingHeatmapState.applied = true;
         pendingHeatmapState.tensor = null;
         pendingHeatmapState.slice = null;
@@ -150,9 +135,16 @@ async function selectModel(path) {
         pendingHeatmapState.max = null;
         pendingHeatmapState.x = null;
         pendingHeatmapState.y = null;
-        await refreshAll({ ensureSelected: false });
+        const result = await refreshAll();
+        if (!result || result.ok !== true) {
+            errorMessage = result?.message || NO_MODEL_MESSAGE;
+            setCurrentModel(previousPath, { updateBrowser: false, updateUrl: false });
+            updateModelUrlState();
+        }
     } catch (err) {
-        errorMessage = err.status === 409 ? NO_MODEL_MESSAGE : err.message;
+        errorMessage = isModelUnavailableError(err) ? NO_MODEL_MESSAGE : err.message;
+        setCurrentModel(previousPath, { updateBrowser: false, updateUrl: false });
+        updateModelUrlState();
     } finally {
         selectingModel = false;
         renderModelBrowser();

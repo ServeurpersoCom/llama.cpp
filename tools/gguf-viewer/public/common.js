@@ -141,7 +141,6 @@ applyPendingHeatmapPreferences();
 
 let urlSyncReady = false;
 let currentModelPath = currentUrlState.model;
-let backendSelectedModel = null;
 
 async function syncStateFromSearchParams() {
     const nextState = readUrlState();
@@ -151,7 +150,6 @@ async function syncStateFromSearchParams() {
     applyPendingHeatmapPreferences();
 
     if (modelChanged) {
-        backendSelectedModel = null;
         setCurrentModel(nextState.model, { updateBrowser: true, updateUrl: false });
         if (nextState.model) {
             pendingHeatmapState.applied = false;
@@ -554,6 +552,13 @@ const LOADING_MESSAGE = "Loading…";
 const BROWSER_EMPTY_MESSAGE = "No GGUF files found in the root directory.";
 const HEATMAP_DEFAULT_HEADER_MESSAGE = "Select a tensor to open the heatmap viewer.";
 const HEATMAP_DEFAULT_STREAM_MESSAGE = "Select a tensor to stream its weights.";
+
+function isModelUnavailableError(err) {
+    if (!err || typeof err.status !== "number") {
+        return false;
+    }
+    return err.status === 400 || err.status === 404 || err.status === 409;
+}
 let modelBrowserState = { root: "", items: [], selected: currentModelPath || null };
 let selectingModel = false;
 
@@ -578,6 +583,8 @@ const heatmapState = {
     viewWidth: heatmapCanvas ? heatmapCanvas.width : 0,
     viewHeight: heatmapCanvas ? heatmapCanvas.height : 0,
     controller: null,
+    sliceController: null,
+    sliceRequestId: 0,
     fetching: false,
     imageReady: false,
     values: [],
@@ -927,8 +934,7 @@ function syncHeatmapControls() {
     }
 
     if (heatmapSliceButton) {
-        const hasSliceScale = Number.isFinite(heatmapState.sliceMin) && Number.isFinite(heatmapState.sliceMax);
-        heatmapSliceButton.disabled = !ready || !hasSliceScale;
+        heatmapSliceButton.disabled = !ready;
     }
 
     const hasPercentiles = ready && heatmapState.valid > 0;
