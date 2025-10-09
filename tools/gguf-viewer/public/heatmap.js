@@ -620,7 +620,8 @@ async function fetchHeatmapWindow() {
             void fetchHistogram();
         }
         if (sliceChanged) {
-            void fetchSliceProperties();
+            const shouldApplyScale = !heatmapState.scaleInitialized;
+            void fetchSliceProperties({ applyScale: shouldApplyScale });
         }
 
         heatmapState.viewMin = typeof data.min === "number" ? data.min : undefined;
@@ -857,6 +858,8 @@ function openHeatmap(nameEncoded, options = {}) {
     syncHeatmapControls();
     setHeatmapOverlay("Preparing heatmap…", "loading");
     void fetchHeatmapWindow();
+    const shouldApplySliceScale = !heatmapState.pendingScale;
+    void fetchSliceProperties({ slice: heatmapState.slice, applyScale: shouldApplySliceScale });
     updateHeatmapUrlState({ syncPending: true });
 
     pendingHeatmapState = {
