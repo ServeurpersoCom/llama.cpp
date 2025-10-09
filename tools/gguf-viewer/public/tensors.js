@@ -17,8 +17,8 @@ function renderTensorRow(tensor) {
         <td>${tensor.nElements}</td>
         <td>${tensor.fileOffset}</td>
         <td class="tensor-table-actions">
-            <button type="button" data-action="heatmap" data-name="${encodedName}">Heatmap</button>
-            <button type="button" data-action="statistics" data-name="${encodedName}">Statistics</button>
+            <button type="button" class="viewer-button" data-action="heatmap" data-name="${encodedName}">Heatmap</button>
+            <button type="button" class="viewer-button" data-action="statistics" data-name="${encodedName}">Statistics</button>
         </td>
     `;
     return tr;
@@ -139,8 +139,9 @@ async function loadTensors() {
     } catch (err) {
         tensorData = [];
         architectureTensorsLoaded = false;
-        setTensorsMessage(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
-        setArchitectureMessage(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
+        const message = isModelUnavailableError(err) ? NO_MODEL_MESSAGE : err.message;
+        setTensorsMessage(message);
+        setArchitectureMessage(message);
         refreshHeatmapTensorSelect();
         pendingHeatmapState.applied = true;
     }

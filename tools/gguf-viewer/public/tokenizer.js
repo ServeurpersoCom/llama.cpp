@@ -130,9 +130,11 @@ function renderTokenizerGrid(state, data) {
     }
 
     const prev = document.createElement("button");
+    prev.className = "viewer-button";
     prev.textContent = "Prev";
 
     const next = document.createElement("button");
+    next.className = "viewer-button";
     next.textContent = "Next";
 
     controls.appendChild(offsetGroup);
@@ -290,7 +292,7 @@ async function loadTokenizer(offset = tokenizerState.offset) {
             }
         });
     } catch (err) {
-        setTokenizerMessage(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
+        setTokenizerMessage(isModelUnavailableError(err) ? NO_MODEL_MESSAGE : err.message);
     }
 }
 

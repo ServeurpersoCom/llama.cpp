@@ -78,27 +78,12 @@ function resetViewer(message = NO_MODEL_MESSAGE) {
     resetHeatmap(message);
 }
 
-async function refreshAll(options = {}) {
-    const { ensureSelected = true } = options;
+async function refreshAll() {
     if (!currentModelPath) {
         resetViewer();
-        return;
+        return { ok: false, message: NO_MODEL_MESSAGE };
     }
 
-    let resolvedModel = currentModelPath;
-    if (ensureSelected && backendSelectedModel !== currentModelPath) {
-        try {
-            resolvedModel = await requestModelSelection(currentModelPath);
-        } catch (err) {
-            resetViewer(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
-            throw err;
-        }
-        if (resolvedModel !== currentModelPath) {
-            setCurrentModel(resolvedModel, { updateBrowser: true });
-        }
-    }
-
-    updateModelUrlState();
     currentModelDisplayPath = null;
     currentModelFullPath = null;
     setInfoMessage(LOADING_MESSAGE);
@@ -113,10 +98,39 @@ async function refreshAll(options = {}) {
     architectureTensorsLoaded = false;
     resetHeatmap();
 
-    await loadInfo();
+    const infoResult = await loadInfo();
+    if (!infoResult.ok) {
+        const message = infoResult.message || NO_MODEL_MESSAGE;
+        setTokenizerMessage(message);
+        setTensorsMessage(message);
+        setArchitectureMessage(message);
+        tokenizerState = { ...tokenizerState, offset: 0, total: 0 };
+        tensorData = [];
+        modelMetadataEntries = [];
+        architectureMetadataLoaded = false;
+        architectureTensorsLoaded = false;
+        refreshHeatmapTensorSelect();
+        resetHistogram(message);
+        resetHeatmap(message);
+        pendingHeatmapState.applied = true;
+        pendingHeatmapState.tensor = null;
+        pendingHeatmapState.slice = null;
+        pendingHeatmapState.min = null;
+        pendingHeatmapState.max = null;
+        pendingHeatmapState.x = null;
+        pendingHeatmapState.y = null;
+        if (typeof heatmapState.gridVisible === "boolean") {
+            pendingHeatmapState.grid = heatmapState.gridVisible;
+        }
+        updateModelUrlState();
+        return { ok: false, message };
+    }
+
+    updateModelUrlState();
     await loadKv();
     await loadTokenizer(0);
     await loadTensors();
+    return { ok: true };
 }
 
 async function loadInfo() {
@@ -125,8 +139,14 @@ async function loadInfo() {
         infoCards.innerHTML = "";
 
         if (info && typeof info === "object") {
-            const displayPath = typeof info.relativePath === "string" && info.relativePath.length > 0
+            const canonicalPath = typeof info.relativePath === "string" && info.relativePath.length > 0
                 ? info.relativePath
+                : null;
+            if (canonicalPath && canonicalPath !== currentModelPath) {
+                setCurrentModel(canonicalPath, { updateBrowser: true });
+            }
+            const displayPath = canonicalPath && canonicalPath.length > 0
+                ? canonicalPath
                 : info.modelPath;
             currentModelDisplayPath = displayPath && displayPath.length > 0 ? displayPath : null;
             currentModelFullPath = typeof info.modelPath === "string" && info.modelPath.length > 0
@@ -146,15 +166,20 @@ async function loadInfo() {
             cards.forEach(([title, value]) => {
                 infoCards.appendChild(createInfoCard(title, value));
             });
-        } else {
-            currentModelDisplayPath = null;
-            currentModelFullPath = null;
-            setInfoMessage("Model info unavailable.");
+            return { ok: true };
         }
+
+        currentModelDisplayPath = null;
+        currentModelFullPath = null;
+        const message = "Model info unavailable.";
+        setInfoMessage(message);
+        return { ok: false, message };
     } catch (err) {
         currentModelDisplayPath = null;
         currentModelFullPath = null;
-        setInfoMessage(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
+        const message = isModelUnavailableError(err) ? NO_MODEL_MESSAGE : err.message;
+        setInfoMessage(message);
+        return { ok: false, message };
     }
 }
 
@@ -200,10 +225,11 @@ async function loadKv() {
         tryRenderArchitecture();
     } catch (err) {
         kvBody.innerHTML = "";
-        renderTableMessage(kvBody, 3, err.status === 409 ? NO_MODEL_MESSAGE : err.message);
         modelMetadataEntries = [];
         architectureMetadataLoaded = false;
-        setArchitectureMessage(err.status === 409 ? NO_MODEL_MESSAGE : err.message);
+        const message = isModelUnavailableError(err) ? NO_MODEL_MESSAGE : err.message;
+        renderTableMessage(kvBody, 3, message);
+        setArchitectureMessage(message);
     }
 }
 

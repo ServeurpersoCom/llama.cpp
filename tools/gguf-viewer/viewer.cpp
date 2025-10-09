@@ -92,6 +92,11 @@ struct model_descriptor {
     uintmax_t   size = 0;
 };
 
+struct model_resolution {
+    fs::path   absolute_path;
+    std::string canonical_key;
+};
+
 bool has_gguf_extension(const fs::path & path) {
     auto ext = path.extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char ch) {
@@ -218,11 +223,124 @@ json make_error(const std::string & message) {
     return body;
 }
 
+struct request_scope {
+    std::shared_ptr<viewer_state> viewer;
+    std::string                   canonical_model;
+};
+
+struct tensor_request_scope : request_scope {
+    const tensor_entry * tensor = nullptr;
+    size_t               slice  = 0;
+};
+
 std::optional<std::string> get_model_parameter(const httplib::Request & req) {
     if (auto value = req.get_param_value("model"); !value.empty()) {
         return value;
     }
     return std::nullopt;
+}
+
+std::optional<size_t> parse_slice_parameter(const httplib::Request & req, bool & provided) {
+    provided = false;
+    auto raw = req.get_param_value("slice");
+    if (raw.empty()) {
+        return std::nullopt;
+    }
+    provided = true;
+    return parse_size_t(raw);
+}
+
+bool resolve_tensor_scope(const request_scope & base_scope,
+        const httplib::Request & req,
+        const std::string & encoded_name,
+        tensor_request_scope & out_scope,
+        httplib::Response & res) {
+    out_scope = {};
+    out_scope.viewer = base_scope.viewer;
+    out_scope.canonical_model = base_scope.canonical_model;
+
+    if (!out_scope.viewer) {
+        set_json_response(res, make_error("viewer unavailable"), 500);
+        return false;
+    }
+
+    const std::string tensor_name = url_decode(encoded_name);
+    auto it = out_scope.viewer->tensor_index_by_name.find(tensor_name);
+    if (it == out_scope.viewer->tensor_index_by_name.end()) {
+        set_json_response(res, make_error("tensor not found"), 404);
+        return false;
+    }
+
+    out_scope.tensor = &out_scope.viewer->tensors[it->second];
+
+    bool slice_provided = false;
+    auto parsed_slice = parse_slice_parameter(req, slice_provided);
+    if (!parsed_slice) {
+        if (!slice_provided) {
+            set_json_response(res, make_error("slice parameter is required"), 400);
+        } else {
+            set_json_response(res, make_error("slice parameter must be a non-negative integer"), 400);
+        }
+        return false;
+    }
+
+    out_scope.slice = *parsed_slice;
+    return true;
+}
+
+bool try_get_cached_slice_stats(
+        const viewer_state & state,
+        const tensor_entry & entry,
+        size_t slice_index,
+        tensor_slice_stats & out) {
+    std::lock_guard<std::mutex> lock(state.slice_cache_mutex);
+    if (entry.state_index >= state.slice_stats_cache.size()) {
+        return false;
+    }
+
+    const auto & tensor_cache = state.slice_stats_cache[entry.state_index];
+    if (slice_index >= tensor_cache.size()) {
+        return false;
+    }
+
+    const tensor_slice_stats & cached = tensor_cache[slice_index];
+    if (!cached.computed) {
+        return false;
+    }
+
+    out = cached;
+    return true;
+}
+
+void store_cached_slice_stats(
+        const viewer_state & state,
+        const tensor_entry & entry,
+        size_t slice_index,
+        const tensor_slice_stats & computed) {
+    if (!computed.computed) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(state.slice_cache_mutex);
+    if (state.slice_stats_cache.size() < state.tensors.size()) {
+        state.slice_stats_cache.resize(state.tensors.size());
+    }
+
+    if (entry.state_index >= state.slice_stats_cache.size()) {
+        state.slice_stats_cache.resize(entry.state_index + 1);
+    }
+
+    auto & tensor_cache = state.slice_stats_cache[entry.state_index];
+    const size_t target_depth = entry.layout.depth > 0 ? entry.layout.depth : slice_index + 1;
+    if (tensor_cache.size() < target_depth) {
+        tensor_cache.resize(target_depth);
+    }
+
+    if (slice_index >= tensor_cache.size()) {
+        tensor_cache.resize(slice_index + 1);
+    }
+
+    tensor_cache[slice_index] = computed;
 }
 
 std::optional<std::string> normalize_model_key(const fs::path & root, const std::string & value) {
@@ -247,6 +365,136 @@ std::optional<std::string> normalize_model_key(const fs::path & root, const std:
     return relative->generic_string();
 }
 
+std::optional<model_resolution> resolve_model_reference(
+        const fs::path & root,
+        const std::string & decoded,
+        std::string & error,
+        int & status_code) {
+    status_code = 0;
+    if (decoded.empty()) {
+        error = "missing model parameter";
+        status_code = 400;
+        return std::nullopt;
+    }
+
+    std::error_code ec;
+    fs::path candidate(decoded);
+    fs::path resolved = candidate.is_absolute()
+        ? fs::weakly_canonical(candidate, ec)
+        : fs::weakly_canonical(root / candidate, ec);
+    if (ec) {
+        error = "failed to resolve model path";
+        status_code = 400;
+        return std::nullopt;
+    }
+
+    auto relative = safe_relative(resolved, root);
+    if (!relative) {
+        error = "model is outside of root";
+        status_code = 400;
+        return std::nullopt;
+    }
+
+    if (!fs::exists(resolved, ec) || ec) {
+        error = "model not found";
+        status_code = 404;
+        return std::nullopt;
+    }
+
+    if (!fs::is_regular_file(resolved, ec) || ec) {
+        error = "model is not a regular file";
+        status_code = 400;
+        return std::nullopt;
+    }
+
+    if (!has_gguf_extension(resolved)) {
+        error = "model must have .gguf extension";
+        status_code = 400;
+        return std::nullopt;
+    }
+
+    model_resolution result;
+    result.absolute_path = resolved;
+    result.canonical_key = relative->generic_string();
+    return result;
+}
+
+bool get_or_load_viewer(
+        const std::shared_ptr<server_state> & state,
+        const std::string & decoded,
+        std::shared_ptr<viewer_state> & out_viewer,
+        std::string & out_relative,
+        std::string & error,
+        int & status_code) {
+    out_viewer.reset();
+    out_relative.clear();
+    status_code = 0;
+
+    std::vector<std::string> candidate_keys;
+    if (auto normalized = normalize_model_key(state->root, decoded)) {
+        candidate_keys.push_back(*normalized);
+        if (*normalized != decoded) {
+            candidate_keys.push_back(decoded);
+        }
+    } else {
+        candidate_keys.push_back(decoded);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        for (const auto & key : candidate_keys) {
+            auto it = state->viewers.find(key);
+            if (it != state->viewers.end() && it->second) {
+                out_viewer = it->second;
+                out_relative = !out_viewer->relative_path.empty() ? out_viewer->relative_path : key;
+                status_code = 200;
+                return true;
+            }
+        }
+    }
+
+    auto resolution = resolve_model_reference(state->root, decoded, error, status_code);
+    if (!resolution) {
+        if (status_code == 0) {
+            status_code = 400;
+        }
+        return false;
+    }
+
+    std::shared_ptr<viewer_state> loaded;
+    try {
+        loaded = load_state(resolution->absolute_path.string());
+    } catch (const std::exception & ex) {
+        error = ex.what();
+        status_code = 500;
+        return false;
+    }
+
+    loaded->relative_path = resolution->canonical_key;
+
+    bool inserted = false;
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        auto & slot = state->viewers[resolution->canonical_key];
+        if (!slot) {
+            slot = loaded;
+            inserted = true;
+        }
+        out_viewer = slot;
+        out_relative = !out_viewer->relative_path.empty() ? out_viewer->relative_path : resolution->canonical_key;
+    }
+
+    if (inserted) {
+        LOG_INF("Loaded %s with %zu tensors and %lld key/value pairs\n",
+            resolution->absolute_path.string().c_str(),
+            out_viewer->tensors.size(),
+            (long long) gguf_get_n_kv(out_viewer->gguf.get()));
+    }
+
+    status_code = 200;
+    return true;
+}
+
 template <typename Fn>
 bool with_viewer_state(const std::shared_ptr<server_state> & state, const httplib::Request & req, httplib::Response & res, Fn && fn) {
     auto param = get_model_parameter(req);
@@ -256,34 +504,25 @@ bool with_viewer_state(const std::shared_ptr<server_state> & state, const httpli
     }
 
     const std::string decoded = url_decode(*param);
-    std::vector<std::string> candidate_keys;
-    if (auto normalized = normalize_model_key(state->root, decoded)) {
-        candidate_keys.push_back(*normalized);
-    }
-    candidate_keys.push_back(decoded);
-
     std::shared_ptr<viewer_state> viewer;
     std::string relative;
-    {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        for (const auto & key : candidate_keys) {
-            auto it = state->viewers.find(key);
-            if (it != state->viewers.end()) {
-                viewer = it->second;
-                if (viewer) {
-                    relative = viewer->relative_path.empty() ? key : viewer->relative_path;
-                }
-                break;
-            }
+    std::string error;
+    int status_code = 0;
+    if (!get_or_load_viewer(state, decoded, viewer, relative, error, status_code)) {
+        if (error.empty()) {
+            error = "model not available";
         }
-    }
-
-    if (!viewer) {
-        set_json_response(res, make_error("model not loaded"), 409);
+        if (status_code == 0) {
+            status_code = 500;
+        }
+        set_json_response(res, make_error(error), status_code);
         return false;
     }
 
-    fn(viewer, relative);
+    request_scope scope;
+    scope.viewer = viewer;
+    scope.canonical_model = relative;
+    fn(scope);
     return true;
 }
 
@@ -531,9 +770,6 @@ struct tensor_tile_result {
     size_t valid  = 0;
     float min     = 0.0f;
     float max     = 0.0f;
-    size_t slice_valid = 0;
-    float slice_min    = 0.0f;
-    float slice_max    = 0.0f;
     std::vector<float> values;
     std::vector<uint8_t> mask;
 };
@@ -821,15 +1057,8 @@ bool tensor_slice_statistics(
         slice_index = layout.depth - 1;
     }
 
-    {
-        std::lock_guard<std::mutex> lock(state.slice_cache_mutex);
-        if (entry.state_index < state.slice_stats_cache.size()) {
-            const auto & tensor_cache = state.slice_stats_cache[entry.state_index];
-            if (slice_index < tensor_cache.size() && tensor_cache[slice_index].computed) {
-                out = tensor_cache[slice_index];
-                return true;
-            }
-        }
+    if (try_get_cached_slice_stats(state, entry, slice_index, out)) {
+        return true;
     }
 
     const size_t slice_size = layout.width * layout.height;
@@ -865,20 +1094,7 @@ bool tensor_slice_statistics(
         computed.max = slice_window.max;
     }
 
-    {
-        std::lock_guard<std::mutex> lock(state.slice_cache_mutex);
-        if (state.slice_stats_cache.size() < state.tensors.size()) {
-            state.slice_stats_cache.resize(state.tensors.size());
-        }
-        if (entry.state_index >= state.slice_stats_cache.size()) {
-            state.slice_stats_cache.resize(entry.state_index + 1);
-        }
-        auto & tensor_cache = state.slice_stats_cache[entry.state_index];
-        if (tensor_cache.size() < layout.depth) {
-            tensor_cache.resize(layout.depth);
-        }
-        tensor_cache[slice_index] = computed;
-    }
+    store_cached_slice_stats(state, entry, slice_index, computed);
 
     out = computed;
     return true;
@@ -941,16 +1157,6 @@ bool tensor_tile_values(
     const size_t base_offset = slice_index * slice_size;
     if (base_offset >= entry.n_elements) {
         return true;
-    }
-
-    tensor_slice_stats slice_stats;
-    if (!tensor_slice_statistics(state, entry, slice_index, slice_stats, error)) {
-        return false;
-    }
-    if (slice_stats.valid > 0) {
-        out.slice_min = slice_stats.min;
-        out.slice_max = slice_stats.max;
-        out.slice_valid = slice_stats.valid;
     }
 
     const size_t start_offset = base_offset + y * layout.width + x;
@@ -1082,6 +1288,15 @@ bool tensor_slice_histogram(
         return true;
     }
 
+    if (window.count > 0) {
+        tensor_slice_stats computed;
+        computed.computed = true;
+        computed.valid = window.count;
+        computed.min = window.min;
+        computed.max = window.max;
+        store_cached_slice_stats(state, entry, slice_index, computed);
+    }
+
     out.slice = slice_index;
     out.bins.assign(bin_count, 0);
     out.range_min = window.min;
@@ -1207,90 +1422,12 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
         set_json_response(res, body);
     });
 
-    server.Post("/api/models/select", [state](const httplib::Request & req, httplib::Response & res) {
-        auto param = get_model_parameter(req);
-        if (!param) {
-            set_json_response(res, make_error("missing model parameter"), 400);
-            return;
-        }
-
-        const std::string decoded = url_decode(*param);
-        fs::path candidate(decoded);
-        std::error_code ec;
-        fs::path resolved = candidate.is_absolute()
-            ? fs::weakly_canonical(candidate, ec)
-            : fs::weakly_canonical(state->root / candidate, ec);
-        if (ec) {
-            set_json_response(res, make_error("failed to resolve model path"), 400);
-            return;
-        }
-
-        auto relative = safe_relative(resolved, state->root);
-        if (!relative) {
-            set_json_response(res, make_error("model is outside of root"), 400);
-            return;
-        }
-
-        std::error_code status_ec;
-        if (!fs::exists(resolved, status_ec) || status_ec) {
-            set_json_response(res, make_error("model not found"), 404);
-            return;
-        }
-        if (!fs::is_regular_file(resolved, status_ec) || status_ec) {
-            set_json_response(res, make_error("model is not a regular file"), 400);
-            return;
-        }
-        if (!has_gguf_extension(resolved)) {
-            set_json_response(res, make_error("model must have .gguf extension"), 400);
-            return;
-        }
-
-        const std::string key = relative->generic_string();
-        std::shared_ptr<viewer_state> viewer;
-        {
-            std::lock_guard<std::mutex> lock(state->mutex);
-            auto it = state->viewers.find(key);
-            if (it != state->viewers.end()) {
-                viewer = it->second;
-            }
-        }
-
-        if (!viewer) {
-            std::shared_ptr<viewer_state> loaded;
-            try {
-                loaded = load_state(resolved.string());
-            } catch (const std::exception & ex) {
-                set_json_response(res, make_error(ex.what()), 500);
-                return;
-            }
-
-            loaded->relative_path = key;
-
-            {
-                std::lock_guard<std::mutex> lock(state->mutex);
-                auto & slot = state->viewers[key];
-                if (!slot) {
-                    slot = loaded;
-                }
-                viewer = slot;
-            }
-
-            LOG_INF("Loaded %s with %zu tensors and %lld key/value pairs\n",
-                resolved.string().c_str(),
-                viewer->tensors.size(),
-                (long long)gguf_get_n_kv(viewer->gguf.get()));
-        }
-
-        json body;
-        body["selected"] = key;
-        set_json_response(res, body);
-    });
-
     server.Get("/api/info", [state](const httplib::Request & req, httplib::Response & res) {
-        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string & relative) {
+        with_viewer_state(state, req, res, [&](const request_scope & scope) {
+            const auto & viewer = scope.viewer;
             json body;
             body["modelPath"] = viewer->model_path;
-            body["relativePath"] = relative;
+            body["relativePath"] = scope.canonical_model;
             body["fileSize"] = viewer->file_size;
             body["nKv"] = gguf_get_n_kv(viewer->gguf.get());
             body["nTensors"] = gguf_get_n_tensors(viewer->gguf.get());
@@ -1306,7 +1443,8 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
     });
 
     server.Get("/api/kv", [state](const httplib::Request & req, httplib::Response & res) {
-        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+        with_viewer_state(state, req, res, [&](const request_scope & scope) {
+            const auto & viewer = scope.viewer;
             size_t limit = 8;
             if (auto value = req.get_param_value("preview"); !value.empty()) {
                 if (auto parsed = parse_size_t(value)) {
@@ -1324,7 +1462,8 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
     });
 
     server.Get(R"(/api/tensors$)", [state](const httplib::Request & req, httplib::Response & res) {
-        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+        with_viewer_state(state, req, res, [&](const request_scope & scope) {
+            const auto & viewer = scope.viewer;
             json tensors_json = json::array();
             for (const auto & entry : viewer->tensors) {
                 tensors_json.push_back(tensor_to_json(entry, viewer->data_offset));
@@ -1334,20 +1473,19 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
     });
 
     server.Get(R"(/api/tensors/(.+)/raw)", [state](const httplib::Request & req, httplib::Response & res) {
-        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
-            const std::string name = url_decode(req.matches[1]);
-            auto it = viewer->tensor_index_by_name.find(name);
-            if (it == viewer->tensor_index_by_name.end()) {
-                set_json_response(res, make_error("tensor not found"), 404);
+        with_viewer_state(state, req, res, [&](const request_scope & scope) {
+            tensor_request_scope tensor_scope;
+            if (!resolve_tensor_scope(scope, req, req.matches[1], tensor_scope, res)) {
                 return;
             }
-            const tensor_entry & entry = viewer->tensors[it->second];
+
+            const auto & viewer = tensor_scope.viewer;
+            const tensor_entry & entry = *tensor_scope.tensor;
 
             size_t x = 0;
             size_t y = 0;
             size_t width = 1024;
             size_t height = 1024;
-            size_t slice = 0;
 
             if (auto value = req.get_param_value("x"); !value.empty()) {
                 if (auto parsed = parse_size_t(value)) {
@@ -1369,12 +1507,6 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
                     height = *parsed;
                 }
             }
-            if (auto value = req.get_param_value("slice"); !value.empty()) {
-                if (auto parsed = parse_size_t(value)) {
-                    slice = *parsed;
-                }
-            }
-
             const tensor_layout layout = compute_tensor_layout(entry.shape, entry.n_elements);
             if (x >= layout.width || y >= layout.height) {
                 set_json_response(res, make_error("window outside of tensor"), 400);
@@ -1387,8 +1519,9 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
 
             width = std::min(width, layout.width - x);
             height = std::min(height, layout.height - y);
+            size_t slice = tensor_scope.slice;
             if (slice >= layout.depth) {
-                slice = layout.depth - 1;
+                slice = layout.depth > 0 ? layout.depth - 1 : 0;
             }
 
             std::string error;
@@ -1437,14 +1570,45 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
                 body["min"] = nullptr;
                 body["max"] = nullptr;
             }
-            if (layout.depth > 1) {
-                if (tile.slice_valid > 0) {
-                    body["sliceMin"] = tile.slice_min;
-                    body["sliceMax"] = tile.slice_max;
-                } else {
-                    body["sliceMin"] = nullptr;
-                    body["sliceMax"] = nullptr;
-                }
+
+            set_json_response(res, body);
+        });
+    });
+
+    server.Get(R"(/api/tensors/(.+)/slice/properties)", [state](const httplib::Request & req, httplib::Response & res) {
+        with_viewer_state(state, req, res, [&](const request_scope & scope) {
+            tensor_request_scope tensor_scope;
+            if (!resolve_tensor_scope(scope, req, req.matches[1], tensor_scope, res)) {
+                return;
+            }
+
+            const auto & viewer = tensor_scope.viewer;
+            const tensor_entry & entry = *tensor_scope.tensor;
+
+            size_t slice = tensor_scope.slice;
+            const tensor_layout & layout = entry.layout;
+            if (layout.depth == 0) {
+                slice = 0;
+            } else if (slice >= layout.depth) {
+                slice = layout.depth - 1;
+            }
+
+            tensor_slice_stats stats;
+            std::string error;
+            if (!tensor_slice_statistics(*viewer, entry, slice, stats, error)) {
+                set_json_response(res, make_error(error.empty() ? "failed to compute slice properties" : error), 500);
+                return;
+            }
+
+            json body;
+            body["slice"] = slice;
+            body["valid"] = stats.valid;
+            if (stats.computed && stats.valid > 0) {
+                body["min"] = stats.min;
+                body["max"] = stats.max;
+            } else {
+                body["min"] = nullptr;
+                body["max"] = nullptr;
             }
 
             set_json_response(res, body);
@@ -1452,19 +1616,17 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
     });
 
     server.Get(R"(/api/tensors/(.+)/value)", [state](const httplib::Request & req, httplib::Response & res) {
-        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
-            const std::string name = url_decode(req.matches[1]);
-            auto it = viewer->tensor_index_by_name.find(name);
-            if (it == viewer->tensor_index_by_name.end()) {
-                set_json_response(res, make_error("tensor not found"), 404);
+        with_viewer_state(state, req, res, [&](const request_scope & scope) {
+            tensor_request_scope tensor_scope;
+            if (!resolve_tensor_scope(scope, req, req.matches[1], tensor_scope, res)) {
                 return;
             }
 
-            const tensor_entry & entry = viewer->tensors[it->second];
+            const auto & viewer = tensor_scope.viewer;
+            const tensor_entry & entry = *tensor_scope.tensor;
 
             size_t x = 0;
             size_t y = 0;
-            size_t slice = 0;
 
             if (auto value = req.get_param_value("x"); !value.empty()) {
                 if (auto parsed = parse_size_t(value)) {
@@ -1476,15 +1638,10 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
                     y = *parsed;
                 }
             }
-            if (auto value = req.get_param_value("slice"); !value.empty()) {
-                if (auto parsed = parse_size_t(value)) {
-                    slice = *parsed;
-                }
-            }
 
             tensor_value_details details;
             std::string error;
-            if (!tensor_element_details(*viewer, entry, slice, x, y, details, error)) {
+            if (!tensor_element_details(*viewer, entry, tensor_scope.slice, x, y, details, error)) {
                 if (error.empty()) {
                     error = "failed to resolve tensor element";
                 }
@@ -1501,7 +1658,7 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
             body["coordinate"] = {
                 {"x", x},
                 {"y", y},
-                {"slice", slice},
+                {"slice", tensor_scope.slice},
             };
             body["index"] = details.element_index;
             body["count"] = details.element_count;
@@ -1522,19 +1679,17 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
     });
 
     server.Get(R"(/api/tensors/(.+)/histogram)", [state](const httplib::Request & req, httplib::Response & res) {
-        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
-            const std::string name = url_decode(req.matches[1]);
-            auto it = viewer->tensor_index_by_name.find(name);
-            if (it == viewer->tensor_index_by_name.end()) {
-                set_json_response(res, make_error("tensor not found"), 404);
+        with_viewer_state(state, req, res, [&](const request_scope & scope) {
+            tensor_request_scope tensor_scope;
+            if (!resolve_tensor_scope(scope, req, req.matches[1], tensor_scope, res)) {
                 return;
             }
 
-            const tensor_entry & entry = viewer->tensors[it->second];
+            const auto & viewer = tensor_scope.viewer;
+            const tensor_entry & entry = *tensor_scope.tensor;
 
             size_t width = 1024;
             size_t height = 512;
-            size_t slice = 0;
 
             if (auto value = req.get_param_value("width"); !value.empty()) {
                 if (auto parsed = parse_size_t(value)) {
@@ -1546,11 +1701,6 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
                     height = *parsed;
                 }
             }
-            if (auto value = req.get_param_value("slice"); !value.empty()) {
-                if (auto parsed = parse_size_t(value)) {
-                    slice = *parsed;
-                }
-            }
 
             if (width == 0) {
                 set_json_response(res, make_error("width must be greater than zero"), 400);
@@ -1559,6 +1709,14 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
 
             if (height == 0) {
                 height = 1;
+            }
+
+            const tensor_layout layout = compute_tensor_layout(entry.shape, entry.n_elements);
+            size_t slice = tensor_scope.slice;
+            if (layout.depth == 0) {
+                slice = 0;
+            } else if (slice >= layout.depth) {
+                slice = layout.depth - 1;
             }
 
             tensor_histogram_result histogram;
@@ -1589,7 +1747,8 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
     });
 
     server.Get(R"(/api/tokenizer$)", [state](const httplib::Request & req, httplib::Response & res) {
-        with_viewer_state(state, req, res, [&](const std::shared_ptr<viewer_state> & viewer, const std::string &) {
+        with_viewer_state(state, req, res, [&](const request_scope & scope) {
+            const auto & viewer = scope.viewer;
             json body;
             if (viewer->tokenizer.key_tokens < 0) {
                 body["hasTokenizer"] = false;

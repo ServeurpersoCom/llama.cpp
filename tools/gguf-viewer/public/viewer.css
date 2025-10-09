@@ -3,6 +3,10 @@
     font-family: "Inter", "Segoe UI", sans-serif;
     background-color: #04060c;
     color: #dbe1f2;
+    --viewer-button-bg: #0f1625;
+    --viewer-button-hover-bg: #162238;
+    --viewer-button-disabled-bg: #0f1625;
+    --viewer-button-disabled-color: #5d6983;
 }
 body {
     margin: 0;
@@ -43,6 +47,9 @@ h2 {
     box-sizing: border-box;
 }
 .tab-button {
+    --viewer-button-bg: transparent;
+    --viewer-button-hover-bg: transparent;
+    --viewer-button-disabled-bg: transparent;
     border: none;
     background: transparent;
     color: #7c8ea9;
@@ -58,6 +65,7 @@ h2 {
 }
 .tab-button:hover {
     color: #cad6ef;
+    background: transparent;
 }
 .tab-button--active {
     color: #f5f7ff;
@@ -166,23 +174,27 @@ code {
     color: #f4f7ff;
     padding: 0.1rem 0.3rem;
 }
-button {
-    background: #0f1625;
+.viewer-button {
+    background: var(--viewer-button-bg);
     border: none;
     color: inherit;
     padding: 0.3rem 0.65rem;
     font-size: 0.78rem;
     letter-spacing: 0.05em;
     cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.3rem;
 }
-button:hover:not(:disabled) {
+.viewer-button:hover:not(:disabled) {
     color: #f3f5ff;
-    background: #162238;
+    background: var(--viewer-button-hover-bg);
 }
-button:disabled {
-    color: #5d6983;
+.viewer-button:disabled {
+    color: var(--viewer-button-disabled-color);
     cursor: not-allowed;
-    background: #0f1625;
+    background: var(--viewer-button-disabled-bg);
     opacity: 0.6;
 }
 .tensor-table-actions {
@@ -190,7 +202,7 @@ button:disabled {
     flex-wrap: wrap;
     gap: 0.3rem;
 }
-.tensor-table-actions button {
+.tensor-table-actions .viewer-button {
     flex: 0 0 auto;
 }
 .controls {
@@ -435,23 +447,21 @@ select:focus {
     display: flex;
 }
 .model-button {
-    background: #101827;
-    border: none;
-    color: inherit;
+    --viewer-button-bg: #101827;
+    --viewer-button-hover-bg: #162238;
+    --viewer-button-disabled-bg: #101827;
     padding: 0.45rem 0.7rem;
     display: flex;
     justify-content: space-between;
     align-items: center;
     gap: 1rem;
     width: 100%;
-    cursor: pointer;
 }
 .model-button[data-selected="true"] {
-    background: #1c2941;
+    --viewer-button-bg: #1c2941;
+    --viewer-button-hover-bg: #1c2941;
+    --viewer-button-disabled-bg: #1c2941;
     color: #f1f5ff;
-}
-.model-button:hover {
-    background: #162238;
 }
 .model-path-entry {
     font-size: 0.85rem;
@@ -505,10 +515,23 @@ select:focus {
     flex-direction: column;
     gap: 0.35rem;
 }
+.architecture-group,
+.architecture-block,
+.architecture-block-nav,
+.architecture-tensor,
+.architecture-note {
+    border-left: 2px solid var(--architecture-border-color, #1e2a42);
+}
+.architecture-block,
+.architecture-block-nav {
+    --architecture-border-color: #243354;
+}
+.architecture-note {
+    --architecture-border-color: #23324f;
+}
 .architecture-group {
     background: #060b15;
     padding: 0.55rem 0.7rem;
-    border-left: 2px solid #1e2a42;
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
@@ -522,7 +545,6 @@ select:focus {
 .architecture-block {
     background: #081022;
     padding: 0.5rem 0.6rem;
-    border-left: 2px solid #243354;
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
@@ -530,7 +552,6 @@ select:focus {
 .architecture-block-nav {
     background: #081022;
     padding: 0.45rem 0.55rem;
-    border-left: 2px solid #243354;
     display: flex;
     flex-direction: column;
     gap: 0.35rem;
@@ -576,7 +597,6 @@ select:focus {
     gap: 0.18rem;
     background: #0b1424;
     padding: 0.35rem 0.55rem;
-    border-left: 2px solid transparent;
 }
 .architecture-tensor__header {
     display: flex;
@@ -602,14 +622,14 @@ select:focus {
     margin-left: auto;
 }
 .architecture-tensor--mismatch {
-    border-left-color: #f59f80;
+    --architecture-border-color: #f59f80;
 }
 .architecture-tensor--missing {
-    border-left-color: #ef4444;
+    --architecture-border-color: #ef4444;
     background: rgba(168, 34, 70, 0.24);
 }
 .architecture-tensor--info {
-    border-left-color: #5a7ddb;
+    --architecture-border-color: #5a7ddb;
     background: rgba(48, 85, 170, 0.18);
 }
 .architecture-note {
@@ -617,7 +637,6 @@ select:focus {
     color: #9fb4d9;
     background: #0a111f;
     padding: 0.35rem 0.55rem;
-    border-left: 2px solid #23324f;
 }
 .architecture-badge {
     display: inline-flex;
