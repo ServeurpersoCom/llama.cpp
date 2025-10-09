@@ -52,10 +52,12 @@ struct tensor_entry {
 };
 
 struct tensor_slice_stats {
-    bool   computed = false;
-    size_t valid    = 0;
-    float  min      = 0.0f;
-    float  max      = 0.0f;
+    bool   computed        = false;
+    size_t valid           = 0;
+    float  min             = 0.0f;
+    float  max             = 0.0f;
+    float  lower_percent   = 0.0f;
+    float  upper_percent   = 0.0f;
 };
 
 struct tokenizer_info {
@@ -85,6 +87,9 @@ struct server_state {
     std::unordered_map<std::string, std::shared_ptr<viewer_state>> viewers;
     std::mutex                                                     mutex;
 };
+
+constexpr float SLICE_PERCENTILE_LOWER = 0.01f;
+constexpr float SLICE_PERCENTILE_UPPER = 0.99f;
 
 struct model_descriptor {
     std::string relative;
@@ -761,6 +766,78 @@ struct tensor_window_result {
     std::vector<float> values;
 };
 
+struct percentile_range {
+    size_t finite_count = 0;
+    float  lower        = 0.0f;
+    float  upper        = 0.0f;
+    bool   has_range    = false;
+};
+
+percentile_range compute_percentile_range(
+        const std::vector<float> & values,
+        float lower_fraction,
+        float upper_fraction) {
+    percentile_range result;
+
+    if (values.empty()) {
+        return result;
+    }
+
+    std::vector<float> finite_values;
+    finite_values.reserve(values.size());
+    for (float value : values) {
+        if (std::isfinite(value)) {
+            finite_values.push_back(value);
+        }
+    }
+
+    result.finite_count = finite_values.size();
+    if (finite_values.empty()) {
+        return result;
+    }
+
+    std::sort(finite_values.begin(), finite_values.end());
+
+    const auto sample_percentile = [&](float fraction) {
+        fraction = std::clamp(fraction, 0.0f, 1.0f);
+        if (finite_values.size() == 1) {
+            return finite_values.front();
+        }
+
+        const float rank = fraction * static_cast<float>(finite_values.size() - 1);
+        const size_t lower_index = static_cast<size_t>(std::floor(rank));
+        const size_t upper_index = std::min(finite_values.size() - 1, lower_index + 1);
+        const float weight = rank - static_cast<float>(lower_index);
+        const float lower_value = finite_values[lower_index];
+        const float upper_value = finite_values[upper_index];
+        return lower_value + (upper_value - lower_value) * weight;
+    };
+
+    result.lower = sample_percentile(lower_fraction);
+    result.upper = sample_percentile(upper_fraction);
+    result.has_range = true;
+    return result;
+}
+
+tensor_slice_stats summarize_tensor_slice(
+        const std::vector<float> & values,
+        float lower_fraction,
+        float upper_fraction) {
+    tensor_slice_stats stats;
+    stats.computed = true;
+    stats.lower_percent = lower_fraction * 100.0f;
+    stats.upper_percent = upper_fraction * 100.0f;
+
+    const auto percentile = compute_percentile_range(values, lower_fraction, upper_fraction);
+    stats.valid = percentile.finite_count;
+    if (percentile.has_range) {
+        stats.min = percentile.lower;
+        stats.max = percentile.upper;
+    }
+
+    return stats;
+}
+
 struct tensor_tile_result {
     size_t x      = 0;
     size_t y      = 0;
@@ -1086,13 +1163,10 @@ bool tensor_slice_statistics(
         return false;
     }
 
-    tensor_slice_stats computed;
-    computed.computed = true;
-    computed.valid = slice_window.count;
-    if (slice_window.count > 0) {
-        computed.min = slice_window.min;
-        computed.max = slice_window.max;
-    }
+    tensor_slice_stats computed = summarize_tensor_slice(
+            slice_window.values,
+            SLICE_PERCENTILE_LOWER,
+            SLICE_PERCENTILE_UPPER);
 
     store_cached_slice_stats(state, entry, slice_index, computed);
 
@@ -1279,28 +1353,33 @@ bool tensor_slice_histogram(
         return true;
     }
 
+    tensor_slice_stats stats;
+    const bool have_cached_stats = try_get_cached_slice_stats(state, entry, slice_index, stats);
+    if (have_cached_stats && (!stats.computed || stats.valid == 0)) {
+        out.slice = slice_index;
+        out.bins.assign(bin_count, 0);
+        return true;
+    }
+
     tensor_window_result window;
     if (!tensor_window_values(state, entry, base_offset, slice_count, window, error)) {
         return false;
     }
 
-    if (window.count == 0 || window.values.empty()) {
-        return true;
-    }
-
-    if (window.count > 0) {
-        tensor_slice_stats computed;
-        computed.computed = true;
-        computed.valid = window.count;
-        computed.min = window.min;
-        computed.max = window.max;
-        store_cached_slice_stats(state, entry, slice_index, computed);
+    if (!have_cached_stats) {
+        stats = summarize_tensor_slice(window.values, SLICE_PERCENTILE_LOWER, SLICE_PERCENTILE_UPPER);
+        store_cached_slice_stats(state, entry, slice_index, stats);
     }
 
     out.slice = slice_index;
     out.bins.assign(bin_count, 0);
-    out.range_min = window.min;
-    out.range_max = window.max;
+
+    if (!stats.computed || stats.valid == 0) {
+        return true;
+    }
+
+    out.range_min = stats.min;
+    out.range_max = stats.max;
 
     if (!std::isfinite(out.range_min) || !std::isfinite(out.range_max)) {
         return true;
@@ -1342,6 +1421,10 @@ bool tensor_slice_histogram(
 
     for (float value : window.values) {
         if (!std::isfinite(value)) {
+            continue;
+        }
+
+        if (value < out.range_min || value > out.range_max) {
             continue;
         }
 
@@ -1610,6 +1693,24 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
                 body["min"] = nullptr;
                 body["max"] = nullptr;
             }
+
+            json percentiles;
+            const float lower_percent = (stats.computed && stats.lower_percent > 0.0f)
+                ? stats.lower_percent
+                : SLICE_PERCENTILE_LOWER * 100.0f;
+            const float upper_percent = (stats.computed && stats.upper_percent > 0.0f)
+                ? stats.upper_percent
+                : SLICE_PERCENTILE_UPPER * 100.0f;
+            percentiles["lowerPercent"] = lower_percent;
+            percentiles["upperPercent"] = upper_percent;
+            if (stats.computed && stats.valid > 0) {
+                percentiles["lower"] = stats.min;
+                percentiles["upper"] = stats.max;
+            } else {
+                percentiles["lower"] = nullptr;
+                percentiles["upper"] = nullptr;
+            }
+            body["percentiles"] = std::move(percentiles);
 
             set_json_response(res, body);
         });

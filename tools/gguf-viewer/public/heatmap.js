@@ -997,17 +997,15 @@ if (heatmapSliceButton) {
         if (!heatmapState.tensor) {
             return;
         }
-        if (Number.isFinite(heatmapState.sliceMin) && Number.isFinite(heatmapState.sliceMax)) {
+        const previousSlice = heatmapState.slice;
+        commitSliceInput();
+        const targetSlice = heatmapState.slice;
+        const sliceChanged = targetSlice !== previousSlice;
+        if (!sliceChanged && Number.isFinite(heatmapState.sliceMin) && Number.isFinite(heatmapState.sliceMax)) {
             setHeatmapScale(heatmapState.sliceMin, heatmapState.sliceMax);
             return;
         }
-        void fetchSliceProperties({ applyScale: true });
-    });
-}
-
-if (heatmapP1Button) {
-    heatmapP1Button.addEventListener("click", () => {
-        applyHeatmapPercentileRange(1);
+        void fetchSliceProperties({ slice: targetSlice, applyScale: true });
     });
 }
 
@@ -1020,6 +1018,12 @@ if (heatmapP5Button) {
 if (heatmapP10Button) {
     heatmapP10Button.addEventListener("click", () => {
         applyHeatmapPercentileRange(10);
+    });
+}
+
+if (heatmapP20Button) {
+    heatmapP20Button.addEventListener("click", () => {
+        applyHeatmapPercentileRange(20);
     });
 }
 

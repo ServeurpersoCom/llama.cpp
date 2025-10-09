@@ -75,7 +75,8 @@ function applyPendingHeatmapStateIfPossible() {
     if (pendingHeatmapState.applied) {
         return;
     }
-    if (normalizePageId(activePage || DEFAULT_PAGE) !== "heatmap") {
+    const activeSection = normalizePageId(activePage || DEFAULT_PAGE);
+    if (activeSection !== "heatmap" && activeSection !== "statistics") {
         return;
     }
     if (!Array.isArray(tensorData) || tensorData.length === 0) {

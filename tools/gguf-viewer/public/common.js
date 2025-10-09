@@ -27,9 +27,9 @@ const heatmapSliceInput = document.getElementById("heatmap-slice-input");
 const heatmapMinInput = document.getElementById("heatmap-min-input");
 const heatmapMaxInput = document.getElementById("heatmap-max-input");
 const heatmapSliceButton = document.getElementById("heatmap-slice-button");
-const heatmapP1Button = document.getElementById("heatmap-p1-button");
 const heatmapP5Button = document.getElementById("heatmap-p5-button");
 const heatmapP10Button = document.getElementById("heatmap-p10-button");
+const heatmapP20Button = document.getElementById("heatmap-p20-button");
 const heatmapStepInput = document.getElementById("heatmap-step-input");
 const heatmapTightenButton = document.getElementById("heatmap-tighten-button");
 const heatmapWidenButton = document.getElementById("heatmap-widen-button");
@@ -938,14 +938,14 @@ function syncHeatmapControls() {
     }
 
     const hasPercentiles = ready && heatmapState.valid > 0;
-    if (heatmapP1Button) {
-        heatmapP1Button.disabled = !hasPercentiles;
-    }
     if (heatmapP5Button) {
         heatmapP5Button.disabled = !hasPercentiles;
     }
     if (heatmapP10Button) {
         heatmapP10Button.disabled = !hasPercentiles;
+    }
+    if (heatmapP20Button) {
+        heatmapP20Button.disabled = !hasPercentiles;
     }
 }
 
