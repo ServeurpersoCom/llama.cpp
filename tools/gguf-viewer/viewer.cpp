@@ -516,9 +516,7 @@ json tensor_to_json(const tensor_entry & entry, size_t data_offset) {
 }
 
 struct tensor_window_result {
-    size_t offset = 0;
     size_t count  = 0;
-    size_t total  = 0;
     float min     = 0.0f;
     float max     = 0.0f;
     std::vector<float> values;
@@ -530,8 +528,6 @@ struct tensor_tile_result {
     size_t slice  = 0;
     size_t width  = 0;
     size_t height = 0;
-    size_t stride = 0;
-    size_t offset = 0;
     size_t valid  = 0;
     float min     = 0.0f;
     float max     = 0.0f;
@@ -703,14 +699,12 @@ bool tensor_window_values(
         tensor_window_result & out,
         std::string & error) {
     out = {};
-    out.total = entry.n_elements;
 
     if (count == 0 || entry.n_elements == 0) {
         return true;
     }
 
     if (offset >= entry.n_elements) {
-        out.offset = entry.n_elements;
         return true;
     }
 
@@ -795,7 +789,6 @@ bool tensor_window_values(
 
     size_t take = std::min(end_index - offset, available_values);
 
-    out.offset = offset;
     out.count = take;
 
     if (take == 0) {
@@ -940,7 +933,6 @@ bool tensor_tile_values(
     out.slice = slice_index;
     out.width = width;
     out.height = height;
-    out.stride = layout.width;
 
     if (width == 0 || height == 0) {
         return true;
@@ -984,7 +976,6 @@ bool tensor_tile_values(
         return false;
     }
 
-    out.offset = start_offset;
     out.values.assign(width * height, 0.0f);
     out.mask.assign(width * height, 0);
     out.valid = 0;

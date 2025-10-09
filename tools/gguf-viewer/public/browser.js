@@ -105,7 +105,6 @@ async function loadModelList() {
         }
         const items = rawItems.map((item) => ({
             path: item.path,
-            name: item.name,
             size: item.size,
         }));
         if (selected && !items.some((item) => item.path === selected)) {
