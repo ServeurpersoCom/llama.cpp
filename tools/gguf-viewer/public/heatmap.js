@@ -183,6 +183,14 @@ function resetHeatmap(message = HEATMAP_DEFAULT_STREAM_MESSAGE) {
     heatmapState.viewHeight = heatmapCanvas.height;
     heatmapState.pendingScale = null;
     heatmapState.sliceRequestId = 0;
+    heatmapDragState.active = false;
+    heatmapDragState.touchId = null;
+    heatmapDragState.offsetX = 0;
+    heatmapDragState.offsetY = 0;
+    heatmapDragState.moved = false;
+    if (heatmapCanvas) {
+        heatmapCanvas.classList.remove("heatmap-canvas--dragging");
+    }
     if (heatmapGainOffsetToggle) {
         heatmapGainOffsetToggle.checked = false;
     }
@@ -304,20 +312,48 @@ function ensureHeatmapBuffer(width, height) {
     }
 }
 
+function getPaddingBottomPx(element) {
+    if (!element || typeof window.getComputedStyle !== "function") {
+        return 0;
+    }
+    const styles = window.getComputedStyle(element);
+    if (!styles) {
+        return 0;
+    }
+    const value = Number.parseFloat(styles.paddingBottom);
+    if (!Number.isFinite(value)) {
+        return 0;
+    }
+    return Math.max(0, value);
+}
+
 function syncHeatmapToViewport(fetchAfterResize) {
     if (heatmapCanvasWrapper && heatmapCanvasWrapper.offsetParent === null) {
         return;
     }
 
     const viewport = getViewportDimensions();
-    const availableHeight = Math.max(1, viewport.height - VIEWPORT_MARGIN);
+    const viewportHeight = Math.max(1, Math.floor(viewport.height));
+    let availableHeight = viewportHeight;
     if (heatmapCanvasWrapper) {
+        const wrapperRect = heatmapCanvasWrapper.getBoundingClientRect();
+        const topOffset = Math.max(0, Math.floor(wrapperRect.top));
+        let paddingOffset = 1;
+        const parentSection = heatmapCanvasWrapper.closest("section");
+        if (parentSection) {
+            paddingOffset += Math.ceil(getPaddingBottomPx(parentSection));
+        }
+        const mainElement = heatmapCanvasWrapper.closest("main");
+        if (mainElement) {
+            paddingOffset += Math.ceil(getPaddingBottomPx(mainElement));
+        }
+        availableHeight = Math.max(1, viewportHeight - topOffset - paddingOffset);
         heatmapCanvasWrapper.style.height = `${availableHeight}px`;
     }
 
     const wrapperWidth = heatmapCanvasWrapper
         ? Math.max(1, Math.floor(heatmapCanvasWrapper.clientWidth || heatmapCanvasWrapper.offsetWidth || 1))
-        : Math.max(1, viewport.width - 64);
+        : Math.max(1, viewport.width);
 
     const hasTensor = !!heatmapState.tensor;
     const layoutWidth = hasTensor && heatmapState.layout && heatmapState.layout.width > 0
@@ -340,6 +376,11 @@ function syncHeatmapToViewport(fetchAfterResize) {
         heatmapDragState.offsetX = 0;
         heatmapDragState.offsetY = 0;
         heatmapDragState.moved = false;
+        heatmapDragState.active = false;
+        heatmapDragState.touchId = null;
+        if (heatmapCanvas) {
+            heatmapCanvas.classList.remove("heatmap-canvas--dragging");
+        }
         if (hasTensor) {
             heatmapState.windowX = clampWindowX(heatmapState.windowX);
             heatmapState.windowY = clampWindowY(heatmapState.windowY);
@@ -1100,20 +1141,92 @@ function heatmapCanvasScale() {
     return { scaleX, scaleY };
 }
 
-heatmapCanvas.addEventListener("mousedown", (event) => {
-    if (!heatmapState.tensor) {
-        return;
+function beginHeatmapDrag(clientX, clientY, options = {}) {
+    if (!heatmapState.tensor || heatmapDragState.active) {
+        return false;
     }
-    event.preventDefault();
     hideHeatmapTooltip();
     heatmapDragState.active = true;
-    heatmapDragState.lastX = event.clientX;
-    heatmapDragState.lastY = event.clientY;
+    heatmapDragState.lastX = clientX;
+    heatmapDragState.lastY = clientY;
     heatmapDragState.offsetX = 0;
     heatmapDragState.offsetY = 0;
     heatmapDragState.moved = false;
+    heatmapDragState.touchId = typeof options.touchId === "number" ? options.touchId : null;
     heatmapCanvas.classList.add("heatmap-canvas--dragging");
+    return true;
+}
+
+function updateHeatmapDragPosition(clientX, clientY) {
+    if (!heatmapDragState.active) {
+        return;
+    }
+    const { scaleX, scaleY } = heatmapCanvasScale();
+    const dx = (clientX - heatmapDragState.lastX) * scaleX;
+    const dy = (clientY - heatmapDragState.lastY) * scaleY;
+    heatmapDragState.lastX = clientX;
+    heatmapDragState.lastY = clientY;
+
+    if (dx === 0 && dy === 0) {
+        return;
+    }
+
+    const beforeX = heatmapDragState.offsetX;
+    const beforeY = heatmapDragState.offsetY;
+    heatmapDragState.offsetX += dx;
+    heatmapDragState.offsetY += dy;
+    clampDragOffsets();
+    if (heatmapDragState.offsetX !== beforeX || heatmapDragState.offsetY !== beforeY) {
+        heatmapDragState.moved = true;
+    }
+
+    if (heatmapState.imageReady) {
+        drawHeatmap(heatmapDragState.offsetX, heatmapDragState.offsetY);
+    }
+}
+
+function findTouchById(touchList, identifier) {
+    if (!touchList || typeof touchList.length !== "number") {
+        return null;
+    }
+    for (let i = 0; i < touchList.length; i += 1) {
+        const touch = typeof touchList.item === "function" ? touchList.item(i) : touchList[i];
+        if (touch && touch.identifier === identifier) {
+            return touch;
+        }
+    }
+    return null;
+}
+
+function getTrackedTouch(event) {
+    if (heatmapDragState.touchId === null) {
+        return null;
+    }
+    const { touchId } = heatmapDragState;
+    return findTouchById(event.touches, touchId) || findTouchById(event.changedTouches, touchId);
+}
+
+heatmapCanvas.addEventListener("mousedown", (event) => {
+    if (!beginHeatmapDrag(event.clientX, event.clientY)) {
+        return;
+    }
+    event.preventDefault();
 });
+
+heatmapCanvas.addEventListener("touchstart", (event) => {
+    const touch = event.changedTouches && event.changedTouches.length > 0
+        ? event.changedTouches[0]
+        : event.touches && event.touches.length > 0
+            ? event.touches[0]
+            : null;
+    if (!touch) {
+        return;
+    }
+    if (!beginHeatmapDrag(touch.clientX, touch.clientY, { touchId: touch.identifier })) {
+        return;
+    }
+    event.preventDefault();
+}, { passive: false });
 
 heatmapCanvas.addEventListener("mousemove", (event) => {
     if (!heatmapState.tensor || !heatmapState.imageReady || heatmapDragState.active) {
@@ -1158,38 +1271,27 @@ heatmapCanvas.addEventListener("mousemove", (event) => {
 });
 
 window.addEventListener("mousemove", (event) => {
+    updateHeatmapDragPosition(event.clientX, event.clientY);
+});
+
+window.addEventListener("touchmove", (event) => {
     if (!heatmapDragState.active) {
         return;
     }
-    const { scaleX, scaleY } = heatmapCanvasScale();
-    const dx = (event.clientX - heatmapDragState.lastX) * scaleX;
-    const dy = (event.clientY - heatmapDragState.lastY) * scaleY;
-    heatmapDragState.lastX = event.clientX;
-    heatmapDragState.lastY = event.clientY;
-
-    if (dx === 0 && dy === 0) {
+    const touch = getTrackedTouch(event);
+    if (!touch) {
         return;
     }
-
-    const beforeX = heatmapDragState.offsetX;
-    const beforeY = heatmapDragState.offsetY;
-    heatmapDragState.offsetX += dx;
-    heatmapDragState.offsetY += dy;
-    clampDragOffsets();
-    if (heatmapDragState.offsetX !== beforeX || heatmapDragState.offsetY !== beforeY) {
-        heatmapDragState.moved = true;
-    }
-
-    if (heatmapState.imageReady) {
-        drawHeatmap(heatmapDragState.offsetX, heatmapDragState.offsetY);
-    }
-});
+    event.preventDefault();
+    updateHeatmapDragPosition(touch.clientX, touch.clientY);
+}, { passive: false });
 
 function endHeatmapDrag() {
     if (!heatmapDragState.active) {
         return;
     }
     heatmapDragState.active = false;
+    heatmapDragState.touchId = null;
     heatmapCanvas.classList.remove("heatmap-canvas--dragging");
     clampDragOffsets();
     if (!heatmapDragState.moved) {
@@ -1218,6 +1320,27 @@ function endHeatmapDrag() {
 }
 
 window.addEventListener("mouseup", endHeatmapDrag);
+window.addEventListener("touchend", (event) => {
+    if (!heatmapDragState.active) {
+        return;
+    }
+    const touch = getTrackedTouch(event);
+    if (!touch) {
+        return;
+    }
+    event.preventDefault();
+    endHeatmapDrag();
+}, { passive: false });
+window.addEventListener("touchcancel", (event) => {
+    if (!heatmapDragState.active) {
+        return;
+    }
+    const touch = getTrackedTouch(event);
+    if (!touch) {
+        return;
+    }
+    endHeatmapDrag();
+});
 heatmapCanvas.addEventListener("mouseleave", () => {
     hideHeatmapTooltip();
     if (heatmapDragState.active) {

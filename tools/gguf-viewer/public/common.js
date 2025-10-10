@@ -534,7 +534,6 @@ const HEATMAP_STEP_FALLBACK = 0.001;
 const HEATMAP_MIN_STEP = 1e-6;
 const HEATMAP_SCALE_HTML_STEP = 0.0001;
 const HEATMAP_SCALE_DECIMALS = 4;
-const VIEWPORT_MARGIN = 64;
 
 let tensorData = [];
 let modelMetadataEntries = [];
@@ -618,6 +617,7 @@ const heatmapDragState = {
     offsetX: 0,
     offsetY: 0,
     moved: false,
+    touchId: null,
 };
 
 syncPageFromLocation();
@@ -955,7 +955,16 @@ function syncHeatmapControls() {
 function getViewportDimensions() {
     const doc = document.documentElement;
     const width = Math.max(1, Math.floor(doc ? doc.clientWidth : window.innerWidth || 1));
-    const height = Math.max(1, Math.floor(window.innerHeight || (doc ? doc.clientHeight : 1)));
+    const candidates = [
+        doc && Number.isFinite(doc.clientHeight) ? doc.clientHeight : 0,
+        typeof window.visualViewport === "object" && Number.isFinite(window.visualViewport.height)
+            ? window.visualViewport.height
+            : 0,
+        Number.isFinite(window.innerHeight) ? window.innerHeight : 0,
+    ].filter((value) => value > 0);
+    const height = candidates.length > 0
+        ? Math.max(1, Math.floor(Math.min(...candidates)))
+        : 1;
     return { width, height };
 }
 

@@ -40,6 +40,8 @@ h2 {
     align-items: center;
     justify-content: center;
     gap: 0.35rem;
+    flex-wrap: wrap;
+    row-gap: 0.25rem;
     padding: 0.4rem 0;
     margin: 0 auto;
     background: transparent;
@@ -58,6 +60,7 @@ h2 {
     letter-spacing: 0.05em;
     cursor: pointer;
     font-weight: 500;
+    flex: 0 0 auto;
 }
 .tab-button:focus-visible {
     outline: 1px solid #38bdf8;
@@ -104,29 +107,33 @@ h2 {
 }
 .model-title {
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     gap: 0.5rem;
+    row-gap: 0.25rem;
     align-items: baseline;
 }
 .model-title__label {
     flex: 0 0 auto;
-    white-space: nowrap;
+    white-space: normal;
 }
 .model-status {
     display: inline-flex;
+    flex-wrap: wrap;
     align-items: baseline;
     gap: 0.35rem;
+    row-gap: 0.25rem;
     font-size: 0.8rem;
     color: #9fb4d9;
     flex: 0 1 auto;
     min-width: 0;
+    white-space: normal;
 }
 .model-status[hidden] {
     display: none;
 }
 .model-status--message {
     color: #8ea2c8;
-    white-space: nowrap;
+    white-space: normal;
 }
 .model-path {
     font-size: 0.8rem;
@@ -135,13 +142,15 @@ h2 {
     padding: 0.2rem 0.45rem;
     display: inline-flex;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    row-gap: 0.1rem;
     max-width: 100%;
 }
 .model-status .model-path code {
     display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 .table-wrapper {
     background: #060a13;
@@ -252,6 +261,7 @@ select:focus {
     flex-direction: column;
     gap: 0.5rem;
     width: 100%;
+    min-height: 0;
 }
 .statistics-visualization {
     display: flex;
@@ -299,7 +309,7 @@ select:focus {
     position: relative;
     background: #060b13;
     width: 100%;
-    min-height: 420px;
+    min-height: 320px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -383,17 +393,23 @@ select:focus {
 .heatmap-status {
     font-size: 0.75rem;
     color: #9fb4d9;
-    white-space: nowrap;
+    white-space: normal;
     display: inline-flex;
     align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    row-gap: 0.2rem;
     flex: 0 0 auto;
 }
 .statistics-status {
     font-size: 0.75rem;
     color: #9fb4d9;
-    white-space: nowrap;
+    white-space: normal;
     display: inline-flex;
     align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    row-gap: 0.2rem;
     flex: 0 0 auto;
 }
 .badge {
@@ -614,12 +630,6 @@ select:focus {
 }
 .architecture-tensor__note {
     color: #b7c6e6;
-}
-.architecture-tensor__actions {
-    display: inline-flex;
-    gap: 0.3rem;
-    justify-content: flex-end;
-    margin-left: auto;
 }
 .architecture-tensor--mismatch {
     --architecture-border-color: #f59f80;
