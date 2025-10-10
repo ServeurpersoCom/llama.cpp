@@ -80,8 +80,8 @@
 		showCenteredEmpty && !activeConversation() && activeMessages().length === 0 && !isLoading()
 	);
 
-	let activeErrorDialog = $derived(errorDialog());
 	let isServerLoading = $derived(serverLoading());
+	let activeErrorDialog = $derived(errorDialog());
 
 	async function handleDeleteConfirm() {
 		const conversation = activeConversation();
@@ -455,10 +455,10 @@
 />
 
 <ChatErrorDialog
-	message={activeErrorDialog?.message ?? ''}
-	onOpenChange={handleErrorDialogOpenChange}
 	open={Boolean(activeErrorDialog)}
 	type={activeErrorDialog?.type ?? 'server'}
+	message={activeErrorDialog?.message ?? ''}
+	onOpenChange={handleErrorDialogOpenChange}
 />
 
 <style>
