@@ -577,30 +577,6 @@
             note.textContent = options.note;
             li.appendChild(note);
         }
-        if (tensor.name) {
-            const actions = document.createElement("div");
-            actions.className = "architecture-tensor__actions";
-
-            const encodedName = encodeURIComponent(tensor.name);
-
-            const heatmapButton = document.createElement("button");
-            heatmapButton.type = "button";
-            heatmapButton.className = "viewer-button";
-            heatmapButton.dataset.action = "heatmap";
-            heatmapButton.dataset.name = encodedName;
-            heatmapButton.textContent = "Heatmap";
-            actions.appendChild(heatmapButton);
-
-            const statisticsButton = document.createElement("button");
-            statisticsButton.type = "button";
-            statisticsButton.className = "viewer-button";
-            statisticsButton.dataset.action = "statistics";
-            statisticsButton.dataset.name = encodedName;
-            statisticsButton.textContent = "Statistics";
-            actions.appendChild(statisticsButton);
-
-            header.appendChild(actions);
-        }
         return li;
     }
 
