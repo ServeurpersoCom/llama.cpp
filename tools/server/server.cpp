@@ -4505,6 +4505,7 @@ int main(int argc, char ** argv) {
             "/v1/health",
             "/models",
             "/v1/models",
+            "/v1/models/",
             "/api/tags"
         };
 
@@ -4544,7 +4545,7 @@ int main(int argc, char ** argv) {
             if (req.path == "/" || tmp.back() == "html") {
                 res.set_content(reinterpret_cast<const char*>(loading_html), loading_html_len, "text/html; charset=utf-8");
                 res.status = 503;
-            } else if (req.path == "/models" || req.path == "/v1/models" || req.path == "/api/tags") {
+            } else if (req.path == "/models" || req.path == "/v1/models" || req.path == "/v1/models/" || req.path == "/api/tags") {
                 // allow the models endpoint to be accessed during loading
                 return true;
             } else {
@@ -5573,6 +5574,7 @@ int main(int argc, char ** argv) {
     svr->Post(params.api_prefix + "/api/show",            handle_api_show);
     svr->Get (params.api_prefix + "/models",              handle_models); // public endpoint (no API key check)
     svr->Get (params.api_prefix + "/v1/models",           handle_models); // public endpoint (no API key check)
+    svr->Get (params.api_prefix + "/v1/models/",          handle_models); // allow trailing slash for Cherry Studio compatibility
     svr->Get (params.api_prefix + "/api/tags",            handle_models); // ollama specific endpoint. public endpoint (no API key check)
     svr->Post(params.api_prefix + "/completion",          handle_completions); // legacy
     svr->Post(params.api_prefix + "/completions",         handle_completions);
