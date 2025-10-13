@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>llama-gguf-viewer</title>
+    <link rel="stylesheet" href="viewer.css" />
+</head>
+<body>
+<nav class="tabs" aria-label="Viewer sections">
+    <button type="button" class="viewer-button tab-button tab-button--active" data-target-page="browser">Browser</button>
+    <button type="button" class="viewer-button tab-button" data-target-page="metadata">Metadata</button>
+    <button type="button" class="viewer-button tab-button" data-target-page="tokenizer">Tokenizer</button>
+    <button type="button" class="viewer-button tab-button" data-target-page="tensors">Tensors</button>
+    <button type="button" class="viewer-button tab-button" data-target-page="architecture">Architecture</button>
+    <button type="button" class="viewer-button tab-button" data-target-page="heatmap">Heatmap</button>
+    <button type="button" class="viewer-button tab-button" data-target-page="statistics">Statistics</button>
+</nav>
+<main>
+    <div class="page page--active" data-page-id="browser">
+        <section>
+            <h2 id="browser-title" class="model-title">
+                <span class="model-title__label" id="browser-title-label">GGUF Browser</span>
+                <span class="model-status browser-info" id="model-browser-root" hidden></span>
+            </h2>
+            <div id="model-browser"></div>
+        </section>
+    </div>
+
+    <div class="page" data-page-id="metadata">
+        <section id="model-info">
+            <h2 id="model-title" class="model-title">
+                <span class="model-title__label" id="model-title-label">Model overview</span>
+                <span class="model-status" id="model-status" hidden></span>
+            </h2>
+            <div class="info-cards" id="info-cards"></div>
+        </section>
+
+        <section>
+            <h2>Metadata (KV)</h2>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Key</th>
+                            <th>Type</th>
+                            <th>Details</th>
+                        </tr>
+                    </thead>
+                    <tbody id="kv-body"></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <div class="page" data-page-id="tokenizer">
+        <section class="tokenizer-section">
+            <h2 id="tokenizer-title" class="model-title">
+                <span class="model-title__label" id="tokenizer-title-label">Tokenizer</span>
+                <span class="model-status" id="tokenizer-status" hidden></span>
+            </h2>
+            <div id="tokenizer-content"></div>
+        </section>
+    </div>
+
+    <div class="page" data-page-id="tensors">
+        <section>
+            <h2 id="tensors-title" class="model-title">
+                <span class="model-title__label" id="tensors-title-label">Tensors</span>
+                <span class="model-status" id="tensors-status" hidden></span>
+            </h2>
+            <div class="table-wrapper">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Type</th>
+                            <th>Shape</th>
+                            <th>Elements</th>
+                            <th>Offset</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="tensor-body"></tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+    <div class="page" data-page-id="architecture">
+        <section>
+            <h2 id="architecture-title" class="model-title">
+                <span class="model-title__label" id="architecture-title-label">Architecture</span>
+                <span class="model-status" id="architecture-status" hidden></span>
+            </h2>
+            <div id="architecture-content"></div>
+        </section>
+    </div>
+
+    <div class="page" data-page-id="heatmap">
+        <section>
+            <h2 id="heatmap-title" class="model-title">
+                <span class="model-title__label" id="heatmap-title-label">Heatmap</span>
+                <span class="model-status" id="heatmap-section-status" hidden></span>
+                <span class="heatmap-status" id="heatmap-status" hidden></span>
+            </h2>
+            <div class="heatmap-controls" id="heatmap-controls" hidden>
+                <label>
+                    <span>Tensor</span>
+                    <select id="heatmap-tensor-select"></select>
+                </label>
+                <label>
+                    <span>Slice</span>
+                    <input type="number" id="heatmap-slice-input" min="1" value="1">
+                </label>
+                <label>
+                    <span>Min</span>
+                    <input type="number" id="heatmap-min-input" value="-1" step="0.0001">
+                </label>
+                <label>
+                    <span>Max</span>
+                    <input type="number" id="heatmap-max-input" value="1" step="0.0001">
+                </label>
+                <button id="heatmap-slice-button" class="viewer-button" type="button">SLICE</button>
+                <button id="heatmap-p5-button" class="viewer-button" type="button">P5</button>
+                <button id="heatmap-p10-button" class="viewer-button" type="button">P10</button>
+                <button id="heatmap-p20-button" class="viewer-button" type="button">P20</button>
+                <label>
+                    <span>Step</span>
+                    <input type="number" id="heatmap-step-input" value="0.001" step="0.0001">
+                </label>
+                <div class="button-group">
+                    <button id="heatmap-widen-button" class="viewer-button" type="button">−</button>
+                    <button id="heatmap-tighten-button" class="viewer-button" type="button">+</button>
+                </div>
+                <label class="heatmap-toggle">
+                    <input type="checkbox" id="heatmap-gain-offset-toggle">
+                    <span>Offset</span>
+                </label>
+                <label class="heatmap-toggle">
+                    <input type="checkbox" id="heatmap-grid-toggle" checked>
+                    <span>Quant Grid</span>
+                </label>
+            </div>
+            <div class="heatmap-visualization">
+                <div class="heatmap-canvas-wrapper">
+                    <canvas id="heatmap-canvas" width="1024" height="1024"></canvas>
+                    <div class="heatmap-tooltip" id="heatmap-tooltip" hidden></div>
+                    <div class="heatmap-overlay" id="heatmap-overlay">Select a tensor to stream its weights.</div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <div class="page" data-page-id="statistics">
+        <section>
+            <h2 id="statistics-title" class="model-title">
+                <span class="model-title__label" id="statistics-title-label">Statistics</span>
+                <span class="model-status" id="statistics-section-status" hidden></span>
+                <span class="statistics-status" id="statistics-status" hidden></span>
+            </h2>
+            <div class="statistics-visualization">
+                <div class="histogram-canvas-wrapper">
+                    <canvas id="histogram-canvas" width="1024" height="512"></canvas>
+                    <div class="histogram-overlay" id="histogram-overlay">Select a tensor to generate its histogram.</div>
+                </div>
+            </div>
+        </section>
+    </div>
+</main>
+<script src="common.js"></script>
+<script src="browser.js"></script>
+<script src="metadata.js"></script>
+<script src="tokenizer.js"></script>
+<script src="tensors.js"></script>
+<script src="statistics.js"></script>
+<script src="heatmap.js"></script>
+<script src="architecture.js"></script>
+<script src="app.js"></script>
+
+</body>
+</html>
