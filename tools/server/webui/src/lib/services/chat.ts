@@ -1,6 +1,8 @@
 import { config } from '$lib/stores/settings.svelte';
 import { selectedModelName } from '$lib/stores/models.svelte';
+import { WebSocketTunnelClient, type TunnelSSEEvent } from '$lib/utils/websocket-tunnel';
 import { slotsService } from './slots';
+
 /**
  * ChatService - Low-level API communication layer for llama.cpp server interactions
  *
@@ -172,14 +174,38 @@ export class ChatService {
 
 		try {
 			const apiKey = currentConfig.apiKey?.toString().trim();
+			const headers = {
+				'Content-Type': 'application/json',
+				...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
+			};
+			const requestPayload = JSON.stringify(requestBody);
+			const tunnelUrl = currentConfig.sseWebsocketProxyUrl?.toString().trim();
+
+			if (stream && tunnelUrl) {
+				const tunnelClient = new WebSocketTunnelClient(tunnelUrl);
+				const targetUrl = new URL('./v1/chat/completions', window.location.href).toString();
+
+				await this.handleStreamResponse(
+					tunnelClient.stream({
+						targetUrl,
+						method: 'POST',
+						headers,
+						body: requestPayload,
+						abortSignal: this.abortController.signal
+					}),
+					onChunk,
+					onComplete,
+					onError,
+					onReasoningChunk,
+					onModel
+				);
+				return;
+			}
 
 			const response = await fetch(`./v1/chat/completions`, {
 				method: 'POST',
-				headers: {
-					'Content-Type': 'application/json',
-					...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {})
-				},
-				body: JSON.stringify(requestBody),
+				headers,
+				body: requestPayload,
 				signal: this.abortController.signal
 			});
 
@@ -201,9 +227,9 @@ export class ChatService {
 					onReasoningChunk,
 					onModel
 				);
-			} else {
-				return this.handleNonStreamResponse(response, onComplete, onError, onModel);
 			}
+
+			return this.handleNonStreamResponse(response, onComplete, onError, onModel);
 		} catch (error) {
 			if (error instanceof Error && error.name === 'AbortError') {
 				console.log('Chat completion request was aborted');
@@ -241,9 +267,9 @@ export class ChatService {
 
 	/**
 	 * Handles streaming response from the chat completion API.
-	 * Processes server-sent events and extracts content chunks from the stream.
+	 * Processes server-sent events received through the WebSocket tunnel or direct fetch responses.
 	 *
-	 * @param response - The fetch Response object containing the streaming data
+	 * @param source - Async generator yielding SSE events from the API or a fetch Response
 	 * @param onChunk - Optional callback invoked for each content chunk received
 	 * @param onComplete - Optional callback invoked when the stream is complete with full response
 	 * @param onError - Optional callback invoked if an error occurs during streaming
@@ -252,7 +278,7 @@ export class ChatService {
 	 * @throws {Error} if the stream cannot be read or parsed
 	 */
 	private async handleStreamResponse(
-		response: Response,
+		source: AsyncGenerator<TunnelSSEEvent> | Response,
 		onChunk?: (chunk: string) => void,
 		onComplete?: (
 			response: string,
@@ -263,13 +289,6 @@ export class ChatService {
 		onReasoningChunk?: (chunk: string) => void,
 		onModel?: (model: string) => void
 	): Promise<void> {
-		const reader = response.body?.getReader();
-
-		if (!reader) {
-			throw new Error('No response body');
-		}
-
-		const decoder = new TextDecoder();
 		let aggregatedContent = '';
 		let fullReasoningContent = '';
 		let hasReceivedData = false;
@@ -277,18 +296,31 @@ export class ChatService {
 		let streamFinished = false;
 		let modelEmitted = false;
 
-		try {
-			let chunk = '';
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
+		if (source instanceof Response) {
+			const response = source;
+			const reader = response.body?.getReader();
 
-				chunk += decoder.decode(value, { stream: true });
-				const lines = chunk.split('\n');
-				chunk = lines.pop() || '';
+			if (!reader) {
+				throw new Error('No response body');
+			}
 
-				for (const line of lines) {
-					if (line.startsWith('data: ')) {
+			const decoder = new TextDecoder();
+
+			try {
+				let chunk = '';
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) break;
+
+					chunk += decoder.decode(value, { stream: true });
+					const lines = chunk.split('\n');
+					chunk = lines.pop() || '';
+
+					for (const line of lines) {
+						if (!line.startsWith('data: ')) {
+							continue;
+						}
+
 						const data = line.slice(6);
 						if (data === '[DONE]') {
 							streamFinished = true;
@@ -333,6 +365,81 @@ export class ChatService {
 						}
 					}
 				}
+
+				if (streamFinished) {
+					if (!hasReceivedData && aggregatedContent.length === 0) {
+						const noResponseError = new Error(
+							'No response received from server. Please try again.'
+						);
+						throw noResponseError;
+					}
+
+					onComplete?.(aggregatedContent, fullReasoningContent || undefined, lastTimings);
+				}
+			} catch (error) {
+				const err = error instanceof Error ? error : new Error('Stream error');
+
+				onError?.(err);
+
+				throw err;
+			} finally {
+				reader.releaseLock();
+			}
+
+			return;
+		}
+
+		const stream = source;
+
+		try {
+			for await (const event of stream) {
+				const payload = event?.data?.trim();
+
+				if (!payload) {
+					continue;
+				}
+
+				if (payload === '[DONE]') {
+					streamFinished = true;
+					continue;
+				}
+
+				try {
+					const parsed: ApiChatCompletionStreamChunk = JSON.parse(payload);
+
+					const chunkModel = this.extractModelName(parsed);
+					if (chunkModel && !modelEmitted) {
+						modelEmitted = true;
+						onModel?.(chunkModel);
+					}
+
+					const content = parsed.choices[0]?.delta?.content;
+					const reasoningContent = parsed.choices[0]?.delta?.reasoning_content;
+					const timings = parsed.timings;
+					const promptProgress = parsed.prompt_progress;
+
+					if (timings || promptProgress) {
+						this.updateProcessingState(timings, promptProgress);
+
+						if (timings) {
+							lastTimings = timings;
+						}
+					}
+
+					if (content) {
+						hasReceivedData = true;
+						aggregatedContent += content;
+						onChunk?.(content);
+					}
+
+					if (reasoningContent) {
+						hasReceivedData = true;
+						fullReasoningContent += reasoningContent;
+						onReasoningChunk?.(reasoningContent);
+					}
+				} catch (e) {
+					console.error('Error parsing JSON chunk:', e);
+				}
 			}
 
 			if (streamFinished) {
@@ -350,10 +457,15 @@ export class ChatService {
 
 			throw err;
 		} finally {
-			reader.releaseLock();
+			if (typeof stream.return === 'function') {
+				try {
+					await stream.return();
+				} catch {
+					/* ignore */
+				}
+			}
 		}
 	}
-
 	/**
 	 * Handles non-streaming response from the chat completion API.
 	 * Parses the JSON response and extracts the generated content.

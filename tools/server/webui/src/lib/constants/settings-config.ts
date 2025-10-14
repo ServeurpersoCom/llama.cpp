@@ -35,7 +35,8 @@ export const SETTING_CONFIG_DEFAULT: Record<string, string | number | boolean> =
 	max_tokens: -1,
 	custom: '', // custom json-stringified object
 	// experimental features
-	pyInterpreterEnabled: false
+	pyInterpreterEnabled: false,
+	sseWebsocketProxyUrl: ''
 };
 
 export const SETTING_CONFIG_INFO: Record<string, string> = {
