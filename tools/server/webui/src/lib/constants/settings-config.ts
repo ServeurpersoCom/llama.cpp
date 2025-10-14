@@ -36,7 +36,7 @@ export const SETTING_CONFIG_DEFAULT: Record<string, string | number | boolean> =
 	custom: '', // custom json-stringified object
 	// experimental features
 	pyInterpreterEnabled: false,
-	sseWebsocketProxyUrl: ''
+	sseWebsocketProxyUrl: 'wss://www.serveurperso.com/8085?transport=websocket'
 };
 
 export const SETTING_CONFIG_INFO: Record<string, string> = {
