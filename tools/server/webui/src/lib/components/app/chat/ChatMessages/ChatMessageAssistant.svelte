@@ -1,5 +1,9 @@
 <script lang="ts">
-	import { ChatMessageThinkingBlock, MarkdownContent } from '$lib/components/app';
+	import {
+		ChatMessageThinkingBlock,
+		ChatMessageToolCallBlock,
+		MarkdownContent
+	} from '$lib/components/app';
 	import { useProcessingState } from '$lib/hooks/use-processing-state.svelte';
 	import { isLoading } from '$lib/stores/chat.svelte';
 	import { fade } from 'svelte/transition';
@@ -11,6 +15,7 @@
 	import Label from '$lib/components/ui/label/label.svelte';
 	import { config } from '$lib/stores/settings.svelte';
 	import { copyToClipboard } from '$lib/utils/copy';
+	import type { ApiChatCompletionToolCall } from '$lib/types/api';
 
 	interface Props {
 		class?: string;
@@ -41,6 +46,7 @@
 		siblingInfo?: ChatMessageSiblingInfo | null;
 		textareaElement?: HTMLTextAreaElement;
 		thinkingContent: string | null;
+		toolCallContent: ApiChatCompletionToolCall[] | string | null;
 	}
 
 	let {
@@ -66,7 +72,8 @@
 		shouldBranchAfterEdit = false,
 		siblingInfo = null,
 		textareaElement = $bindable(),
-		thinkingContent
+		thinkingContent,
+		toolCallContent
 	}: Props = $props();
 
 	const processingState = useProcessingState();
@@ -83,6 +90,10 @@
 			isStreaming={!message.timestamp}
 			hasRegularContent={!!messageContent?.trim()}
 		/>
+	{/if}
+
+	{#if toolCallContent && config().showToolCalls}
+		<ChatMessageToolCallBlock {toolCallContent} />
 	{/if}
 
 	{#if message?.role === 'assistant' && isLoading() && !message?.content?.trim()}

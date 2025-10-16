@@ -1,6 +1,7 @@
 import { config } from '$lib/stores/settings.svelte';
 import { selectedModelName } from '$lib/stores/models.svelte';
 import { WebSocketTunnelClient, type TunnelSSEEvent } from '$lib/utils/websocket-tunnel';
+import type { ApiChatCompletionToolCall, ApiChatCompletionToolCallDelta } from '$lib/types/api';
 import { slotsService } from './slots';
 
 /**
@@ -54,6 +55,7 @@ export class ChatService {
 			onComplete,
 			onError,
 			onReasoningChunk,
+			onToolCallChunk,
 			onModel,
 			// Generation parameters
 			temperature,
@@ -197,6 +199,7 @@ export class ChatService {
 					onComplete,
 					onError,
 					onReasoningChunk,
+					onToolCallChunk,
 					onModel
 				);
 				return;
@@ -225,11 +228,12 @@ export class ChatService {
 					onComplete,
 					onError,
 					onReasoningChunk,
+					onToolCallChunk,
 					onModel
 				);
 			}
 
-			return this.handleNonStreamResponse(response, onComplete, onError, onModel);
+			return this.handleNonStreamResponse(response, onComplete, onError, onToolCallChunk, onModel);
 		} catch (error) {
 			if (error instanceof Error && error.name === 'AbortError') {
 				console.log('Chat completion request was aborted');
@@ -283,15 +287,55 @@ export class ChatService {
 		onComplete?: (
 			response: string,
 			reasoningContent?: string,
-			timings?: ChatMessageTimings
+			timings?: ChatMessageTimings,
+			toolCalls?: string
 		) => void,
 		onError?: (error: Error) => void,
 		onReasoningChunk?: (chunk: string) => void,
+		onToolCallChunk?: (chunk: string) => void,
 		onModel?: (model: string) => void
 	): Promise<void> {
 		let aggregatedContent = '';
 		let fullReasoningContent = '';
+		let aggregatedToolCalls: ApiChatCompletionToolCall[] = [];
 		let hasReceivedData = false;
+		let toolCallIndexOffset = 0;
+		let hasOpenToolCallBatch = false;
+
+		const finalizeOpenToolCallBatch = () => {
+			if (!hasOpenToolCallBatch) {
+				return;
+			}
+
+			toolCallIndexOffset = aggregatedToolCalls.length;
+			hasOpenToolCallBatch = false;
+		};
+
+		const processToolCallDelta = (toolCalls?: ApiChatCompletionToolCallDelta[]) => {
+			if (!toolCalls || toolCalls.length === 0) {
+				return;
+			}
+
+			aggregatedToolCalls = this.mergeToolCallDeltas(
+				aggregatedToolCalls,
+				toolCalls,
+				toolCallIndexOffset
+			);
+			if (aggregatedToolCalls.length === 0) {
+				return;
+			}
+
+			hasOpenToolCallBatch = true;
+
+			const serializedToolCalls = JSON.stringify(aggregatedToolCalls);
+
+			if (!serializedToolCalls) {
+				return;
+			}
+
+			hasReceivedData = true;
+			onToolCallChunk?.(serializedToolCalls);
+		};
 		let lastTimings: ChatMessageTimings | undefined;
 		let streamFinished = false;
 		let modelEmitted = false;
@@ -338,6 +382,7 @@ export class ChatService {
 
 							const content = parsed.choices[0]?.delta?.content;
 							const reasoningContent = parsed.choices[0]?.delta?.reasoning_content;
+							const toolCalls = parsed.choices[0]?.delta?.tool_calls;
 							const timings = parsed.timings;
 							const promptProgress = parsed.prompt_progress;
 
@@ -350,16 +395,20 @@ export class ChatService {
 							}
 
 							if (content) {
+								finalizeOpenToolCallBatch();
 								hasReceivedData = true;
 								aggregatedContent += content;
 								onChunk?.(content);
 							}
 
 							if (reasoningContent) {
+								finalizeOpenToolCallBatch();
 								hasReceivedData = true;
 								fullReasoningContent += reasoningContent;
 								onReasoningChunk?.(reasoningContent);
 							}
+
+							processToolCallDelta(toolCalls);
 						} catch (e) {
 							console.error('Error parsing JSON chunk:', e);
 						}
@@ -367,14 +416,26 @@ export class ChatService {
 				}
 
 				if (streamFinished) {
-					if (!hasReceivedData && aggregatedContent.length === 0) {
+					if (
+						!hasReceivedData &&
+						aggregatedContent.length === 0 &&
+						aggregatedToolCalls.length === 0
+					) {
 						const noResponseError = new Error(
 							'No response received from server. Please try again.'
 						);
 						throw noResponseError;
 					}
 
-					onComplete?.(aggregatedContent, fullReasoningContent || undefined, lastTimings);
+					const finalToolCalls =
+						aggregatedToolCalls.length > 0 ? JSON.stringify(aggregatedToolCalls) : undefined;
+
+					onComplete?.(
+						aggregatedContent,
+						fullReasoningContent || undefined,
+						lastTimings,
+						finalToolCalls
+					);
 				}
 			} catch (error) {
 				const err = error instanceof Error ? error : new Error('Stream error');
@@ -415,6 +476,7 @@ export class ChatService {
 
 					const content = parsed.choices[0]?.delta?.content;
 					const reasoningContent = parsed.choices[0]?.delta?.reasoning_content;
+					const toolCalls = parsed.choices[0]?.delta?.tool_calls;
 					const timings = parsed.timings;
 					const promptProgress = parsed.prompt_progress;
 
@@ -427,28 +489,44 @@ export class ChatService {
 					}
 
 					if (content) {
+						finalizeOpenToolCallBatch();
 						hasReceivedData = true;
 						aggregatedContent += content;
 						onChunk?.(content);
 					}
 
 					if (reasoningContent) {
+						finalizeOpenToolCallBatch();
 						hasReceivedData = true;
 						fullReasoningContent += reasoningContent;
 						onReasoningChunk?.(reasoningContent);
 					}
+
+					processToolCallDelta(toolCalls);
 				} catch (e) {
 					console.error('Error parsing JSON chunk:', e);
 				}
 			}
 
 			if (streamFinished) {
-				if (!hasReceivedData && aggregatedContent.length === 0) {
+				if (
+					!hasReceivedData &&
+					aggregatedContent.length === 0 &&
+					aggregatedToolCalls.length === 0
+				) {
 					const noResponseError = new Error('No response received from server. Please try again.');
 					throw noResponseError;
 				}
 
-				onComplete?.(aggregatedContent, fullReasoningContent || undefined, lastTimings);
+				const finalToolCalls =
+					aggregatedToolCalls.length > 0 ? JSON.stringify(aggregatedToolCalls) : undefined;
+
+				onComplete?.(
+					aggregatedContent,
+					fullReasoningContent || undefined,
+					lastTimings,
+					finalToolCalls
+				);
 			}
 		} catch (error) {
 			const err = error instanceof Error ? error : new Error('Stream error');
@@ -466,6 +544,54 @@ export class ChatService {
 			}
 		}
 	}
+	private mergeToolCallDeltas(
+		existing: ApiChatCompletionToolCall[],
+		deltas: ApiChatCompletionToolCallDelta[],
+		indexOffset = 0
+	): ApiChatCompletionToolCall[] {
+		const result = existing.map((call) => ({
+			...call,
+			function: call.function ? { ...call.function } : undefined
+		}));
+
+		for (const delta of deltas) {
+			const index =
+				typeof delta.index === 'number' && delta.index >= 0
+					? delta.index + indexOffset
+					: result.length;
+
+			while (result.length <= index) {
+				result.push({});
+			}
+
+			const target = result[index]!;
+
+			if (delta.id) {
+				target.id = delta.id;
+			}
+
+			if (delta.type) {
+				target.type = delta.type;
+			}
+
+			if (delta.function) {
+				const fn = target.function ? { ...target.function } : {};
+
+				if (delta.function.name) {
+					fn.name = delta.function.name;
+				}
+
+				if (delta.function.arguments) {
+					fn.arguments = (fn.arguments ?? '') + delta.function.arguments;
+				}
+
+				target.function = fn;
+			}
+		}
+
+		return result;
+	}
+
 	/**
 	 * Handles non-streaming response from the chat completion API.
 	 * Parses the JSON response and extracts the generated content.
@@ -481,9 +607,11 @@ export class ChatService {
 		onComplete?: (
 			response: string,
 			reasoningContent?: string,
-			timings?: ChatMessageTimings
+			timings?: ChatMessageTimings,
+			toolCalls?: string
 		) => void,
 		onError?: (error: Error) => void,
+		onToolCallChunk?: (chunk: string) => void,
 		onModel?: (model: string) => void
 	): Promise<string> {
 		try {
@@ -502,17 +630,29 @@ export class ChatService {
 
 			const content = data.choices[0]?.message?.content || '';
 			const reasoningContent = data.choices[0]?.message?.reasoning_content;
+			const toolCalls = data.choices[0]?.message?.tool_calls;
 
 			if (reasoningContent) {
 				console.log('Full reasoning content:', reasoningContent);
 			}
 
-			if (!content.trim()) {
+			let serializedToolCalls: string | undefined;
+
+			if (toolCalls && toolCalls.length > 0) {
+				const mergedToolCalls = this.mergeToolCallDeltas([], toolCalls);
+
+				if (mergedToolCalls.length > 0) {
+					serializedToolCalls = JSON.stringify(mergedToolCalls);
+					onToolCallChunk?.(serializedToolCalls);
+				}
+			}
+
+			if (!content.trim() && !serializedToolCalls) {
 				const noResponseError = new Error('No response received from server. Please try again.');
 				throw noResponseError;
 			}
 
-			onComplete?.(content, reasoningContent);
+			onComplete?.(content, reasoningContent, undefined, serializedToolCalls);
 
 			return content;
 		} catch (error) {
