@@ -49,6 +49,7 @@ export interface DatabaseMessage {
 	content: string;
 	parent: string;
 	thinking: string;
+	toolCalls?: string;
 	children: string[];
 	extra?: DatabaseMessageExtra[];
 	timings?: ChatMessageTimings;

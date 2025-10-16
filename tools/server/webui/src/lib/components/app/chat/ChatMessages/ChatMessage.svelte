@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { ApiChatCompletionToolCall } from '$lib/types/api';
 	import { getDeletionInfo } from '$lib/stores/chat.svelte';
 	import { copyToClipboard } from '$lib/utils/copy';
 	import ChatMessageAssistant from './ChatMessageAssistant.svelte';
@@ -53,6 +54,28 @@
 		return null;
 	});
 
+	let toolCallContent = $derived.by((): ApiChatCompletionToolCall[] | string | null => {
+		if (message.role === 'assistant') {
+			const trimmedToolCalls = message.toolCalls?.trim();
+
+			if (!trimmedToolCalls) {
+				return null;
+			}
+
+			try {
+				const parsed = JSON.parse(trimmedToolCalls);
+
+				if (Array.isArray(parsed)) {
+					return parsed as ApiChatCompletionToolCall[];
+				}
+			} catch {
+				// Harmony-only path: fall back to the raw string so issues surface visibly.
+			}
+
+			return trimmedToolCalls;
+		}
+		return null;
+	});
 	function handleCancelEdit() {
 		isEditing = false;
 		editedContent = message.content;
@@ -168,5 +191,6 @@
 		{showDeleteDialog}
 		{siblingInfo}
 		{thinkingContent}
+		{toolCallContent}
 	/>
 {/if}
