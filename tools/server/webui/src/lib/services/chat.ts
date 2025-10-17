@@ -537,7 +537,7 @@ export class ChatService {
 		} finally {
 			if (typeof stream.return === 'function') {
 				try {
-					await stream.return();
+					await stream.return(undefined);
 				} catch {
 					/* ignore */
 				}
@@ -561,7 +561,7 @@ export class ChatService {
 					: result.length;
 
 			while (result.length <= index) {
-				result.push({});
+				result.push({ function: undefined });
 			}
 
 			const target = result[index]!;
