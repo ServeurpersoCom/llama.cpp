@@ -1,3 +1,5 @@
+import './chat-tunnel';
+
 export { ChatService } from './chat';
 export { DatabaseService } from './database';
 export { ModelsService } from './models';
