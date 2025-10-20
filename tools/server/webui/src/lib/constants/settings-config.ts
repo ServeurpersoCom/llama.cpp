@@ -13,7 +13,7 @@ export const SETTING_CONFIG_DEFAULT: Record<string, string | number | boolean> =
 	pdfAsImage: false,
 	showModelInfo: false,
 	renderUserContentAsMarkdown: false,
-	modelSelectorEnabled: false,
+	modelSelectorEnabled: true,
 	// make sure these default values are in sync with `common.h`
 	samplers: 'top_k;typ_p;top_p;min_p;temperature',
 	temperature: 0.8,
