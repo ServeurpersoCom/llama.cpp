@@ -325,6 +325,7 @@ class ChatStore {
 				});
 			}
 		};
+
 		slotsService.startStreaming();
 
 		await chatService.sendMessage(allMessages, {
