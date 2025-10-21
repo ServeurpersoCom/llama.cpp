@@ -123,6 +123,7 @@ export class ChatService {
 
 		const modelSelectorEnabled = Boolean(currentConfig.modelSelectorEnabled);
 		const activeModel = modelSelectorEnabled ? selectedModelName() : null;
+
 		if (modelSelectorEnabled && activeModel) {
 			requestBody.model = activeModel;
 		}
@@ -401,7 +402,8 @@ export class ChatService {
 				throw noResponseError;
 			}
 
-			const data: ApiChatCompletionResponse = JSON.parse(responseText);
+const data: ApiChatCompletionResponse = JSON.parse(responseText);
+
 			const responseModel = this.extractModelName(data);
 			if (responseModel) {
 				onModel?.(responseModel);
