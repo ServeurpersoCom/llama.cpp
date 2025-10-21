@@ -145,6 +145,7 @@ class ModelsStore {
 	private toDisplayName(id: string): string {
 		const segments = id.split(/\\|\//);
 		const candidate = segments.pop();
+
 		return candidate && candidate.trim().length > 0 ? candidate : id;
 	}
 
@@ -162,6 +163,7 @@ class ModelsStore {
 
 		if (nextSelectionId) {
 			const match = models.find((m) => m.id === nextSelectionId);
+
 			if (match) {
 				nextSelectionId = match.id;
 				nextSelectionName = match.model;
