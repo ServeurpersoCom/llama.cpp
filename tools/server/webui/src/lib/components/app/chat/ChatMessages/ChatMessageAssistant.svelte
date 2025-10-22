@@ -82,11 +82,12 @@
 
 		return serverModel;
 	});
-	const handleCopyModel = () => {
+
+	function handleCopyModel() {
 		const model = displayedModel();
 
 		void copyToClipboard(model ?? '');
-	};
+	}
 </script>
 
 <div
