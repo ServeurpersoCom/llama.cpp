@@ -185,6 +185,22 @@ export interface ApiChatCompletionRequest {
 	custom?: Record<string, unknown>;
 }
 
+export interface ApiChatCompletionToolCallFunctionDelta {
+	name?: string;
+	arguments?: string;
+}
+
+export interface ApiChatCompletionToolCallDelta {
+	index?: number;
+	id?: string;
+	type?: string;
+	function?: ApiChatCompletionToolCallFunctionDelta;
+}
+
+export interface ApiChatCompletionToolCall extends ApiChatCompletionToolCallDelta {
+	function?: ApiChatCompletionToolCallFunctionDelta & { arguments?: string };
+}
+
 export interface ApiChatCompletionStreamChunk {
 	object?: string;
 	model?: string;
@@ -195,6 +211,7 @@ export interface ApiChatCompletionStreamChunk {
 			content?: string;
 			reasoning_content?: string;
 			model?: string;
+			tool_calls?: ApiChatCompletionToolCallDelta[];
 		};
 	}>;
 	timings?: {
@@ -216,6 +233,7 @@ export interface ApiChatCompletionResponse {
 			content: string;
 			reasoning_content?: string;
 			model?: string;
+			tool_calls?: ApiChatCompletionToolCallDelta[];
 		};
 	}>;
 }
