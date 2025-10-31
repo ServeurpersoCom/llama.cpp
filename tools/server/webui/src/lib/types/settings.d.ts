@@ -43,6 +43,7 @@ export interface SettingsChatServiceOptions {
 	onReasoningChunk?: (chunk: string) => void;
 	onToolCallChunk?: (chunk: string) => void;
 	onModel?: (model: string) => void;
+	onFirstValidChunk?: () => void;
 	onComplete?: (
 		response: string,
 		reasoningContent?: string,
