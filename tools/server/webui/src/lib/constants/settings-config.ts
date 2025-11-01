@@ -8,7 +8,7 @@ export const SETTING_CONFIG_DEFAULT: Record<string, string | number | boolean> =
 	showThoughtInProgress: true,
 	showToolCalls: true,
 	disableReasoningFormat: false,
-	keepStatsVisible: true,
+	keepStatsVisible: false,
 	showMessageStats: true,
 	askForTitleConfirmation: false,
 	pasteLongTextToFileLen: 2500,
