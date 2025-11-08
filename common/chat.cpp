@@ -643,6 +643,8 @@ const char * common_chat_format_name(common_chat_format format) {
         case COMMON_CHAT_FORMAT_NEMOTRON_V2: return "Nemotron V2";
         case COMMON_CHAT_FORMAT_APERTUS: return "Apertus";
         case COMMON_CHAT_FORMAT_LFM2_WITH_JSON_TOOLS: return "LFM2 with JSON tools";
+        case COMMON_CHAT_FORMAT_MINIMAX_M2: return "MiniMax-M2";
+        case COMMON_CHAT_FORMAT_GLM_4_5: return "GLM 4.5";
         default:
             throw std::runtime_error("Unknown chat format");
     }
@@ -795,7 +797,8 @@ static std::string apply(
     const struct templates_params & inputs,
     const std::optional<json> & messages_override = std::nullopt,
     const std::optional<json> & tools_override = std::nullopt,
-    const std::optional<json> & additional_context = std::nullopt)
+    const std::optional<json> & additional_context = std::nullopt,
+    const std::optional<minja::chat_template_options> & tmpl_opts = std::nullopt)
 {
     minja::chat_template_inputs tmpl_inputs;
     tmpl_inputs.messages = messages_override ? *messages_override : inputs.messages;
@@ -813,11 +816,11 @@ static std::string apply(
     // TODO: add flag to control date/time, if only for testing purposes.
     // tmpl_inputs.now = std::chrono::system_clock::now();
 
-    minja::chat_template_options tmpl_opts;
+    minja::chat_template_options default_tmpl_opts;
     // To avoid double BOS / EOS tokens, we're manually removing begining / trailing tokens
     // instead of using `chat_template_options.use_bos_token = false`, since these tokens
     // may be needed inside the template / between messages too.
-    auto result = tmpl.apply(tmpl_inputs, tmpl_opts);
+    auto result = tmpl.apply(tmpl_inputs, tmpl_opts ? *tmpl_opts : default_tmpl_opts);
     if (inputs.add_bos && string_starts_with(result, tmpl.bos_token())) {
         result = result.substr(tmpl.bos_token().size());
     }
@@ -1807,6 +1810,62 @@ static void common_chat_parse_deepseek_v3_1(common_chat_msg_parser & builder) {
     }
 }
 
+
+static common_chat_params common_chat_params_init_minimax_m2(const common_chat_template & tmpl, const struct templates_params & params) {
+    common_chat_params data;
+
+    data.prompt = apply(tmpl, params);
+    data.format = COMMON_CHAT_FORMAT_MINIMAX_M2;
+
+    // Handle thinking tags based on prompt ending
+    if (string_ends_with(data.prompt, "<think>\n")) {
+        if (!params.enable_thinking) {
+            // Close the thinking tag immediately if thinking is disabled
+            data.prompt += "</think>\n\n";
+        } else {
+            // Mark thinking as forced open (template started with <think>)
+            data.thinking_forced_open = true;
+        }
+    }
+
+    // Preserve MiniMax-M2 special tokens
+    data.preserved_tokens = {
+        "<think>",
+        "</think>",
+        "<minimax:tool_call>",
+        "</minimax:tool_call>",
+    };
+
+    // build grammar for tool call
+    static const xml_tool_call_format form {
+        /* form.scope_start = */ "<minimax:tool_call>\n",
+        /* form.tool_start  = */ "<invoke name=\"",
+        /* form.tool_sep    = */ "\">\n",
+        /* form.key_start   = */ "<parameter name=\"",
+        /* form.key_val_sep = */ "\">",
+        /* form.val_end     = */ "</parameter>\n",
+        /* form.tool_end    = */ "</invoke>\n",
+        /* form.scope_end   = */ "</minimax:tool_call>",
+    };
+    build_grammar_xml_tool_call(data, params.tools, form);
+
+    return data;
+}
+
+static void common_chat_parse_minimax_m2(common_chat_msg_parser & builder) {
+    static const xml_tool_call_format form {
+        /* form.scope_start = */ "<minimax:tool_call>",
+        /* form.tool_start  = */ "<invoke name=\"",
+        /* form.tool_sep    = */ "\">",
+        /* form.key_start   = */ "<parameter name=\"",
+        /* form.key_val_sep = */ "\">",
+        /* form.val_end     = */ "</parameter>",
+        /* form.tool_end    = */ "</invoke>",
+        /* form.scope_end   = */ "</minimax:tool_call>",
+    };
+    builder.consume_reasoning_with_xml_tool_calls(form, "<think>", "</think>");
+}
+
 static common_chat_params common_chat_params_init_gpt_oss(const common_chat_template & tmpl, const struct templates_params & inputs) {
     common_chat_params data;
 
@@ -2039,6 +2098,99 @@ static void common_chat_parse_gpt_oss(common_chat_msg_parser & builder) {
     if (!remaining.empty()) {
         LOG_DBG("%s: content after last message: %s\n", __func__, remaining.c_str());
     }
+}
+
+static common_chat_params common_chat_params_init_glm_4_5(const common_chat_template & tmpl, const struct templates_params & inputs) {
+    common_chat_params data;
+
+    std::string prompt = apply(tmpl, inputs);
+
+    // match the existing trimming behavior
+    if (inputs.add_bos && string_starts_with(prompt, tmpl.bos_token())) {
+        prompt.erase(0, tmpl.bos_token().size());
+    }
+    if (inputs.add_eos && string_ends_with(prompt, tmpl.eos_token())) {
+        prompt.erase(prompt.size() - tmpl.eos_token().size());
+    }
+    if (string_ends_with(prompt, "<think>")) {
+        if (!inputs.enable_thinking) {
+            prompt += "</think>";
+        } else {
+            data.thinking_forced_open = true;
+        }
+    }
+
+    // add GLM preserved tokens
+    data.preserved_tokens = {
+        "<|endoftext|>",
+        "[MASK]",
+        "[gMASK]",
+        "[sMASK]",
+        "<sop>",
+        "<eop>",
+        "<|system|>",
+        "<|user|>",
+        "<|assistant|>",
+        "<|observation|>",
+        "<|begin_of_image|>",
+        "<|end_of_image|>",
+        "<|begin_of_video|>",
+        "<|end_of_video|>",
+        "<|begin_of_audio|>",
+        "<|end_of_audio|>",
+        "<|begin_of_transcription|>",
+        "<|end_of_transcription|>",
+        "<|code_prefix|>",
+        "<|code_middle|>",
+        "<|code_suffix|>",
+        "/nothink",
+        "<think>",
+        "</think>",
+        "<tool_call>",
+        "</tool_call>",
+        "<arg_key>",
+        "</arg_key>",
+        "<arg_value>",
+        "</arg_value>"
+    };
+
+    // extra GLM 4.5 stop word
+    data.additional_stops.insert(data.additional_stops.end(), {
+        "<|user|>",
+        "<|observation|>"
+    });
+
+    // build grammar for tool call
+    static const xml_tool_call_format form {
+        /* form.scope_start = */ "\n",
+        /* form.tool_start  = */ "<tool_call>",
+        /* form.tool_sep    = */ "\n",
+        /* form.key_start   = */ "<arg_key>",
+        /* form.key_val_sep = */ "</arg_key>\n<arg_value>",
+        /* form.val_end     = */ "</arg_value>\n",
+        /* form.tool_end    = */ "</tool_call>\n",
+        /* form.scope_end   = */ "",
+    };
+    build_grammar_xml_tool_call(data, inputs.tools, form);
+
+    data.prompt = prompt;
+    data.format = COMMON_CHAT_FORMAT_GLM_4_5;
+    return data;
+}
+
+static void common_chat_parse_glm_4_5(common_chat_msg_parser & builder) {
+    static const xml_tool_call_format form {
+        /* form.scope_start  = */ "",
+        /* form.tool_start   = */ "<tool_call>",
+        /* form.tool_sep     = */ "",
+        /* form.key_start    = */ "<arg_key>",
+        /* form.key_val_sep  = */ "</arg_key>",
+        /* form.val_end      = */ "</arg_value>",
+        /* form.tool_end     = */ "</tool_call>",
+        /* form.scope_end    = */ "",
+        /* form.key_val_sep2 = */ "<arg_value>",
+    };
+    builder.consume_reasoning_with_xml_tool_calls(form, "<think>", "</think>");
 }
 
 static common_chat_params common_chat_params_init_firefunction_v2(const common_chat_template & tmpl, const struct templates_params & inputs) {
@@ -2704,91 +2856,17 @@ static void common_chat_parse_lfm2(common_chat_msg_parser & builder) {
 }
 
 static void common_chat_parse_seed_oss(common_chat_msg_parser & builder) {
-    // Parse thinking tags first - this handles the main reasoning content
-    builder.try_parse_reasoning("<seed:think>", "</seed:think>");
-
-    if (!builder.syntax().parse_tool_calls) {
-        builder.add_content(builder.consume_rest());
-        return;
-    }
-
-    // Parse tool calls - Seed-OSS uses <seed:tool_call> format
-    static const common_regex tool_call_begin_regex("<seed:tool_call>");
-    static const common_regex tool_call_end_regex("</seed:tool_call>");
-    static const common_regex function_regex("<function=([^>]+)>");
-    static const common_regex param_regex("<parameter=([^>]+)>");
-
-    while (auto tool_res = builder.try_find_regex(tool_call_begin_regex)) {
-        builder.consume_spaces();  // Consume whitespace after <seed:tool_call>
-
-        // Look for function call inside tool call, ignore any content before it
-        if (auto func_res = builder.try_find_regex(function_regex, std::string::npos, false)) {
-            auto function_name = builder.str(func_res->groups[1]);
-
-            // Parse Seed-OSS parameters <parameter=name>value</parameter>
-            json args = json::object();
-            // Parse all parameters
-            while (auto param_res = builder.try_find_regex(param_regex, std::string::npos, false)) {
-                // again, ignore noise around parameters
-                auto param_name = builder.str(param_res->groups[1]);
-                builder.move_to(param_res->groups[0].end);
-                builder.consume_spaces();  // Consume whitespace after parameter
-                auto savedPos = builder.pos();
-                if (auto param_parse = builder.try_find_literal("</parameter>")) {
-                    auto param = param_parse->prelude;
-                    builder.move_to(savedPos);
-                    try {
-                        if (auto param_res = builder.try_consume_json()) {
-                            args[param_name] = param_res->json;
-                        } else {
-                            args[param_name] = param;
-                        }
-                    } catch (json::exception &) {
-                        args[param_name] = param;
-                    }
-                } else {
-                    throw common_chat_msg_partial_exception("Incomplete tool parameter");
-                }
-            }
-            // Look for closing function tag
-            auto end_func = builder.try_find_literal("</function>");
-            if (end_func) {
-                builder.move_to(end_func->groups[0].end);
-                builder.consume_spaces();  // Consume whitespace after </function>
-
-                // Add the tool call with parsed arguments, but only if we REALLY got the literal
-                auto eaten_fragment = builder.input().substr(end_func->groups[0].begin, end_func->groups[0].end);
-                auto funlen = std::string("</function>").length();
-                if (eaten_fragment.length() >= funlen && eaten_fragment.substr(0, funlen) == std::string("</function>")) {
-                    if (!builder.add_tool_call(function_name, "", args.dump())) {
-                        throw common_chat_msg_partial_exception("Incomplete tool call");
-                    }
-                } else {
-                    throw common_chat_msg_partial_exception("Incomplete tool call");
-                }
-            } else {
-                throw common_chat_msg_partial_exception("Incomplete tool call");
-            }
-            // Look for closing tool call tag
-            if (auto end_tool = builder.try_find_regex(tool_call_end_regex, std::string::npos, false)) {
-                builder.move_to(end_tool->groups[0].end);
-                builder.consume_spaces();  // Consume trailing whitespace after tool call
-            } else {
-                throw common_chat_msg_partial_exception("Incomplete tool call");
-            }
-        } else {
-            // No function found - don't consume content here, let it be handled at the end
-            break;
-        }
-    }
-
-    // Consume any remaining whitespace after all tool call processing
-    builder.consume_spaces();
-    auto remaining = builder.consume_rest();
-    // If there's any non-whitespace content remaining, add it as content
-    if (!string_strip(remaining).empty()) {
-        builder.add_content(remaining);
-    }
+    static const xml_tool_call_format form {
+        /* form.scope_start = */ "<seed:tool_call>",
+        /* form.tool_start  = */ "<function=",
+        /* form.tool_sep    = */ ">",
+        /* form.key_start   = */ "<parameter=",
+        /* form.key_val_sep = */ ">",
+        /* form.val_end     = */ "</parameter>",
+        /* form.tool_end    = */ "</function>",
+        /* form.scope_end   = */ "</seed:tool_call>",
+    };
+    builder.consume_reasoning_with_xml_tool_calls(form, "<seed:think>", "</seed:think>");
 }
 
 static common_chat_params common_chat_params_init_without_tools(const common_chat_template & tmpl, const struct templates_params & inputs) {
@@ -2927,6 +3005,11 @@ static common_chat_params common_chat_templates_apply_jinja(
         return common_chat_params_init_granite(tmpl, params);
     }
 
+    // GLM 4.5: detect by <arg_key> and <arg_value> tags (check before Hermes since both use <tool_call>)
+    if (src.find("[gMASK]<sop>") != std::string::npos && src.find("<arg_key>") != std::string::npos && src.find("<arg_value>") != std::string::npos && params.json_schema.is_null()) {
+        return common_chat_params_init_glm_4_5(tmpl, params);
+    }
+
     // Hermes 2/3 Pro, Qwen 2.5 Instruct (w/ tools)
     if (src.find("<tool_call>") != std::string::npos && params.json_schema.is_null()) {
         return common_chat_params_init_hermes_2_pro(tmpl, params);
@@ -2956,6 +3039,11 @@ static common_chat_params common_chat_templates_apply_jinja(
     if (src.find("List of tools: <|tool_list_start|>[") != std::string::npos &&
         src.find("]<|tool_list_end|>") != std::string::npos) {
         return common_chat_params_init_lfm2(tmpl, params);
+    }
+
+    // MiniMax-M2 format detection
+    if (src.find("]~!b[") != std::string::npos && src.find("]~b]") != std::string::npos) {
+        return common_chat_params_init_minimax_m2(tmpl, params);
     }
 
     // Use generic handler when mixing tools + JSON schema.
@@ -3138,6 +3226,12 @@ static void common_chat_parse(common_chat_msg_parser & builder) {
             break;
         case COMMON_CHAT_FORMAT_LFM2_WITH_JSON_TOOLS:
             common_chat_parse_lfm2(builder);
+            break;
+        case COMMON_CHAT_FORMAT_MINIMAX_M2:
+            common_chat_parse_minimax_m2(builder);
+            break;
+        case COMMON_CHAT_FORMAT_GLM_4_5:
+            common_chat_parse_glm_4_5(builder);
             break;
         default:
             throw std::runtime_error(std::string("Unsupported format: ") + common_chat_format_name(builder.syntax().format));
