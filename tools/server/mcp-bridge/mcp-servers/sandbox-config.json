@@ -1,0 +1,18 @@
+{
+	"podman": {
+		"hostUser": "pascal",
+		"container": "sandbox-sandbox",
+		"containerUser": "root",
+		"timeout": 300,
+		"bashOutputLimitBytes": 4096
+	},
+	"websocket": {
+		"host": "0.0.0.0",
+		"port": 8083
+	},
+	"mcp": {
+		"protocolVersion": "2025-06-18",
+		"serverName": "sandbox-mcp-server",
+		"serverVersion": "1.0.0"
+	}
+}
