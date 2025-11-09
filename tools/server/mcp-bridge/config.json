@@ -1,0 +1,23 @@
+{
+	"proxy": {
+		"apiUrl": "http://127.0.0.1:8082",
+		"port": 8080,
+		"maxTurns": 100,
+		"filterClientReasoningAfterFirstTurn": true,
+
+		"consoleLog": true,
+		"sseDebugServerToProxy": true,
+		"sseDebugProxyToClient": true,
+		"sseDebugResetOnFirstTurn": true,
+		"debugDir": "/tmp"
+	},
+
+	"mcp": {
+		"servers": {
+			"sandbox-stdio-mcp-server": {
+				"command": "node",
+				"args": ["mcp-servers/sandbox-stdio-mcp-server.js"]
+			}
+		}
+	}
+}

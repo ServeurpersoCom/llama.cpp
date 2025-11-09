@@ -1,0 +1,89 @@
+[
+	{
+		"type": "function",
+		"function": {
+			"name": "bash_tool",
+			"description": "Run commands in a bash shell. Can execute multiple commands separated by ';' or '&&' or '||'.",
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"command": {
+						"type": "string",
+						"description": "The bash command to execute"
+					}
+				},
+				"required": ["command"]
+			}
+		}
+	},
+	{
+		"type": "function",
+		"function": {
+			"name": "view",
+			"description": "Read the contents of a file or list the contents of a directory. Supports viewing text files with line numbers and optional range selection. For directories, lists files and directories up to 2 levels deep, ignoring hidden items (starting with .) and node_modules. Binary files are detected and rejected.",
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"path": {
+						"type": "string",
+						"description": "Absolute path to the file or directory"
+					},
+					"view_range": {
+						"type": "array",
+						"items": { "type": "integer" },
+						"minItems": 2,
+						"maxItems": 2,
+						"description": "Optional line range to view for text files, specified as [start_line, end_line]. Lines are indexed starting at 1. Use -1 as end_line to read to the end of the file."
+					}
+				},
+				"required": ["path"]
+			}
+		}
+	},
+	{
+		"type": "function",
+		"function": {
+			"name": "create_file",
+			"description": "Create a new file with the specified content. If the file already exists, it will be overwritten. Parent directories will be created automatically if they don't exist.",
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"path": {
+						"type": "string",
+						"description": "The absolute path where the file should be created"
+					},
+					"file_text": {
+						"type": "string",
+						"description": "The content to write to the file"
+					}
+				},
+				"required": ["path", "file_text"]
+			}
+		}
+	},
+	{
+		"type": "function",
+		"function": {
+			"name": "str_replace",
+			"description": "Replace a unique string in a file with another string. The string to replace must appear exactly once in the file to prevent unintended changes. Use an empty string as new_str to delete the old string.",
+			"parameters": {
+				"type": "object",
+				"properties": {
+					"path": {
+						"type": "string",
+						"description": "Absolute path to the file"
+					},
+					"old_str": {
+						"type": "string",
+						"description": "The string to replace. Must appear exactly once in the file."
+					},
+					"new_str": {
+						"type": "string",
+						"description": "The string to replace it with. Defaults to empty string to delete."
+					}
+				},
+				"required": ["path", "old_str"]
+			}
+		}
+	}
+]
