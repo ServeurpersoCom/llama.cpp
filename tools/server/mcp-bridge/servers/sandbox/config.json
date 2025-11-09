@@ -1,0 +1,37 @@
+{
+	"podman": {
+		"hostUser": "pascal",
+
+		"containerfile": "Containerfile",
+		"podYaml": "pod.yaml",
+		"imageName": "localhost/sandbox-image:clean",
+		"podName": "pod",
+		"containerName": "container",
+		"containerUser": "root",
+
+		"timeout": 300,
+		"bashOutputLimitBytes": 4096
+	},
+
+	"paths": {
+		"inputsRoot": "/var/www/ia/inputs",
+		"workspaceRoot": "/var/www/ia/workspace",
+		"outputsRoot": "/var/www/ia/outputs"
+	},
+
+	"streamable_http": {
+		"host": "127.0.0.1",
+		"port": 8083
+	},
+
+	"websocket": {
+		"host": "127.0.0.1",
+		"port": 8084
+	},
+
+	"mcp": {
+		"protocolVersion": "2025-06-18",
+		"serverName": "sandbox-mcp",
+		"serverVersion": "1.0.0"
+	}
+}
