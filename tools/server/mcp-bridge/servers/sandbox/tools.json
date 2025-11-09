@@ -1,0 +1,125 @@
+[
+	{
+		"type": "function",
+		"function": {
+			"name": "bash_tool",
+			"description": "Run a bash command in the container",
+			"parameters": {
+				"properties": {
+					"command": {
+						"title": "Bash command to run in container",
+						"type": "string"
+					},
+					"description": {
+						"title": "Why I'm running this command",
+						"type": "string"
+					}
+				},
+				"required": ["command", "description"],
+				"title": "BashInput",
+				"type": "object"
+			}
+		}
+	},
+	{
+		"type": "function",
+		"function": {
+			"name": "str_replace",
+			"description": "Replace a unique string in a file with another string. The string to replace must appear exactly once in the file.",
+			"parameters": {
+				"properties": {
+					"description": {
+						"title": "Why I'm making this edit",
+						"type": "string"
+					},
+					"new_str": {
+						"default": "",
+						"title": "String to replace with (empty to delete)",
+						"type": "string"
+					},
+					"old_str": {
+						"title": "String to replace (must be unique in file)",
+						"type": "string"
+					},
+					"path": {
+						"title": "Path to the file to edit",
+						"type": "string"
+					}
+				},
+				"required": ["description", "old_str", "path"],
+				"title": "StrReplaceInput",
+				"type": "object"
+			}
+		}
+	},
+	{
+		"type": "function",
+		"function": {
+			"name": "view",
+			"description": "Supports viewing text, images, and directory listings.\n\nSupported path types:\n- Directories: Lists files and directories up to 2 levels deep, ignoring hidden items and node_modules\n- Image files (.jpg, .jpeg, .png, .gif, .webp): Displays the image visually\n- Text files: Displays numbered lines. You can optionally specify a view_range to see specific lines.\n\nNote: Files with non-UTF-8 encoding will display hex escapes (e.g. \\x84) for invalid bytes",
+			"parameters": {
+				"properties": {
+					"description": {
+						"title": "Why I need to view this",
+						"type": "string"
+					},
+					"path": {
+						"title": "Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`.",
+						"type": "string"
+					},
+					"view_range": {
+						"anyOf": [
+							{
+								"maxItems": 2,
+								"minItems": 2,
+								"prefixItems": [
+									{
+										"type": "integer"
+									},
+									{
+										"type": "integer"
+									}
+								],
+								"type": "array"
+							},
+							{
+								"type": "null"
+							}
+						],
+						"default": null,
+						"title": "Optional line range for text files. Format: [start_line, end_line] where lines are indexed starting at 1. Use [start_line, -1] to view from start_line to the end of the file. When not provided, the entire file is displayed, truncating from the middle if it exceeds 16,000 characters (showing beginning and end)."
+					}
+				},
+				"required": ["description", "path"],
+				"title": "ViewInput",
+				"type": "object"
+			}
+		}
+	},
+	{
+		"type": "function",
+		"function": {
+			"name": "create_file",
+			"description": "Create a new file with content in the container",
+			"parameters": {
+				"properties": {
+					"description": {
+						"title": "Why I'm creating this file. ALWAYS PROVIDE THIS PARAMETER FIRST.",
+						"type": "string"
+					},
+					"file_text": {
+						"title": "Content to write to the file. ALWAYS PROVIDE THIS PARAMETER LAST.",
+						"type": "string"
+					},
+					"path": {
+						"title": "Path to the file to create. ALWAYS PROVIDE THIS PARAMETER SECOND.",
+						"type": "string"
+					}
+				},
+				"required": ["description", "file_text", "path"],
+				"title": "CreateFileInput",
+				"type": "object"
+			}
+		}
+	}
+]
