@@ -1,18 +1,26 @@
 {
 	"podman": {
 		"hostUser": "pascal",
-		"container": "sandbox-sandbox",
+		"container": "sandbox",
 		"containerUser": "root",
 		"timeout": 300,
 		"bashOutputLimitBytes": 4096
 	},
+
 	"websocket": {
 		"host": "0.0.0.0",
 		"port": 8083
 	},
+
 	"mcp": {
 		"protocolVersion": "2025-06-18",
-		"serverName": "sandbox-mcp-server",
+		"serverName": "sandbox-mcp",
 		"serverVersion": "1.0.0"
+	},
+
+	"paths": {
+		"inputsRoot": "/var/www/ia/inputs",
+		"workspaceRoot": "/var/www/ia/workspace",
+		"outputsRoot": "/var/www/ia/outputs"
 	}
 }

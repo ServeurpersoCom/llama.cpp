@@ -6,7 +6,7 @@
  * in isolated Podman containers. All commands are executed through a secure
  * pipeline using base64 encoding and user context switching.
  *
- * Configuration is loaded from sandbox-config.json:
+ * Configuration is loaded from config.json:
  * - podman.hostUser: System user that owns the Podman process
  * - podman.container: Name of the target container
  * - podman.containerUser: User inside container for command execution
@@ -24,7 +24,7 @@
  */
 
 const { spawn } = require('child_process');
-const config = require('../sandbox-config.json');
+const config = require('../config.json');
 
 /**
  * Execute command in Podman container

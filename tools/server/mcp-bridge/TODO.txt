@@ -1,4 +1,0 @@
-- intégrer le sandbox.yaml kubernetes pour podman
-- Séparer la création du pod et l'instantiation du container, dockerfile ? Faire une orchestration du kube play avec timeout, 1 container par conversations, uid ?
-- Prompt d'exemple/recommandé en anglais pour l'environnement sandbox Claude-like
-- Documentation anglaise

@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sandbox
+  labels:
+    app: mcp-sandbox
+spec:
+  restartPolicy: Always
+
+  containers:
+  - name: sandbox
+    image: localhost/sandbox-image:clean
+
+    ports:
+    - containerPort: 22
+      hostPort: 2222
+
+    resources:
+      limits:
+        memory: 4Gi
+        cpu: "8"
+
+    volumeMounts:
+    - name: inputs
+      mountPath: /mnt/inputs
+      readOnly: true
+    - name: workspace
+      mountPath: /mnt/workspace
+    - name: outputs
+      mountPath: /mnt/outputs
+
+    env:
+    - name: LANG
+      value: C.UTF-8
+    - name: LC_ALL
+      value: C.UTF-8
+
+    command:
+    - /bin/bash
+    - -c
+    - |
+      find /mnt/inputs -mindepth 1 -delete 2>/dev/null || true
+      find /mnt/workspace -mindepth 1 -delete 2>/dev/null || true
+      find /mnt/outputs -mindepth 1 -delete 2>/dev/null || true
+      exec /usr/sbin/sshd -D
+
+  volumes:
+  - name: inputs
+    hostPath:
+      path: /var/www/ia/inputs
+      type: DirectoryOrCreate
+  - name: workspace
+    hostPath:
+      path: /var/www/ia/workspace
+      type: DirectoryOrCreate
+  - name: outputs
+    hostPath:
+      path: /var/www/ia/outputs
+      type: DirectoryOrCreate
