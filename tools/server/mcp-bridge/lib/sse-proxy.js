@@ -26,16 +26,33 @@ class ProxySSE {
 		this.apiUrl = config.apiUrl;
 		this.port = config.port;
 		this.maxTurns = config.maxTurns;
+		this.maxLinesForToolResponsePreview = config.maxLinesForToolResponsePreview;
 		this.server = null;
 
-		this.loggingConfig = {
-			console: config.consoleLog,
-			serverToProxy: config.sseDebugServerToProxy,
-			proxyToClient: config.sseDebugProxyToClient,
-			resetOnFirstTurn: config.sseDebugResetOnFirstTurn,
-			filterClientReasoningAfterFirstTurn: config.filterClientReasoningAfterFirstTurn,
-			debugDir: config.debugDir
+		this.loggingConfig = config.logging || {};
+
+		// System Prompt Profiles configuration
+		this.systemPromptProfiles = {
+			enabled: config.systemPromptProfiles || false,
+			passwords: config.systemPromptPasswords || [],
+			files: config.systemPromptFiles || []
 		};
+
+		// Validate system prompt profiles configuration
+		if (this.systemPromptProfiles.enabled) {
+			if (
+				this.systemPromptProfiles.passwords.length !==
+				this.systemPromptProfiles.files.length
+			) {
+				throw new Error(
+					'systemPromptPasswords and systemPromptFiles must have same length'
+				);
+			}
+			this._log('[Profiles] System Prompt Profiles enabled');
+			this._log(
+				`[Profiles] ${this.systemPromptProfiles.passwords.length} profile(s) configured`
+			);
+		}
 
 		this._setupErrorHandler();
 	}
@@ -53,6 +70,87 @@ class ProxySSE {
 			// All other errors are real bugs to investigate
 			this._log(`UNHANDLED ERROR: ${reason}`);
 		});
+	}
+
+	/**
+	 * Detect system prompt profile activation by password
+	 * If system prompt content EXACTLY matches a password, replace it with profile file
+	 *
+	 * @param {Array} messages - Original messages array
+	 * @returns {Object} { activated: boolean, profileIndex: number|null, cleanedMessages: Array }
+	 */
+	_detectProfileActivation(messages) {
+		if (!this.systemPromptProfiles.enabled || messages.length === 0) {
+			return { activated: false, profileIndex: null, cleanedMessages: messages };
+		}
+
+		// Find system message
+		const systemMessage = messages.find((msg) => msg.role === 'system');
+		if (!systemMessage) {
+			return { activated: false, profileIndex: null, cleanedMessages: messages };
+		}
+
+		const systemContent = (systemMessage.content || '').trim();
+
+		// Check for EXACT password match in system prompt (case-sensitive)
+		for (let i = 0; i < this.systemPromptProfiles.passwords.length; i++) {
+			const password = this.systemPromptProfiles.passwords[i];
+
+			if (systemContent === password) {
+				this._log(
+					`[Profiles] System prompt password matched: "${password}" -> activating MCP`
+				);
+				return { activated: true, profileIndex: i, cleanedMessages: messages };
+			}
+		}
+
+		return { activated: false, profileIndex: null, cleanedMessages: messages };
+	}
+
+	/**
+	 * Load system prompt from file
+	 * @param {string} filePath - Path to system prompt file
+	 * @returns {string} System prompt content (empty string if file not found)
+	 */
+	_loadSystemPrompt(filePath) {
+		try {
+			// Resolve path relative to project root
+			const fullPath = path.join(process.cwd(), filePath);
+			const content = fs.readFileSync(fullPath, 'utf8');
+			this._log(`[Profiles] Loaded system prompt from: ${filePath}`);
+			return content;
+		} catch (error) {
+			// Log error clearly to stderr, return empty string (non-blocking)
+			console.error(
+				`[Proxy] [Profiles] ERROR: Failed to load system prompt from ${filePath}: ${error.message}`
+			);
+			console.error(`[Proxy] [Profiles] System prompt will be empty (file not found)`);
+			return '';
+		}
+	}
+
+	/**
+	 * Replace system prompt in messages array
+	 * @param {Array} messages - Messages array
+	 * @param {string} newSystemPrompt - New system prompt content
+	 * @returns {Array} Modified messages array
+	 */
+	_replaceSystemPrompt(messages, newSystemPrompt) {
+		// Find system message index
+		const systemIndex = messages.findIndex((msg) => msg.role === 'system');
+
+		if (systemIndex !== -1) {
+			// Replace existing system prompt
+			return messages.map((msg, idx) => {
+				if (idx === systemIndex) {
+					return { role: 'system', content: newSystemPrompt };
+				}
+				return msg;
+			});
+		} else {
+			// Prepend system prompt if not present
+			return [{ role: 'system', content: newSystemPrompt }, ...messages];
+		}
 	}
 
 	_log(message) {
@@ -106,6 +204,17 @@ class ProxySSE {
 			this._log(
 				`Filter client reasoning after first turn: ${this.loggingConfig.filterClientReasoningAfterFirstTurn}`
 			);
+
+			// Log profiles status
+			if (this.systemPromptProfiles.enabled) {
+				this._log('[Profiles] System Prompt Profiles: ENABLED');
+				this._log(
+					`[Profiles] Passwords: [${this.systemPromptProfiles.passwords.map((p) => `"${p}"`).join(', ')}]`
+				);
+				this._log('[Profiles] MCP will activate only when password is detected');
+			} else {
+				this._log('[Profiles] System Prompt Profiles: DISABLED (MCP always active)');
+			}
 		});
 	}
 
@@ -210,12 +319,35 @@ class ProxySSE {
 			this._log('Client disconnected, stopping streaming');
 		});
 
-		// Get available tools from MCP discovery
-		const toolsToUse = await this.mcpClient.getToolsDefinition();
-		this._log(`${toolsToUse.length} tools available via MCP`);
+		// Detect profile activation
+		const profileActivation = this._detectProfileActivation(requestData.messages || []);
 
-		// Session messages: user provides system prompt
+		let toolsToUse = [];
 		let sessionMessages = [...(requestData.messages || [])];
+
+		if (this.systemPromptProfiles.enabled && !profileActivation.activated) {
+			// Pass-through mode: no MCP, forward as-is
+			this._log(
+				'[Profiles] Pass-through mode: system prompt is not a password, MCP disabled'
+			);
+		} else {
+			// MCP active mode
+			if (profileActivation.activated) {
+				// Profile activated: replace system prompt with file content
+				const profileFile = this.systemPromptProfiles.files[profileActivation.profileIndex];
+				const systemPrompt = this._loadSystemPrompt(profileFile);
+
+				sessionMessages = this._replaceSystemPrompt(sessionMessages, systemPrompt);
+
+				this._log(
+					`[Profiles] System prompt replaced with: ${profileFile.split('/').pop()}`
+				);
+			}
+
+			// Get available tools from MCP discovery
+			toolsToUse = await this.mcpClient.getToolsDefinition();
+			this._log(`${toolsToUse.length} tools available via MCP`);
+		}
 
 		// Multi-turn agent loop
 		let currentTurn = 0;
@@ -232,7 +364,7 @@ class ProxySSE {
 				stream: true
 			};
 
-			// Inject tools definition from MCP discovery
+			// Inject tools definition from MCP discovery (if MCP active)
 			if (toolsToUse && toolsToUse.length > 0) {
 				llmRequest.tools = toolsToUse;
 				this._log('Tools definition injected into LLM request');
@@ -576,7 +708,10 @@ class ProxySSE {
 			});
 
 			const lines = toolResult.split('\n');
-			const preview = lines.length > 25 ? lines.slice(-25).join('\n') : toolResult;
+			const preview =
+				lines.length > this.maxLinesForToolResponsePreview
+					? lines.slice(-this.maxLinesForToolResponsePreview).join('\n')
+					: toolResult;
 
 			const resultChunk = {
 				choices: [

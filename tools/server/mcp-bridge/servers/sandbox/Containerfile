@@ -1,11 +1,12 @@
-# Containerfile - MCP Sandbox Clean Image
-# Build: su - <hostUser> -c 'podman build -t localhost/sandbox-image:clean -f Containerfile .'
+# MCP Sandbox Clean Image
+# Build: su - $HOST_USER -c 'podman build -t localhost/sandbox-image:clean -f Containerfile .'
+
 FROM docker.io/library/debian:bookworm-slim
 
 # Environment variables
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
-    DEBIAN_FRONTEND=noninteractive
+    PATH="/root/.cargo/bin:/usr/local/go/bin:${PATH}"
 
 # Install base packages (exact order from sandbox.yaml)
 RUN apt update && apt install -y \
@@ -21,28 +22,21 @@ RUN apt update && apt install -y \
     zip unzip p7zip-full \
     tree jq \
     ripgrep \
-    figlet \
-    && apt clean \
-    && rm -rf /var/lib/apt/lists/*
+    figlet
 
 # Install Node.js 20.x
-RUN apt update \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt install -y nodejs \
-    && apt clean \
-    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+RUN apt install -y nodejs
 
 # Install Rust (stable)
 RUN curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
-# Install Go 1.23.5
-RUN curl -sSL https://go.dev/dl/go1.23.5.linux-amd64.tar.gz | tar -C /usr/local -xz
+# Install Go 1.25.4
+RUN curl -sSL https://go.dev/dl/go1.25.4.linux-amd64.tar.gz | tar -C /usr/local -xz
 
-# Configure bashrc
-RUN echo "export LANG=C.UTF-8" >> /root/.bashrc \
-    && echo "export LC_ALL=C.UTF-8" >> /root/.bashrc \
-    && echo 'export PATH="$PATH:$HOME/.cargo/bin:/usr/local/go/bin"' >> /root/.bashrc \
-    && echo "cd /mnt/workspace" >> /root/.bashrc
+# Final cleanup
+RUN apt clean
+RUN apt update
 
 # Configure SSH
 RUN echo "root:sandbox" | chpasswd \

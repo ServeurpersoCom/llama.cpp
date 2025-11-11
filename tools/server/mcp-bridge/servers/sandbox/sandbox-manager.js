@@ -2,23 +2,28 @@
 /**
  * Sandbox Manager - MCP Sandbox Lifecycle Orchestrator
  *
- * Manages the lifecycle of the MCP sandbox container:
+ * Manages the lifecycle of the MCP sandbox pod and containers:
  * - Builds clean image if not present
- * - Deploys pod from YAML
- * - Restarts container to revert to clean state
- * - Monitors container health
+ * - Deploys pod from YAML (Kubernetes-style manifest)
+ * - Manages pod and container lifecycle (start/stop/restart)
+ * - Monitors pod and container health
+ *
+ * Architecture:
+ * - 1 Pod = 1 User isolation (network, resources)
+ * - N Containers per pod = N Conversations/sessions
+ * - Volumes: inputs (RO), workspace (RW), outputs (RW)
  *
  * Usage:
- *   node sandbox-manager.js build   # Build clean image
- *   node sandbox-manager.js deploy  # Deploy pod
- *   node sandbox-manager.js start   # Start stopped pod
- *   node sandbox-manager.js stop    # Stop pod
- *   node sandbox-manager.js restart # Restart container (clean state)
- *   node sandbox-manager.js status  # Show status
- *   node sandbox-manager.js logs    # Show container logs
- *   node sandbox-manager.js shell   # Open bash in container
- *   node sandbox-manager.js cleanup # Stop and remove pod
- *   node sandbox-manager.js setup   # Full setup (build + deploy)
+ *   node sandbox-manager.js build      # Build clean image
+ *   node sandbox-manager.js deploy     # Deploy pod from YAML
+ *   node sandbox-manager.js start      # Start pod (all containers)
+ *   node sandbox-manager.js stop       # Stop pod (all containers)
+ *   node sandbox-manager.js restart    # Restart pod (clean state)
+ *   node sandbox-manager.js status     # Show pod and containers status
+ *   node sandbox-manager.js logs       # Show container logs
+ *   node sandbox-manager.js shell      # Open bash in container
+ *   node sandbox-manager.js cleanup    # Stop and remove pod
+ *   node sandbox-manager.js setup      # Full setup (build + deploy)
  */
 
 const { execSync } = require('child_process');
@@ -28,39 +33,71 @@ const fs = require('fs');
 // Load configuration
 const config = require('./config.json');
 
-const CONFIG = {
-	hostUser: config.podman.hostUser,
-	podName: 'sandbox',
-	containerName: 'sandbox',
-	imageName: 'localhost/sandbox-image:clean',
-	containerfilePath: path.join(__dirname, 'Containerfile'),
-	podYamlPath: path.join(__dirname, 'pod.yaml'),
-	volumePaths: config.paths
+const resolvePath = (baseDir, fileName, fallback) => {
+	const target = fileName || fallback;
+	return path.resolve(baseDir, target);
 };
 
 class SandboxManager {
-	constructor(cfg = CONFIG) {
-		this.config = cfg;
+	constructor(configFile) {
+		this.podman = configFile.podman;
+		this.paths = configFile.paths;
+
+		this.rootDir = __dirname;
+		this.containerfilePath = resolvePath(
+			this.rootDir,
+			this.podman.containerfile,
+			'Containerfile'
+		);
+		this.podYamlPath = resolvePath(this.rootDir, this.podman.podYaml, 'pod.yaml');
+
+		const envHostUser = process.env.SANDBOX_HOST_USER;
+		this.hostUser = envHostUser || this.podman.hostUser;
+
+		if (!this.hostUser) {
+			throw new Error(
+				'Invalid podman configuration: hostUser required (or SANDBOX_HOST_USER env var)'
+			);
+		}
+		this.podman.hostUser = this.hostUser;
+
+		if (!fs.existsSync(this.containerfilePath)) {
+			throw new Error(`Containerfile not found: ${this.containerfilePath}`);
+		}
+
+		if (!fs.existsSync(this.podYamlPath)) {
+			throw new Error(`pod.yaml not found: ${this.podYamlPath}`);
+		}
+
+		if (!this.podman.podName || !this.podman.containerName) {
+			throw new Error('Invalid podman configuration: podName and containerName are required');
+		}
+
+		// Full container name: <pod>-<container> (Podman Kube naming convention)
+		this.fullContainerName = `${this.podman.podName}-${this.podman.containerName}`;
+
+		// Temp files in /tmp
+		this.tmpContainerfile = `/tmp/${this.podman.containerfile}`;
+		this.tmpPodYaml = `/tmp/${this.podman.podYaml}`;
 	}
 
 	/**
-	 * Execute command as host user
+	 * Execute command as hostUser
 	 */
 	exec(cmd, options = {}) {
-		const fullCmd = `su - ${this.config.hostUser} -c '${cmd.replace(/'/g, "'\"'\"'")}'`;
+		const { ignoreError, stdio, ...rest } = options;
+		const fullCmd = `su - ${this.hostUser} -c '${cmd.replace(/'/g, "'\"'\"'")}'`;
 
-		if (!options.silent) {
-			console.log(`[Manager] ${cmd}`);
-		}
+		console.log(`[Manager] ${fullCmd}`);
 
 		try {
 			return execSync(fullCmd, {
 				encoding: 'utf8',
-				stdio: options.silent ? 'pipe' : 'inherit',
-				...options
+				stdio: stdio ?? 'inherit',
+				...rest
 			});
 		} catch (error) {
-			if (options.ignoreError) return null;
+			if (ignoreError) return null;
 			throw error;
 		}
 	}
@@ -70,45 +107,55 @@ class SandboxManager {
 	 */
 	buildImage() {
 		console.log('[Manager] Building clean sandbox image...');
+		console.log(`[Manager] Containerfile source: ${this.containerfilePath}`);
 
-		const buildCmd = `podman build -t ${this.config.imageName} -f ${this.config.containerfilePath} ${path.dirname(this.config.containerfilePath)}`;
+		// Copy Containerfile to /tmp (accessible by hostUser)
+		fs.copyFileSync(this.containerfilePath, this.tmpContainerfile);
+
+		const image = this.podman.imageName;
+		const buildCmd = `podman build -t ${image} -f ${this.tmpContainerfile} /tmp`;
 
 		this.exec(buildCmd);
 
+		// Cleanup
+		fs.unlinkSync(this.tmpContainerfile);
+
 		console.log('[Manager] Image built successfully');
-		console.log(`[Manager] Image: ${this.config.imageName}`);
+		console.log(`[Manager] Image: ${image}`);
 	}
 
 	/**
 	 * Check if image exists
 	 */
 	imageExists() {
-		const result = this.exec(`podman image exists ${this.config.imageName}`, {
-			silent: true,
+		const image = this.podman.imageName;
+		const result = this.exec(`podman image exists ${image}`, {
+			stdio: 'pipe',
 			ignoreError: true
 		});
 		return result !== null;
 	}
 
 	/**
-	 * Ensure volumes exist
+	 * Ensure volume directories exist
 	 */
 	ensureVolumes() {
 		console.log('[Manager] Ensuring volume directories exist...');
 
-		for (const [name, volPath] of Object.entries(this.config.volumePaths)) {
+		for (const [name, volPath] of Object.entries(this.paths)) {
 			if (!fs.existsSync(volPath)) {
 				fs.mkdirSync(volPath, { recursive: true, mode: 0o755 });
-				console.log(`[Manager]   Created: ${volPath}`);
+				console.log(`[Manager] Created: ${volPath}`);
 			}
 		}
 	}
 
 	/**
-	 * Deploy pod from YAML
+	 * Deploy pod from YAML (Kubernetes-style manifest)
 	 */
 	deployPod() {
 		console.log('[Manager] Deploying pod from YAML...');
+		console.log(`[Manager] Pod manifest source: ${this.podYamlPath}`);
 
 		// Ensure image exists
 		if (!this.imageExists()) {
@@ -119,63 +166,82 @@ class SandboxManager {
 		// Ensure volumes exist
 		this.ensureVolumes();
 
-		// Deploy pod
-		this.exec(`podman kube play --replace ${this.config.podYamlPath}`);
+		// Copy pod.yaml to /tmp (accessible by hostUser)
+		fs.copyFileSync(this.podYamlPath, this.tmpPodYaml);
+
+		// Deploy pod with Podman Kube
+		this.exec(`podman kube play --replace ${this.tmpPodYaml}`);
+
+		// Cleanup
+		fs.unlinkSync(this.tmpPodYaml);
 
 		console.log('[Manager] Pod deployed');
 
-		// Wait for container to be ready
-		console.log('[Manager] Waiting for container to be ready...');
+		// Wait for pod to be ready
+		console.log('[Manager] Waiting for pod to be ready...');
 		let attempts = 0;
 		while (attempts < 30) {
-			const status = this.getContainerStatus();
-			if (status === 'running') {
-				console.log('[Manager] Container is running');
+			const status = this.getPodStatus();
+			if (status === 'Running') {
+				console.log('[Manager] Pod is running');
 				return;
 			}
 			attempts++;
 			execSync('sleep 1');
 		}
 
-		console.warn('[Manager] Container may not be ready yet');
+		console.warn('[Manager] Pod may not be ready yet');
 	}
 
 	/**
-	 * Start pod
+	 * Start pod (starts all containers in the pod)
 	 */
 	startPod() {
 		console.log('[Manager] Starting pod...');
-		this.exec(`podman pod start ${this.config.podName}`);
+		const pod = this.podman.podName;
+		this.exec(`podman pod start ${pod}`);
 		console.log('[Manager] Pod started');
 	}
 
 	/**
-	 * Stop pod
+	 * Stop pod (stops all containers in the pod)
 	 */
 	stopPod() {
 		console.log('[Manager] Stopping pod...');
-		this.exec(`podman pod stop ${this.config.podName}`, { ignoreError: true });
+		const pod = this.podman.podName;
+		this.exec(`podman pod stop ${pod}`, { ignoreError: true });
 		console.log('[Manager] Pod stopped');
 	}
 
 	/**
-	 * Restart container to revert to clean state
+	 * Restart pod (revert to clean state)
+	 *
+	 * Podman Kube: restart does NOT recreate containers from image
+	 * Use kube play --replace to destroy and recreate from pristine image
 	 */
-	restartContainer() {
-		console.log('[Manager] Restarting container (reverting to clean state)...');
+	restartPod() {
+		console.log('[Manager] Restarting pod (reverting to clean state)...');
 
-		this.exec(`podman restart ${this.config.containerName}`);
+		// Copy pod.yaml to /tmp (accessible by hostUser)
+		fs.copyFileSync(this.podYamlPath, this.tmpPodYaml);
 
-		console.log('[Manager] Container restarted');
-		console.log('[Manager] All volumes cleaned, back to pristine state');
+		// --replace stops, removes, and recreates the pod from image
+		this.exec(`podman kube play --replace ${this.tmpPodYaml}`);
+
+		// Cleanup
+		fs.unlinkSync(this.tmpPodYaml);
+
+		console.log('[Manager] Pod restarted');
+		console.log('[Manager] All volumes and containers cleaned, back to pristine state');
 	}
 
 	/**
 	 * Check if pod exists
 	 */
 	podExists() {
-		const result = this.exec(`podman pod exists ${this.config.podName}`, {
-			silent: true,
+		const pod = this.podman.podName;
+		const result = this.exec(`podman pod exists ${pod}`, {
+			stdio: 'pipe',
 			ignoreError: true
 		});
 		return result !== null;
@@ -186,10 +252,10 @@ class SandboxManager {
 	 */
 	getContainerStatus() {
 		try {
-			const status = this.exec(
-				`podman inspect ${this.config.containerName} --format '{{.State.Status}}'`,
-				{ silent: true }
-			);
+			const container = this.fullContainerName;
+			const status = this.exec(`podman inspect ${container} --format "{{.State.Status}}"`, {
+				stdio: 'pipe'
+			});
 			return status.trim();
 		} catch {
 			return 'not-found';
@@ -201,10 +267,10 @@ class SandboxManager {
 	 */
 	getPodStatus() {
 		try {
-			const status = this.exec(
-				`podman pod inspect ${this.config.podName} --format '{{.State}}'`,
-				{ silent: true }
-			);
+			const pod = this.podman.podName;
+			const status = this.exec(`podman pod inspect ${pod} --format "{{.State}}"`, {
+				stdio: 'pipe'
+			});
 			return status.trim();
 		} catch {
 			return 'not-found';
@@ -212,28 +278,29 @@ class SandboxManager {
 	}
 
 	/**
-	 * Display status
+	 * Display pod and containers status
 	 */
 	showStatus() {
 		console.log('[Manager] Sandbox Status');
 
 		// Image
+		const image = this.podman.imageName;
 		const imageExists = this.imageExists();
-		console.log(`Image:     ${imageExists ? 'OK' : 'NOT FOUND'} ${this.config.imageName}`);
+		console.log(`[Manager] Image: ${imageExists ? 'OK' : 'NOT FOUND'} ${image}`);
 
 		// Pod
 		const podStatus = this.getPodStatus();
-		console.log(`Pod:       ${podStatus}`);
+		console.log(`[Manager] Pod: ${podStatus}`);
 
 		// Container
 		const containerStatus = this.getContainerStatus();
-		console.log(`Container: ${containerStatus}`);
+		console.log(`[Manager] Container: ${containerStatus}`);
 
 		// Volumes
-		console.log('\nVolumes:');
-		for (const [name, volPath] of Object.entries(this.config.volumePaths)) {
+		console.log('[Manager] Volumes:');
+		for (const [name, volPath] of Object.entries(this.paths)) {
 			const exists = fs.existsSync(volPath);
-			console.log(`  ${name.padEnd(12)} ${exists ? 'OK' : 'NOT FOUND'} ${volPath}`);
+			console.log(`[Manager] ${name}: ${exists ? 'OK' : 'NOT FOUND'} ${volPath}`);
 		}
 	}
 
@@ -242,7 +309,8 @@ class SandboxManager {
 	 */
 	showLogs() {
 		console.log('[Manager] Container logs:');
-		this.exec(`podman logs ${this.config.containerName}`);
+		const container = this.fullContainerName;
+		this.exec(`podman logs ${container}`);
 	}
 
 	/**
@@ -252,7 +320,8 @@ class SandboxManager {
 		console.log('[Manager] Opening bash in container...');
 		console.log('[Manager] (Type "exit" to close)');
 
-		const cmd = `su - ${this.config.hostUser} -c 'podman exec -it ${this.config.containerName} /bin/bash'`;
+		const container = this.fullContainerName;
+		const cmd = `su - ${this.podman.hostUser} -c 'podman exec -it ${container} /bin/bash'`;
 
 		try {
 			execSync(cmd, { stdio: 'inherit' });
@@ -270,7 +339,8 @@ class SandboxManager {
 		this.stopPod();
 
 		console.log('[Manager] Removing pod...');
-		this.exec(`podman pod rm ${this.config.podName}`, { ignoreError: true });
+		const pod = this.podman.podName;
+		this.exec(`podman pod rm ${pod}`, { ignoreError: true });
 
 		console.log('[Manager] Cleanup complete');
 	}
@@ -307,7 +377,7 @@ class SandboxManager {
 
 // CLI Interface
 if (require.main === module) {
-	const manager = new SandboxManager();
+	const manager = new SandboxManager(config);
 	const command = process.argv[2];
 
 	const commands = {
@@ -315,7 +385,7 @@ if (require.main === module) {
 		deploy: () => manager.deployPod(),
 		start: () => manager.startPod(),
 		stop: () => manager.stopPod(),
-		restart: () => manager.restartContainer(),
+		restart: () => manager.restartPod(),
 		status: () => manager.showStatus(),
 		logs: () => manager.showLogs(),
 		shell: () => manager.openShell(),
@@ -324,14 +394,15 @@ if (require.main === module) {
 	};
 
 	if (!command || !commands[command]) {
-		console.log('Usage: node sandbox-manager.js <command>\n');
+		console.log('Usage: node sandbox-manager.js <command>');
+		console.log('');
 		console.log('Commands:');
 		console.log('build   - Build clean sandbox image');
 		console.log('deploy  - Deploy pod from YAML');
-		console.log('start   - Start stopped pod');
-		console.log('stop    - Stop running pod');
-		console.log('restart - Restart container (revert to clean state)');
-		console.log('status  - Show current status');
+		console.log('start   - Start pod (all containers)');
+		console.log('stop    - Stop pod (all containers)');
+		console.log('restart - Restart pod (revert to clean state)');
+		console.log('status  - Show pod and containers status');
 		console.log('logs    - Show container logs');
 		console.log('shell   - Open bash in container');
 		console.log('cleanup - Stop and remove pod');

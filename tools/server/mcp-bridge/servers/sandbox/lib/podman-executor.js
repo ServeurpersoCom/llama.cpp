@@ -8,7 +8,8 @@
  *
  * Configuration is loaded from config.json:
  * - podman.hostUser: System user that owns the Podman process
- * - podman.container: Name of the target container
+ * - podman.podName: Name of the pod
+ * - podman.containerName: Name of the container (inside pod)
  * - podman.containerUser: User inside container for command execution
  * - podman.bashOutputLimitBytes: Maximum output size before truncation (bytes)
  * - podman.timeout: Command execution timeout in seconds
@@ -26,6 +27,9 @@
 const { spawn } = require('child_process');
 const config = require('../config.json');
 
+// Construct full container name (pod-container)
+const fullContainerName = `${config.podman.podName}-${config.podman.containerName}`;
+
 /**
  * Execute command in Podman container
  * @param {string} script - Bash script to execute
@@ -36,11 +40,10 @@ async function podmanExec(script) {
 		const b64 = Buffer.from(script).toString('base64');
 
 		// Construct podman exec command
-		const podmanCmd = `podman exec -i -u ${config.podman.containerUser} ${config.podman.container} bash -c "echo '${b64}' | base64 -d | timeout ${config.podman.timeout} bash 2>&1"`;
+		const podmanCmd = `podman exec -i -u ${config.podman.containerUser} ${fullContainerName} bash -c "echo '${b64}' | base64 -d | timeout ${config.podman.timeout} bash 2>&1"`;
 
-		// Execute as PODMAN_HOST_USER
+		// Execute as hostUser
 		const args = ['-', config.podman.hostUser, '-c', podmanCmd];
-
 		const proc = spawn('su', args);
 
 		let stdout = '';

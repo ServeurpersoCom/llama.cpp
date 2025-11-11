@@ -66,7 +66,7 @@ async function tool_bash(args = {}) {
 	const result = await podmanExec(cmd);
 	const elapsed = Date.now() - t0;
 
-	let output = result.stdout;
+	let output = result.stdout.replace(/\n$/, '');
 
 	if (output.length > config.podman.bashOutputLimitBytes) {
 		let tail = output.slice(-config.podman.bashOutputLimitBytes);
@@ -77,11 +77,12 @@ async function tool_bash(args = {}) {
 		}
 
 		const truncatedBytes = output.length - tail.length;
-		output = tail + `\n⚠️ Long output with ${truncatedBytes} bytes hidden from context\n`;
+		output = tail + `\n⚠️ Long output with ${truncatedBytes} bytes hidden from context`;
 	}
 
 	const statusEmoji = result.exitCode === 0 ? '✅' : '❌';
-	return `${output}#️⃣ ${cmd}\n${statusEmoji} Exit code ${result.exitCode} (${elapsed} ms)`;
+	const newLine = output ? '\n' : '';
+	return `${output}${newLine}#️⃣ ${cmd}\n${statusEmoji} Exit code ${result.exitCode} (${elapsed} ms)`;
 }
 
 /**
@@ -106,7 +107,7 @@ async function tool_view(args = {}) {
 	const isDir = testResult.stdout.trim() === 'DIR';
 
 	if (isDir) {
-		const script = `ls -lah ${escapeShell(filepath)}`;
+		const script = `find ${escapeShell(filepath)} -maxdepth 2 ! -path '*/.*' ! -path '*/node_modules/*' -exec du -sh {} \\; 2>/dev/null | sort -k2`;
 		const result = await podmanExec(script);
 
 		return result.stdout + `👁️ Directory listing of ${filepath}`;
@@ -124,10 +125,10 @@ async function tool_view(args = {}) {
 	const catResult = await podmanExec(catScript);
 
 	if (catResult.exitCode !== 0) {
-		return catResult.stdout + `\n❌ Error reading file ${filepath}`;
+		return catResult.stdout + `❌ Error reading file ${filepath}`;
 	}
 
-	const lines = catResult.stdout.split('\n');
+	const lines = catResult.stdout.replace(/\n$/, '').split('\n');
 	const totalLines = lines.length;
 
 	let startLine = 1;
@@ -180,7 +181,7 @@ async function tool_create_file(args = {}) {
 	const result = await podmanExec(script);
 
 	if (result.exitCode !== 0) {
-		return result.stdout + `\n❌ Error creating file ${filepath}`;
+		return result.stdout + `❌ Error creating file ${filepath}`;
 	}
 
 	const size = content.length;
@@ -210,7 +211,7 @@ async function tool_str_replace(args = {}) {
 	const readResult = await podmanExec(readScript);
 
 	if (readResult.exitCode !== 0) {
-		return readResult.stdout + `\n❌ Error reading file ${filepath}`;
+		return readResult.stdout + `❌ Error reading file ${filepath}`;
 	}
 
 	const content = readResult.stdout;
@@ -230,7 +231,7 @@ async function tool_str_replace(args = {}) {
 	const writeResult = await podmanExec(writeScript);
 
 	if (writeResult.exitCode !== 0) {
-		return writeResult.stdout + `\n❌ Error writing file ${filepath}`;
+		return writeResult.stdout + `❌ Error writing file ${filepath}`;
 	}
 
 	const oldLen = oldStr.length;
