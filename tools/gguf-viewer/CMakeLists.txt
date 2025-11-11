@@ -30,6 +30,6 @@ include_directories(${CMAKE_SOURCE_DIR})
 
 find_package(Threads REQUIRED)
 
-target_link_libraries(${TARGET} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(${TARGET} PRIVATE common llama cpp-httplib ${CMAKE_THREAD_LIBS_INIT})
 
 target_compile_features(${TARGET} PRIVATE cxx_std_17)
