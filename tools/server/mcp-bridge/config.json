@@ -14,9 +14,9 @@
 
 	"mcp": {
 		"servers": {
-			"sandbox-stdio-mcp-server": {
+			"sandbox": {
 				"command": "node",
-				"args": ["mcp-servers/sandbox-stdio-mcp-server.js"]
+				"args": ["servers/sandbox/stdio.js"]
 			}
 		}
 	}
