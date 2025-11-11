@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: Pod
 metadata:
-  name: sandbox
+  name: pod
   labels:
     app: mcp-sandbox
 spec:
   restartPolicy: Always
 
   containers:
-  - name: sandbox
+  - name: container
     image: localhost/sandbox-image:clean
 
     ports:
@@ -48,12 +48,12 @@ spec:
   - name: inputs
     hostPath:
       path: /var/www/ia/inputs
-      type: DirectoryOrCreate
+      type: Directory
   - name: workspace
     hostPath:
       path: /var/www/ia/workspace
-      type: DirectoryOrCreate
+      type: Directory
   - name: outputs
     hostPath:
       path: /var/www/ia/outputs
-      type: DirectoryOrCreate
+      type: Directory

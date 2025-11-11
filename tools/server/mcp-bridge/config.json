@@ -3,13 +3,21 @@
 		"apiUrl": "http://127.0.0.1:8082",
 		"port": 8080,
 		"maxTurns": 100,
+		"maxLinesForToolResponsePreview": 25,
 		"filterClientReasoningAfterFirstTurn": true,
 
-		"consoleLog": true,
-		"sseDebugServerToProxy": true,
-		"sseDebugProxyToClient": true,
-		"sseDebugResetOnFirstTurn": true,
-		"debugDir": "/tmp"
+		"systemPromptProfiles": true,
+		"systemPromptPasswords": ["sandbox"],
+		"systemPromptFiles": ["servers/sandbox/system-prompt-fr.txt"],
+
+		"logging": {
+			"console": true,
+			"serverToProxy": true,
+			"proxyToClient": true,
+			"resetOnFirstTurn": true,
+			"filterClientReasoningAfterFirstTurn": true,
+			"debugDir": "/tmp"
+		}
 	},
 
 	"mcp": {
