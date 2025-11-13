@@ -62,6 +62,10 @@ async function tool_bash(args = {}) {
 		return '❌ Command argument required';
 	}
 
+	if (!args.description) {
+		return '❌ Description argument required';
+	}
+
 	const t0 = Date.now();
 	const result = await podmanExec(cmd);
 	const elapsed = Date.now() - t0;
@@ -82,7 +86,8 @@ async function tool_bash(args = {}) {
 
 	const statusEmoji = result.exitCode === 0 ? '✅' : '❌';
 	const newLine = output ? '\n' : '';
-	return `${output}${newLine}#️⃣ ${cmd}\n${statusEmoji} Exit code ${result.exitCode} (${elapsed} ms)`;
+	const justification = args.description ? `🎯 ${args.description}\n` : '';
+	return `${output}${newLine}${justification}#️⃣ ${cmd}\n${statusEmoji} Exit code ${result.exitCode} (${elapsed} ms)`;
 }
 
 /**
@@ -101,6 +106,10 @@ async function tool_view(args = {}) {
 		return '❌ Path argument required';
 	}
 
+	if (!args.description) {
+		return '❌ Description argument required';
+	}
+
 	const testScript = `if [ -d ${escapeShell(filepath)} ]; then echo DIR; else echo FILE; fi`;
 	const testResult = await podmanExec(testScript);
 
@@ -110,7 +119,8 @@ async function tool_view(args = {}) {
 		const script = `find ${escapeShell(filepath)} -maxdepth 2 ! -path '*/.*' ! -path '*/node_modules/*' -exec du -sh {} \\; 2>/dev/null | sort -k2`;
 		const result = await podmanExec(script);
 
-		return result.stdout + `👁️ Directory listing of ${filepath}`;
+		const justification = args.description ? `🎯 ${args.description}\n` : '';
+		return result.stdout + `${justification}👁️ Directory listing of ${filepath}`;
 	}
 
 	const mimeScript = `file --mime-encoding ${escapeShell(filepath)} 2>/dev/null`;
@@ -151,11 +161,12 @@ async function tool_view(args = {}) {
 		})
 		.join('\n');
 
+	const justification = args.description ? `🎯 ${args.description}\n` : '';
 	if (range && Array.isArray(range) && range.length === 2) {
-		return `${numberedLines}\n👁️ File content of ${filepath} (lines ${startLine}-${endLine} out of ${totalLines})`;
+		return `${numberedLines}\n${justification}👁️ File content of ${filepath} (lines ${startLine}-${endLine} out of ${totalLines})`;
 	}
 
-	return `${numberedLines}\n👁️ File content of ${filepath} (${totalLines} lines)`;
+	return `${numberedLines}\n${justification}👁️ File content of ${filepath} (${totalLines} lines)`;
 }
 
 /**
@@ -174,6 +185,10 @@ async function tool_create_file(args = {}) {
 		return '❌ Path and content arguments required';
 	}
 
+	if (!args.description) {
+		return '❌ Description argument required';
+	}
+
 	const b64 = Buffer.from(content).toString('base64');
 	const dirname = filepath.split('/').slice(0, -1).join('/') || '/';
 
@@ -185,7 +200,8 @@ async function tool_create_file(args = {}) {
 	}
 
 	const size = content.length;
-	return `✨ File ${filepath} created (${size} bytes)`;
+	const justification = args.description ? `🎯 ${args.description}\n` : '';
+	return `${justification}✨ File ${filepath} created (${size} bytes)`;
 }
 
 /**
@@ -204,6 +220,10 @@ async function tool_str_replace(args = {}) {
 
 	if (!filepath || oldStr === undefined) {
 		return '❌ Path and old_str arguments required';
+	}
+
+	if (!args.description) {
+		return '❌ Description argument required';
 	}
 
 	// Read file contents via podman
@@ -236,7 +256,8 @@ async function tool_str_replace(args = {}) {
 
 	const oldLen = oldStr.length;
 	const newLen = newStr.length;
-	return `🔄 Replacement done in ${filepath} (${oldLen} -> ${newLen} bytes)`;
+	const justification = args.description ? `🎯 ${args.description}\n` : '';
+	return `${justification}🔄 Replacement done in ${filepath} (${oldLen} -> ${newLen} bytes)`;
 }
 
 const TOOLS_MAPPING = {
