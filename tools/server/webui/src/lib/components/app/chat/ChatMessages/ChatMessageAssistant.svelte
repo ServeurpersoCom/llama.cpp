@@ -21,6 +21,7 @@
 	import Label from '$lib/components/ui/label/label.svelte';
 	import { config } from '$lib/stores/settings.svelte';
 	import { modelName as serverModelName } from '$lib/stores/server.svelte';
+	import { mcpStore } from '$lib/stores/mcp.svelte';
 	import { copyToClipboard } from '$lib/utils/copy';
 	import type { ApiChatCompletionToolCall } from '$lib/types/api';
 
@@ -89,6 +90,8 @@
 	const fallbackToolCallContent = $derived(() =>
 		typeof toolCallContent === 'string' ? toolCallContent : null
 	);
+	const toolExecutions = $derived(() => mcpStore.getExecutionsForMessage(message.id));
+	const toolExecutionPending = $derived(() => mcpStore.isMessageRunning(message.id));
 
 	const processingState = useProcessingState();
 	let currentConfig = $derived(config());
@@ -160,6 +163,10 @@
 	function handleCopyToolCall(payload: string) {
 		void copyToClipboard(payload, 'Tool call copied to clipboard');
 	}
+
+	function formatToolTimestamp(timestamp: number): string {
+		return new Date(timestamp).toLocaleTimeString();
+	}
 </script>
 
 <div
@@ -229,6 +236,61 @@
 	{:else}
 		<div class="text-sm whitespace-pre-wrap">
 			{messageContent}
+		</div>
+	{/if}
+
+	{#if toolExecutionPending() || toolExecutions().length > 0}
+		<div class="tool-results-block">
+			<div class="tool-results-header">
+				<Wrench class="h-3.5 w-3.5" />
+				<span>MCP tool results</span>
+			</div>
+
+			{#if toolExecutionPending()}
+				<div class="tool-result-card tool-result-card--pending">
+					<span class="tool-result-pending-indicator"></span>
+					<span>Running tools…</span>
+				</div>
+			{/if}
+
+			{#each toolExecutions() as execution (execution.id)}
+				<div class="tool-result-card">
+					<div class="tool-result-card__title">
+						<span class="tool-result-card__name">
+							{execution.toolName}
+						</span>
+						<span class="tool-result-card__timestamp">
+							{formatToolTimestamp(execution.timestamp)}
+						</span>
+					</div>
+
+					{#if execution.imageDataUrl}
+						<img
+							alt={`Tool result from ${execution.toolName}`}
+							class="tool-result-card__image"
+							src={execution.imageDataUrl}
+						/>
+					{/if}
+
+					{#if execution.preview}
+						<pre class="tool-result-card__preview">{execution.preview}</pre>
+					{/if}
+
+					{#if execution.metadata}
+						<div class="tool-result-card__meta">
+							{#if execution.metadata.mimeType}
+								<span>{execution.metadata.mimeType}</span>
+							{/if}
+							{#if execution.metadata.width && execution.metadata.height}
+								<span>{execution.metadata.width}×{execution.metadata.height}</span>
+							{/if}
+							{#if execution.metadata.sizeBytes}
+								<span>{Math.round(execution.metadata.sizeBytes / 1024)}KB</span>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			{/each}
 		</div>
 	{/if}
 
@@ -405,5 +467,95 @@
 		max-width: 20rem;
 		white-space: normal;
 		word-break: break-word;
+	}
+
+	.tool-results-block {
+		margin-top: 1.5rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		max-width: 48rem;
+	}
+
+	.tool-results-header {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: hsl(var(--muted-foreground));
+	}
+
+	.tool-result-card {
+		border: 1px solid hsl(var(--border));
+		border-radius: 0.75rem;
+		padding: 0.75rem 1rem;
+		background: hsl(var(--muted) / 0.2);
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.tool-result-card__title {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		font-size: 0.85rem;
+		font-weight: 600;
+	}
+
+	.tool-result-card__image {
+		border-radius: 0.5rem;
+		max-height: 12rem;
+		object-fit: contain;
+		background: hsl(var(--background));
+	}
+
+	.tool-result-card__preview {
+		margin: 0;
+		font-size: 0.85rem;
+		background: hsl(var(--background));
+		border-radius: 0.5rem;
+		padding: 0.5rem 0.75rem;
+		white-space: pre-wrap;
+	}
+
+	.tool-result-card__meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+		font-size: 0.75rem;
+		color: hsl(var(--muted-foreground));
+	}
+
+	.tool-result-card__timestamp {
+		font-size: 0.75rem;
+		color: hsl(var(--muted-foreground));
+	}
+
+	.tool-result-card--pending {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.tool-result-pending-indicator {
+		width: 0.5rem;
+		height: 0.5rem;
+		border-radius: 999px;
+		background: hsl(var(--primary));
+		animation: pulse 1s ease-in-out infinite;
+	}
+
+	@keyframes pulse {
+		0% {
+			opacity: 0.4;
+		}
+		50% {
+			opacity: 1;
+		}
+		100% {
+			opacity: 0.4;
+		}
 	}
 </style>

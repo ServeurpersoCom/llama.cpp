@@ -10,7 +10,8 @@
 		Moon,
 		ChevronLeft,
 		ChevronRight,
-		Database
+		Database,
+		Share2
 	} from '@lucide/svelte';
 	import { ChatSettingsFooter, ChatSettingsFields } from '$lib/components/app';
 	import ImportExportTab from './ImportExportTab.svelte';
@@ -216,6 +217,84 @@
 			title: 'Import/Export',
 			icon: Database,
 			fields: []
+		},
+		{
+			title: 'MCP Client',
+			icon: Share2,
+			fields: [
+				{
+					key: 'mcpEndpointUrl',
+					label: 'Endpoint URL',
+					type: 'input',
+					help: 'Default endpoint used when initiating MCP sessions.'
+				},
+				{
+					key: 'mcpTransport',
+					label: 'Transport',
+					type: 'select',
+					options: [
+						{ value: 'sse', label: 'SSE' },
+						{ value: 'websocket', label: 'WebSocket' }
+					],
+					help: 'Select which transport to negotiate when opening the MCP connection.'
+				},
+				{
+					key: 'mcpMaxPreviewLines',
+					label: 'Max preview lines',
+					type: 'input',
+					help: 'Limit how much of each tool result preview is rendered inline.'
+				},
+				{
+					key: 'mcpTextResultBehavior',
+					label: 'Text results',
+					type: 'select',
+					options: [
+						{ value: 'full', label: 'Full' },
+						{ value: 'truncated', label: 'Truncated' },
+						{ value: 'summary', label: 'Summary' },
+						{ value: 'none', label: 'None' }
+					],
+					help: 'Choose how text tool results are injected into the next LLM turn.'
+				},
+				{
+					key: 'mcpImageResultBehavior',
+					label: 'Image results',
+					type: 'select',
+					options: [
+						{ value: 'metadata', label: 'Metadata' },
+						{ value: 'none', label: 'None' }
+					],
+					help: 'Decide whether to include image metadata or omit it entirely.'
+				},
+				{
+					key: 'mcpMaxContextBytes',
+					label: 'Max context size per result (bytes)',
+					type: 'input',
+					help: 'Upper bound on how many bytes can be injected from a single tool result.'
+				},
+				{
+					key: 'mcpIncludeToolName',
+					label: 'Include tool name',
+					type: 'checkbox'
+				},
+				{
+					key: 'mcpIncludeTimestamp',
+					label: 'Include timestamp',
+					type: 'checkbox'
+				},
+				{
+					key: 'mcpMaxAgentTurns',
+					label: 'Max turns',
+					type: 'input',
+					help: 'Limit how many automated MCP turns are allowed before prompting the user.'
+				},
+				{
+					key: 'mcpAutoExecuteTools',
+					label: 'Auto-execute tools',
+					type: 'checkbox',
+					help: 'When disabled, require manual approval before each tool call.'
+				}
+			]
 		},
 		{
 			title: 'Developer',

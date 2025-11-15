@@ -38,7 +38,18 @@ export const SETTING_CONFIG_DEFAULT: Record<string, string | number | boolean> =
 	max_tokens: -1,
 	custom: '', // custom json-stringified object
 	// experimental features
-	pyInterpreterEnabled: false
+	pyInterpreterEnabled: false,
+	// MCP client defaults
+	mcpEndpointUrl: 'http://127.0.0.1:8000/mcp',
+	mcpTransport: 'sse',
+	mcpMaxPreviewLines: 20,
+	mcpTextResultBehavior: 'summary',
+	mcpImageResultBehavior: 'metadata',
+	mcpMaxContextBytes: 10000,
+	mcpIncludeToolName: true,
+	mcpIncludeTimestamp: true,
+	mcpMaxAgentTurns: 20,
+	mcpAutoExecuteTools: true
 };
 
 export const SETTING_CONFIG_INFO: Record<string, string> = {
@@ -96,5 +107,24 @@ export const SETTING_CONFIG_INFO: Record<string, string> = {
 	modelSelectorEnabled:
 		'Enable the model selector in the chat input to choose the inference model. Sends the associated model field in API requests.',
 	pyInterpreterEnabled:
-		'Enable Python interpreter using Pyodide. Allows running Python code in markdown code blocks.'
+		'Enable Python interpreter using Pyodide. Allows running Python code in markdown code blocks.',
+	mcpEndpointUrl:
+		'Endpoint used for establishing MCP connections. Configure any HTTP(S) URL that supports MCP over SSE or WebSocket.',
+	mcpTransport:
+		'Preferred transport for MCP sessions. SSE streams responses over HTTP while WebSocket maintains a duplex session.',
+	mcpMaxPreviewLines:
+		'Limits how many lines of a tool result preview are rendered inline before truncation.',
+	mcpTextResultBehavior:
+		'Controls how text tool results are injected back into the LLM context for the next turn.',
+	mcpImageResultBehavior: 'Controls how image tool results are represented inside the LLM context.',
+	mcpMaxContextBytes:
+		'Maximum number of bytes from a single tool result that can be injected into the LLM context.',
+	mcpIncludeToolName:
+		'When enabled, prefixes injected tool results with the originating tool name.',
+	mcpIncludeTimestamp:
+		'When enabled, appends a timestamp to injected tool results to make ordering explicit.',
+	mcpMaxAgentTurns:
+		'Upper bound on automated agentic loop turns before requiring explicit user action.',
+	mcpAutoExecuteTools:
+		'When disabled, the UI will prompt the user before each tool call during an agentic loop.'
 };

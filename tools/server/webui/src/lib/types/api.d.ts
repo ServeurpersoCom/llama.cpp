@@ -149,6 +149,15 @@ export interface ApiLlamaCppServerProps {
 	build_info: string;
 }
 
+export interface ApiChatCompletionToolDefinition {
+	type: 'function';
+	function: {
+		name: string;
+		description?: string;
+		parameters?: Record<string, unknown>;
+	};
+}
+
 export interface ApiChatCompletionRequest {
 	messages: Array<{
 		role: ChatRole;
@@ -156,6 +165,7 @@ export interface ApiChatCompletionRequest {
 	}>;
 	stream?: boolean;
 	model?: string;
+	tools?: ApiChatCompletionToolDefinition[];
 	// Reasoning parameters
 	reasoning_format?: string;
 	// Generation parameters

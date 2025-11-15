@@ -1,14 +1,22 @@
 import { DatabaseStore } from '$lib/stores/database';
 import { chatService, slotsService } from '$lib/services';
+import { ChatService } from '$lib/services/chat';
 import { config } from '$lib/stores/settings.svelte';
 import { serverStore } from '$lib/stores/server.svelte';
+import { mcpStore } from '$lib/stores/mcp.svelte';
 import { normalizeModelName } from '$lib/utils/model-names';
 import { filterByLeafNodeId, findLeafNode, findDescendantMessages } from '$lib/utils/branching';
 import { browser } from '$app/environment';
 import { goto } from '$app/navigation';
 import { toast } from 'svelte-sonner';
 import { SvelteMap } from 'svelte/reactivity';
-import type { ExportedConversations } from '$lib/types/database';
+import type {
+	DatabaseConversation,
+	DatabaseMessage,
+	DatabaseMessageExtra,
+	ExportedConversations
+} from '$lib/types/database';
+import type { ApiChatCompletionToolDefinition, ApiChatMessageData } from '$lib/types/api';
 
 /**
  * ChatStore - Central state management for chat conversations and AI interactions
@@ -357,7 +365,9 @@ class ChatStore {
 		allMessages: DatabaseMessage[],
 		assistantMessage: DatabaseMessage,
 		onComplete?: (content: string) => Promise<void>,
-		onError?: (error: Error) => void
+		onError?: (error: Error) => void,
+		contextInjections: ApiChatMessageData[] = [],
+		tools: ApiChatCompletionToolDefinition[] = []
 	): Promise<void> {
 		let streamedContent = '';
 		let streamedReasoningContent = '';
@@ -437,13 +447,31 @@ class ChatStore {
 			updateModelFromServerProps(false);
 		}
 
+		const normalizedHistory = allMessages.map((message) =>
+			ChatService.convertMessageToChatServiceData(
+				message as DatabaseMessage & { extra?: DatabaseMessageExtra[] }
+			)
+		);
+		const requestMessages: ApiChatMessageData[] =
+			contextInjections.length > 0
+				? [...normalizedHistory, ...contextInjections]
+				: normalizedHistory;
+
+		const initialMessageIndex = this.findMessageIndex(assistantMessage.id);
+		this.updateMessageAtIndex(initialMessageIndex, { toolCalls: '' });
+
 		slotsService.startStreaming();
 		slotsService.setActiveConversation(assistantMessage.convId);
 
+		const apiOptions = this.getApiOptions();
+		if (tools.length > 0) {
+			apiOptions.tools = tools;
+		}
+
 		await chatService.sendMessage(
-			allMessages,
+			requestMessages,
 			{
-				...this.getApiOptions(),
+				...apiOptions,
 
 				onFirstValidChunk: () => {
 					refreshServerPropsOnce();
@@ -594,6 +622,63 @@ class ChatStore {
 		);
 	}
 
+	private async runAgenticLoop(
+		conversationContext: DatabaseMessage[],
+		assistantMessage: DatabaseMessage,
+		onComplete?: (content: string) => Promise<void>,
+		onError?: (error: Error) => void,
+		initialContextInjections: ApiChatMessageData[] = []
+	): Promise<void> {
+		const currentConfig = config();
+		const configuredTurns = Number(currentConfig.mcpMaxAgentTurns);
+		const maxTurns = Number.isFinite(configuredTurns) && configuredTurns > 0 ? configuredTurns : 1;
+
+		let completedTurns = 0;
+		let pendingContext = initialContextInjections;
+		let toolDefinitions: ApiChatCompletionToolDefinition[] = [];
+
+		try {
+			toolDefinitions = await mcpStore.getToolDefinitions(currentConfig);
+		} catch (error) {
+			console.warn('Unable to load MCP tool definitions:', error);
+			toolDefinitions = [];
+		}
+
+		do {
+			await this.streamChatCompletion(
+				conversationContext,
+				assistantMessage,
+				onComplete,
+				onError,
+				pendingContext,
+				toolDefinitions
+			);
+
+			completedTurns += 1;
+			pendingContext = [];
+
+			if (completedTurns >= maxTurns) {
+				break;
+			}
+
+			const serializedToolCalls = assistantMessage.toolCalls?.trim();
+			if (!serializedToolCalls) {
+				break;
+			}
+
+			const executedCount = await mcpStore.processToolCalls(assistantMessage, serializedToolCalls);
+
+			if (!executedCount || !this.activeConversation) {
+				break;
+			}
+
+			pendingContext = mcpStore.consumeContextInjections(this.activeConversation.id);
+			if (!pendingContext.length) {
+				break;
+			}
+		} while (completedTurns < maxTurns);
+	}
+
 	/**
 	 * Checks if an error is an abort error (user cancelled operation)
 	 * @param error - The error to check
@@ -724,8 +809,17 @@ class ChatStore {
 			this.activeMessages.push(assistantMessage);
 
 			const conversationContext = this.activeMessages.slice(0, -1);
+			const contextInjections = this.activeConversation
+				? mcpStore.consumeContextInjections(this.activeConversation.id)
+				: [];
 
-			await this.streamChatCompletion(conversationContext, assistantMessage);
+			await this.runAgenticLoop(
+				conversationContext,
+				assistantMessage,
+				undefined,
+				undefined,
+				contextInjections
+			);
 		} catch (error) {
 			if (this.isAbortError(error)) {
 				this.setConversationLoading(this.activeConversation!.id, false);
@@ -912,14 +1006,18 @@ class ChatStore {
 				await DatabaseStore.updateCurrentNode(this.activeConversation.id, assistantMessage.id);
 				this.activeConversation.currNode = assistantMessage.id;
 
-				await this.streamChatCompletion(
+				const contextInjections = this.activeConversation
+					? mcpStore.consumeContextInjections(this.activeConversation.id)
+					: [];
+				await this.runAgenticLoop(
 					this.activeMessages.slice(0, -1),
 					assistantMessage,
 					undefined,
 					() => {
 						const editedMessageIndex = this.findMessageIndex(messageId);
 						this.updateMessageAtIndex(editedMessageIndex, { content: originalContent });
-					}
+					},
+					contextInjections
 				);
 			} catch (regenerateError) {
 				console.error('Failed to regenerate response:', regenerateError);
@@ -974,7 +1072,7 @@ class ChatStore {
 						? this.activeMessages[this.activeMessages.length - 1].id
 						: null;
 
-				const assistantMessage = await this.createAssistantMessage(parentMessageId);
+				const assistantMessage = await this.createAssistantMessage(parentMessageId ?? undefined);
 
 				if (!assistantMessage) {
 					throw new Error('Failed to create assistant message');
@@ -983,8 +1081,17 @@ class ChatStore {
 				this.activeMessages.push(assistantMessage);
 
 				const conversationContext = this.activeMessages.slice(0, -1);
+				const contextInjections = this.activeConversation
+					? mcpStore.consumeContextInjections(this.activeConversation.id)
+					: [];
 
-				await this.streamChatCompletion(conversationContext, assistantMessage);
+				await this.runAgenticLoop(
+					conversationContext,
+					assistantMessage,
+					undefined,
+					undefined,
+					contextInjections
+				);
 			} catch (regenerateError) {
 				console.error('Failed to regenerate response:', regenerateError);
 				this.setConversationLoading(this.activeConversation!.id, false);
@@ -1640,7 +1747,17 @@ class ChatStore {
 				false
 			) as DatabaseMessage[];
 
-			await this.streamChatCompletion(conversationPath, newAssistantMessage);
+			const contextInjections = this.activeConversation
+				? mcpStore.consumeContextInjections(this.activeConversation.id)
+				: [];
+
+			await this.runAgenticLoop(
+				conversationPath,
+				newAssistantMessage,
+				undefined,
+				undefined,
+				contextInjections
+			);
 		} catch (error) {
 			if (this.isAbortError(error)) return;
 
@@ -1689,7 +1806,16 @@ class ChatStore {
 			this.activeMessages.push(assistantMessage);
 
 			// Stream response to new assistant message
-			await this.streamChatCompletion(conversationPath, assistantMessage);
+			const contextInjections = this.activeConversation
+				? mcpStore.consumeContextInjections(this.activeConversation.id)
+				: [];
+			await this.runAgenticLoop(
+				conversationPath,
+				assistantMessage,
+				undefined,
+				undefined,
+				contextInjections
+			);
 		} catch (error) {
 			console.error('Failed to generate response:', error);
 			this.setConversationLoading(this.activeConversation!.id, false);

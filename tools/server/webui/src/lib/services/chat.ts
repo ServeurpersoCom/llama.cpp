@@ -99,7 +99,8 @@ export class ChatService {
 			// Other parameters
 			samplers,
 			custom,
-			timings_per_token
+			timings_per_token,
+			tools
 		} = options;
 
 		const currentConfig = config();
@@ -141,6 +142,10 @@ export class ChatService {
 			})),
 			stream
 		};
+
+		if (tools && tools.length > 0) {
+			requestBody.tools = tools;
+		}
 
 		const modelSelectorEnabled = Boolean(currentConfig.modelSelectorEnabled);
 		const activeModel = modelSelectorEnabled ? selectedModelName() : null;
