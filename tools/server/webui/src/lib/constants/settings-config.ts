@@ -49,7 +49,7 @@ export const SETTING_CONFIG_DEFAULT: Record<string, string | number | boolean> =
 	mcpIncludeToolName: true,
 	mcpIncludeTimestamp: true,
 	mcpMaxAgentTurns: 20,
-	mcpAutoExecuteTools: true
+	mcpAutoExecuteTools: false
 };
 
 export const SETTING_CONFIG_INFO: Record<string, string> = {

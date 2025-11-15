@@ -1,4 +1,5 @@
 import { browser } from '$app/environment';
+import Ajv, { type ValidateFunction } from 'ajv';
 import { toast } from 'svelte-sonner';
 import { SvelteMap } from 'svelte/reactivity';
 import { config } from '$lib/stores/settings.svelte';
@@ -26,6 +27,10 @@ class MCPStore {
 	private pendingMessages = new SvelteMap<string, boolean>();
 	private activeConnectionKey: string | null = null;
 	private toolDefinitions: ApiChatCompletionToolDefinition[] = [];
+	private ensureClientPromise: Promise<MCPClient | null> | null = null;
+	private ajv = new Ajv({ allErrors: true, strict: false });
+	private inputValidators = new Map<string, ValidateFunction>();
+	private outputValidators = new Map<string, ValidateFunction>();
 
 	getExecutionsForMessage(messageId: string): MCPToolExecutionResult[] {
 		return this.toolExecutions.get(messageId) ?? [];
@@ -42,10 +47,14 @@ class MCPStore {
 		const client = await this.ensureClient(targetSettings);
 
 		if (!client) {
+			this.toolDefinitions = [];
+			this.clearValidators();
 			return [];
 		}
 
-		this.toolDefinitions = this.mapToolsToDefinitions(client.getTools());
+		const tools = client.getTools();
+		this.compileToolSchemas(tools);
+		this.toolDefinitions = this.mapToolsToDefinitions(tools);
 		return this.toolDefinitions;
 	}
 
@@ -96,9 +105,25 @@ class MCPStore {
 				}
 
 				const args = this.parseArguments(call.function.arguments);
+				const argumentValidation = this.validateToolArguments(call.function.name, args);
+
+				if (!argumentValidation.valid) {
+					const messageText = argumentValidation.message || 'Tool arguments failed validation';
+					this.lastError = messageText;
+					toast.error(`Tool ${call.function.name} arguments invalid: ${messageText}`);
+					continue;
+				}
 
 				try {
 					const rawResult = await client.callTool(call.function.name, args);
+					const resultValidation = this.validateToolResult(call.function.name, rawResult);
+					if (!resultValidation.valid) {
+						const validationMessage = resultValidation.message || 'Tool result failed validation';
+						this.lastError = validationMessage;
+						toast.error(`Tool ${call.function.name} returned invalid data: ${validationMessage}`);
+						continue;
+					}
+
 					const execution = this.buildExecution(call, rawResult, currentConfig);
 					executions.push(execution);
 					executedCount += 1;
@@ -159,18 +184,106 @@ class MCPStore {
 		});
 	}
 
+	private compileToolSchemas(tools: MCPToolDescription[]): void {
+		this.clearValidators();
+
+		for (const tool of tools) {
+			if (!tool?.name) {
+				continue;
+			}
+
+			if (tool.inputSchema && Object.keys(tool.inputSchema).length > 0) {
+				try {
+					this.inputValidators.set(tool.name, this.ajv.compile(tool.inputSchema));
+				} catch (error) {
+					console.warn(`Failed to compile input schema for ${tool.name}:`, error);
+				}
+			}
+
+			if (tool.outputSchema && Object.keys(tool.outputSchema).length > 0) {
+				try {
+					this.outputValidators.set(tool.name, this.ajv.compile(tool.outputSchema));
+				} catch (error) {
+					console.warn(`Failed to compile output schema for ${tool.name}:`, error);
+				}
+			}
+		}
+	}
+
+	private clearValidators(): void {
+		this.inputValidators.clear();
+		this.outputValidators.clear();
+	}
+
+	private validateToolArguments(
+		toolName: string,
+		args: string | Record<string, unknown> | undefined
+	): { valid: boolean; message?: string } {
+		const validator = this.inputValidators.get(toolName);
+		if (!validator) {
+			return { valid: true };
+		}
+
+		const value = args === undefined ? {} : args;
+		const valid = validator(value);
+		return valid
+			? { valid: true }
+			: { valid: false, message: this.ajv.errorsText(validator.errors ?? []) };
+	}
+
+	private validateToolResult(
+		toolName: string,
+		result: unknown
+	): { valid: boolean; message?: string } {
+		const validator = this.outputValidators.get(toolName);
+		if (!validator) {
+			return { valid: true };
+		}
+
+		const target = this.getResultValidationTarget(result);
+		const valid = validator(target);
+		return valid
+			? { valid: true }
+			: { valid: false, message: this.ajv.errorsText(validator.errors ?? []) };
+	}
+
+	private getResultValidationTarget(result: unknown): unknown {
+		if (result && typeof result === 'object' && 'content' in (result as Record<string, unknown>)) {
+			return (result as Record<string, unknown>).content;
+		}
+
+		return result;
+	}
+
 	private async ensureClient(settings: SettingsConfigType): Promise<MCPClient | null> {
 		if (!browser) {
 			return null;
 		}
 
+		if (this.ensureClientPromise) {
+			return this.ensureClientPromise;
+		}
+
+		const initPromise = this.initializeClient(settings)
+			.catch((error) => {
+				throw error;
+			})
+			.finally(() => {
+				this.ensureClientPromise = null;
+			});
+
+		this.ensureClientPromise = initPromise;
+		return this.ensureClientPromise;
+	}
+
+	private async initializeClient(settings: SettingsConfigType): Promise<MCPClient | null> {
 		const endpoint = ((settings.mcpEndpointUrl as string) || './mcp').trim() || './mcp';
 		const transport = (settings.mcpTransport as 'sse' | 'websocket') || 'sse';
 		const connectionKey = `${transport}:${endpoint}`;
 
 		if (!this.client || this.activeConnectionKey !== connectionKey) {
 			if (this.client) {
-				void this.client.disconnect();
+				await this.client.disconnect();
 			}
 
 			this.client = new MCPClient({
@@ -182,6 +295,7 @@ class MCPStore {
 			this.activeConnectionKey = connectionKey;
 			this.status = 'connecting';
 			this.toolDefinitions = [];
+			this.clearValidators();
 		}
 
 		if (!this.client) {
@@ -190,7 +304,9 @@ class MCPStore {
 
 		try {
 			await this.client.ensureInitialized();
-			this.toolDefinitions = this.mapToolsToDefinitions(this.client.getTools());
+			const tools = this.client.getTools();
+			this.compileToolSchemas(tools);
+			this.toolDefinitions = this.mapToolsToDefinitions(tools);
 			this.status = 'ready';
 			this.lastError = null;
 			return this.client;
@@ -198,6 +314,7 @@ class MCPStore {
 			this.status = 'error';
 			const message = error instanceof Error ? error.message : 'Failed to initialize MCP client';
 			this.lastError = message;
+			this.clearValidators();
 			toast.error(`MCP connection failed: ${message}`);
 			return null;
 		}

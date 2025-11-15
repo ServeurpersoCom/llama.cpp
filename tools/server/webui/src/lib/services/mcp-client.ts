@@ -34,6 +34,7 @@ class SSETransport implements MCPTransport {
 	private postEndpoint: string;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private closed = false;
+	private reconnectAttempts = 0;
 
 	constructor(
 		private endpointUrl: string,
@@ -79,6 +80,7 @@ class SSETransport implements MCPTransport {
 		}
 
 		this.updateSessionMetadata(response);
+		this.reconnectAttempts = 0;
 		this.reader = response.body.getReader();
 		this.buffer = '';
 		void this.readLoop();
@@ -90,6 +92,7 @@ class SSETransport implements MCPTransport {
 			clearTimeout(this.reconnectTimer);
 			this.reconnectTimer = null;
 		}
+		this.reconnectAttempts = 0;
 		this.streamAbort?.abort();
 		this.streamAbort = null;
 
@@ -178,22 +181,6 @@ class SSETransport implements MCPTransport {
 		if (sessionHeader) {
 			this.sessionId = sessionHeader;
 		}
-
-		const postEndpoint = response.headers.get('Mcp-Post-Endpoint');
-		if (postEndpoint) {
-			this.postEndpoint = this.resolveEndpoint(postEndpoint);
-		} else if (!this.postEndpoint) {
-			this.postEndpoint = this.endpointUrl;
-		}
-	}
-
-	private resolveEndpoint(endpoint: string): string {
-		try {
-			return new URL(endpoint, this.endpointUrl).toString();
-		} catch (error) {
-			console.warn('Failed to resolve MCP post endpoint:', error);
-			return this.endpointUrl;
-		}
 	}
 
 	private async readLoop() {
@@ -276,12 +263,14 @@ class SSETransport implements MCPTransport {
 				return;
 			}
 
+			const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 30000);
+			this.reconnectAttempts += 1;
 			this.reconnectTimer = setTimeout(() => {
 				this.reconnectTimer = null;
 				this.connect().catch((err) => {
 					console.warn('Failed to reconnect MCP SSE transport:', err);
 				});
-			}, 1000);
+			}, delay);
 		}
 	}
 
@@ -330,6 +319,7 @@ class WebSocketTransport implements MCPTransport {
 	private socket: WebSocket | null = null;
 	private pending = new Map<number | string, PendingRequest>();
 	private connectPromise: Promise<void> | null = null;
+	private reconnectAttempts = 0;
 
 	constructor(
 		private endpointUrl: string,
@@ -362,6 +352,7 @@ class WebSocketTransport implements MCPTransport {
 
 			ws.onopen = () => {
 				this.socket = ws;
+				this.reconnectAttempts = 0;
 				this.connectPromise = null;
 				ws.onerror = (event) => {
 					console.warn('MCP WebSocket transport error:', event);
@@ -385,6 +376,7 @@ class WebSocketTransport implements MCPTransport {
 		this.autoReconnect = false;
 		this.socket?.close();
 		this.socket = null;
+		this.reconnectAttempts = 0;
 		this.rejectAllPending(new Error('WebSocket transport disconnected'));
 	}
 
@@ -433,11 +425,13 @@ class WebSocketTransport implements MCPTransport {
 		this.rejectAllPending(new Error('MCP WebSocket connection closed'));
 
 		if (this.autoReconnect) {
+			const delay = Math.min(1000 * 2 ** this.reconnectAttempts, 30000);
+			this.reconnectAttempts += 1;
 			setTimeout(() => {
 				this.connect().catch((error) => {
 					console.warn('Failed to reconnect MCP WebSocket:', error);
 				});
-			}, 500);
+			}, delay);
 		}
 	}
 
@@ -489,9 +483,7 @@ export class MCPClient {
 
 		const initializeResponse = await this.sendRequest('initialize', {
 			protocolVersion: MCP_PROTOCOL_VERSION,
-			capabilities: {
-				tools: { listChanged: true }
-			},
+			capabilities: {},
 			clientInfo: MCP_CLIENT_INFO
 		});
 
