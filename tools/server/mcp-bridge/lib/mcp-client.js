@@ -122,7 +122,8 @@ class MCPClient {
 								return JSON.stringify(item.resource);
 							}
 							if (item.type === 'image' && item.data) {
-								return `[image:${item.mimeType || 'application/octet-stream'}:${item.data.length} bytes]`;
+								const mimeType = item.mimeType || 'application/octet-stream';
+								return `data:${mimeType};base64,${item.data}`;
 							}
 							if (typeof item.text === 'string') {
 								return item.text;

@@ -39,6 +39,23 @@ const path = require('path');
 const config = require('../config.json');
 const { podmanExec, escapeShell, escapeRegex } = require('./podman-executor');
 
+function textResult(text, isError = false) {
+	return {
+		type: 'text',
+		text: text == null ? '' : String(text),
+		isError: Boolean(isError)
+	};
+}
+
+function imageResult(data, mimeType, isError = false) {
+	return {
+		type: 'image',
+		data: data == null ? '' : String(data),
+		mimeType: mimeType || 'application/octet-stream',
+		isError: Boolean(isError)
+	};
+}
+
 // Load tools definitions from tools.json once at startup
 const toolsDefinitionPath = path.join(__dirname, '..', 'tools.json');
 const rawDefinitions = JSON.parse(fs.readFileSync(toolsDefinitionPath, 'utf8'));
@@ -59,11 +76,11 @@ async function tool_bash(args = {}) {
 	const cmd = args.command;
 
 	if (!cmd) {
-		return '❌ Command argument required';
+		return textResult('❌ Command argument required', true);
 	}
 
 	if (!args.description) {
-		return '❌ Description argument required';
+		return textResult('❌ Description argument required', true);
 	}
 
 	const t0 = Date.now();
@@ -87,7 +104,10 @@ async function tool_bash(args = {}) {
 	const statusEmoji = result.exitCode === 0 ? '✅' : '❌';
 	const newLine = output ? '\n' : '';
 	const justification = args.description ? `🎯 ${args.description}\n` : '';
-	return `${output}${newLine}${justification}#️⃣ ${cmd}\n${statusEmoji} Exit code ${result.exitCode} (${elapsed} ms)`;
+	return textResult(
+		`${output}${newLine}${justification}#️⃣ ${cmd}\n${statusEmoji} Exit code ${result.exitCode} (${elapsed} ms)`,
+		result.exitCode !== 0
+	);
 }
 
 /**
@@ -103,11 +123,11 @@ async function tool_view(args = {}) {
 	const range = args.view_range;
 
 	if (!filepath) {
-		return '❌ Path argument required';
+		return textResult('❌ Path argument required', true);
 	}
 
 	if (!args.description) {
-		return '❌ Description argument required';
+		return textResult('❌ Description argument required', true);
 	}
 
 	const testScript = `if [ -d ${escapeShell(filepath)} ]; then echo DIR; else echo FILE; fi`;
@@ -120,22 +140,48 @@ async function tool_view(args = {}) {
 		const result = await podmanExec(script);
 
 		const justification = args.description ? `🎯 ${args.description}\n` : '';
-		return result.stdout + `${justification}👁️ Directory listing of ${filepath}`;
+		return textResult(result.stdout + `${justification}👁️ Directory listing of ${filepath}`);
 	}
 
 	const mimeScript = `file --mime-encoding ${escapeShell(filepath)} 2>/dev/null`;
 	const mimeResult = await podmanExec(mimeScript);
 	const mimeLine = mimeResult.stdout.trim();
+	const mimeTypeScript = `file --mime-type ${escapeShell(filepath)} 2>/dev/null`;
+	const mimeTypeResult = await podmanExec(mimeTypeScript);
+	const mimeType = mimeTypeResult.stdout.split(':').pop()?.trim().toLowerCase();
+
+	const supportedImageTypes = new Set([
+		'image/png',
+		'image/jpeg',
+		'image/jpg',
+		'image/gif',
+		'image/webp'
+	]);
 
 	if (mimeLine.toLowerCase().includes('binary')) {
-		return `❌ Binary file detected (${mimeLine})`;
+		if (mimeType && supportedImageTypes.has(mimeType)) {
+			const base64Script = `base64 -w 0 ${escapeShell(filepath)} 2>/dev/null`;
+			const base64Result = await podmanExec(base64Script);
+
+			if (base64Result.exitCode !== 0) {
+				return textResult(
+					base64Result.stdout + `❌ Error encoding image ${filepath}`,
+					true
+				);
+			}
+
+			const base64Data = base64Result.stdout.replace(/\s+/g, '');
+			return imageResult(base64Data, mimeType);
+		}
+
+		return textResult(`❌ Binary file detected (${mimeLine})`, true);
 	}
 
 	const catScript = `cat ${escapeShell(filepath)}`;
 	const catResult = await podmanExec(catScript);
 
 	if (catResult.exitCode !== 0) {
-		return catResult.stdout + `❌ Error reading file ${filepath}`;
+		return textResult(catResult.stdout + `❌ Error reading file ${filepath}`, true);
 	}
 
 	const lines = catResult.stdout.replace(/\n$/, '').split('\n');
@@ -163,10 +209,14 @@ async function tool_view(args = {}) {
 
 	const justification = args.description ? `🎯 ${args.description}\n` : '';
 	if (range && Array.isArray(range) && range.length === 2) {
-		return `${numberedLines}\n${justification}👁️ File content of ${filepath} (lines ${startLine}-${endLine} out of ${totalLines})`;
+		return textResult(
+			`${numberedLines}\n${justification}👁️ File content of ${filepath} (lines ${startLine}-${endLine} out of ${totalLines})`
+		);
 	}
 
-	return `${numberedLines}\n${justification}👁️ File content of ${filepath} (${totalLines} lines)`;
+	return textResult(
+		`${numberedLines}\n${justification}👁️ File content of ${filepath} (${totalLines} lines)`
+	);
 }
 
 /**
@@ -182,11 +232,11 @@ async function tool_create_file(args = {}) {
 	const content = args.file_text;
 
 	if (!filepath || content === undefined) {
-		return '❌ Path and content arguments required';
+		return textResult('❌ Path and content arguments required', true);
 	}
 
 	if (!args.description) {
-		return '❌ Description argument required';
+		return textResult('❌ Description argument required', true);
 	}
 
 	const b64 = Buffer.from(content).toString('base64');
@@ -196,12 +246,12 @@ async function tool_create_file(args = {}) {
 	const result = await podmanExec(script);
 
 	if (result.exitCode !== 0) {
-		return result.stdout + `❌ Error creating file ${filepath}`;
+		return textResult(result.stdout + `❌ Error creating file ${filepath}`, true);
 	}
 
 	const size = content.length;
 	const justification = args.description ? `🎯 ${args.description}\n` : '';
-	return `${justification}✨ File ${filepath} created (${size} bytes)`;
+	return textResult(`${justification}✨ File ${filepath} created (${size} bytes)`);
 }
 
 /**
@@ -219,11 +269,11 @@ async function tool_str_replace(args = {}) {
 	const newStr = args.new_str ?? '';
 
 	if (!filepath || oldStr === undefined) {
-		return '❌ Path and old_str arguments required';
+		return textResult('❌ Path and old_str arguments required', true);
 	}
 
 	if (!args.description) {
-		return '❌ Description argument required';
+		return textResult('❌ Description argument required', true);
 	}
 
 	// Read file contents via podman
@@ -231,18 +281,21 @@ async function tool_str_replace(args = {}) {
 	const readResult = await podmanExec(readScript);
 
 	if (readResult.exitCode !== 0) {
-		return readResult.stdout + `❌ Error reading file ${filepath}`;
+		return textResult(readResult.stdout + `❌ Error reading file ${filepath}`, true);
 	}
 
 	const content = readResult.stdout;
 	const occurrences = (content.match(new RegExp(escapeRegex(oldStr), 'g')) || []).length;
 
 	if (occurrences === 0) {
-		return `❌ String "${oldStr}" not found in ${filepath}`;
+		return textResult(`❌ String "${oldStr}" not found in ${filepath}`, true);
 	}
 
 	if (occurrences > 1) {
-		return `❌ String "${oldStr}" found ${occurrences} times in ${filepath} (must be unique)`;
+		return textResult(
+			`❌ String "${oldStr}" found ${occurrences} times in ${filepath} (must be unique)`,
+			true
+		);
 	}
 
 	const newContent = content.replace(oldStr, newStr);
@@ -251,13 +304,15 @@ async function tool_str_replace(args = {}) {
 	const writeResult = await podmanExec(writeScript);
 
 	if (writeResult.exitCode !== 0) {
-		return writeResult.stdout + `❌ Error writing file ${filepath}`;
+		return textResult(writeResult.stdout + `❌ Error writing file ${filepath}`, true);
 	}
 
 	const oldLen = oldStr.length;
 	const newLen = newStr.length;
 	const justification = args.description ? `🎯 ${args.description}\n` : '';
-	return `${justification}🔄 Replacement done in ${filepath} (${oldLen} -> ${newLen} bytes)`;
+	return textResult(
+		`${justification}🔄 Replacement done in ${filepath} (${oldLen} -> ${newLen} bytes)`
+	);
 }
 
 const TOOLS_MAPPING = {

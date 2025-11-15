@@ -63,22 +63,46 @@ class MCPServer {
 
 		try {
 			const result = await this.toolsMapping[name](args ?? {});
+
+			if (!result || typeof result !== 'object' || !result.type) {
+				throw new Error('Tool returned invalid result. Expected typed object.');
+			}
+
+			const contentBlock = this.createContentBlock(result);
 			return {
 				jsonrpc: '2.0',
 				id,
 				result: {
-					content: [
-						{
-							type: 'text',
-							text: typeof result === 'string' ? result : JSON.stringify(result)
-						}
-					]
+					content: [contentBlock],
+					isError: Boolean(result.isError)
 				}
 			};
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			return this.createError(id, -32603, `Tool execution failed: ${message}`);
 		}
+	}
+
+	createContentBlock(result) {
+		if (result.type === 'text') {
+			return {
+				type: 'text',
+				text:
+					typeof result.text === 'string'
+						? result.text
+						: JSON.stringify(result.text ?? '')
+			};
+		}
+
+		if (result.type === 'image') {
+			return {
+				type: 'image',
+				data: typeof result.data === 'string' ? result.data : '',
+				mimeType: result.mimeType || 'application/octet-stream'
+			};
+		}
+
+		throw new Error(`Unsupported tool result type: ${result.type}`);
 	}
 
 	createError(id, code, message) {

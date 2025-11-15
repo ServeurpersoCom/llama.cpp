@@ -707,16 +707,27 @@ class ProxySSE {
 				result: toolResult
 			});
 
-			const lines = toolResult.split('\n');
-			const preview =
-				lines.length > this.maxLinesForToolResponsePreview
-					? lines.slice(-this.maxLinesForToolResponsePreview).join('\n')
-					: toolResult;
+			const isImagePreview = this._isDataImage(toolResult);
+			let preview;
+
+			if (isImagePreview) {
+				preview = toolResult.trim();
+			} else {
+				const lines = toolResult.split('\n');
+				preview =
+					lines.length > this.maxLinesForToolResponsePreview
+						? lines.slice(-this.maxLinesForToolResponsePreview).join('\n')
+						: toolResult;
+			}
 
 			const resultChunk = {
 				choices: [
 					{
-						delta: { content: `\n\`\`\`\n${preview}\n\`\`\`\n` },
+						delta: {
+							content: isImagePreview
+								? `\n![image](${preview})\n`
+								: `\n\`\`\`\n${preview}\n\`\`\`\n`
+						},
 						finish_reason: null
 					}
 				],
@@ -728,8 +739,14 @@ class ProxySSE {
 
 		// Inject tool results into context for next turn
 		for (const result of allToolResults) {
-			const content =
+			let content =
 				typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
+
+			// Don't inject base64 images into LLM context (too large)
+			if (this._isDataImage(content)) {
+				content = '[Image displayed to user]';
+			}
+
 			sessionMessages.push({
 				role: 'tool',
 				tool_call_id: result.id,
@@ -759,6 +776,15 @@ class ProxySSE {
 			this._log(`MCP tool call failed: ${e.message}`);
 			return `Error: ${e.message}`;
 		}
+	}
+
+	_isDataImage(content) {
+		if (typeof content !== 'string') {
+			return false;
+		}
+
+		const trimmed = content.trim();
+		return /^data:image\/(png|jpe?g|gif|webp);base64,[a-zA-Z0-9+/=]+$/.test(trimmed);
 	}
 
 	async _readStreamSecure(reader) {
