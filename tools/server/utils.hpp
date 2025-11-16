@@ -1569,6 +1569,7 @@ static server_tokens format_rerank(const struct llama_model * model, const struc
 #include <thread>
 #include <spawn.h>
 #include <signal.h> // for kill()
+#include <sys/wait.h> // for waitpid()
 
 #if defined(__APPLE__) && defined(__MACH__)
 // macOS: use _NSGetExecutablePath to get the executable path
