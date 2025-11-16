@@ -5195,17 +5195,23 @@ public:
         json models_json = json::array();
         auto models = common_list_cached_models();
         for (const auto & model : models) {
-            auto model_name = model.to_string();
-            bool found = map_model_to_port.find(model.to_string()) != map_model_to_port.end(); // TODO: thread safety
-            models_json.push_back(json {
-                {"model",  model_name},
-                {"name",   model_name},
-                {"id",     model_name},
-                // TODO: other fields...
+            auto model_identifier = model.to_string();
+            bool found = map_model_to_port.find(model_identifier) != map_model_to_port.end(); // TODO: thread safety
+            auto display_name = model.display_name();
+            json entry = {
+                {"model",  model_identifier},
+                {"name",   display_name},
+                {"id",     model_identifier},
+                {"size",   model.size},
+                {"source", model.is_local_file ? "local" : "hf"},
                 {"status", {
-                    {"value", found ? map_model_to_port[model_name].status : "unloaded"}
+                    {"value", found ? map_model_to_port[model_identifier].status : "unloaded"}
                 }},
-            });
+            };
+            if (model.is_local_file) {
+                entry["path"] = model.gguf_path;
+            }
+            models_json.push_back(std::move(entry));
         }
         res->ok({{"data", models_json}});
         return res;

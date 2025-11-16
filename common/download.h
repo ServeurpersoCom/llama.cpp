@@ -14,8 +14,33 @@ struct common_cached_model_info {
     std::string model;
     std::string tag;
     size_t      size = 0; // GGUF size in bytes
+    std::string gguf_path;
+    bool        is_local_file = false;
+
+    std::string hf_handle() const {
+        std::string handle;
+        if (!user.empty()) {
+            handle += user + "/";
+        }
+        handle += model;
+        if (!tag.empty()) {
+            handle += ":" + tag;
+        }
+        return handle;
+    }
+
     std::string to_string() const {
-        return user + "/" + model + ":" + tag;
+        if (is_local_file && !gguf_path.empty()) {
+            return gguf_path;
+        }
+        return hf_handle();
+    }
+
+    std::string display_name() const {
+        if (is_local_file && !model.empty()) {
+            return model;
+        }
+        return hf_handle();
     }
 };
 

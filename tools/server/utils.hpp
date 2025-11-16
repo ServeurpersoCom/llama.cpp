@@ -18,6 +18,7 @@
 #include <vector>
 #include <memory>
 #include <cinttypes>
+#include <filesystem>
 
 #define DEFAULT_OAICOMPAT_MODEL "gpt-3.5-turbo"
 
@@ -1619,11 +1620,35 @@ struct server_spawn_instance {
     std::string status = "loading"; // "loading", "loaded"
 };
 
-inline int server_router_create_instance(char ** envp, std::map<std::string, server_spawn_instance> & mapping, const std::string & hf_model, int router_port) {
+inline bool server_router_is_local_model(const std::string & model_id) {
+    if (model_id.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    return std::filesystem::exists(model_id, ec);
+}
+
+inline std::string server_router_alias_for_model(const std::string & model_id, bool is_local) {
+    if (!is_local) {
+        return model_id;
+    }
+
+    std::filesystem::path path(model_id);
+    std::string alias = path.stem().string();
+    if (alias.empty()) {
+        alias = path.filename().string();
+    }
+    if (alias.empty()) {
+        alias = model_id;
+    }
+    return alias;
+}
+
+inline int server_router_create_instance(char ** envp, std::map<std::string, server_spawn_instance> & mapping, const std::string & model_id, int router_port) {
     server_spawn_instance inst;
     inst.port = rand() % 10000 + 20000; // random port between 20000 and 29999
 
-    if (mapping.find(hf_model) != mapping.end()) {
+    if (mapping.find(model_id) != mapping.end()) {
         throw std::runtime_error("model already loaded");
     }
 
@@ -1632,13 +1657,20 @@ inline int server_router_create_instance(char ** envp, std::map<std::string, ser
         // Prepare arguments (pass original or custom ones) using mutable storage for argv
         std::string path = server_router_get_server_exec_path().string();
 
-        SRV_INF("spawning instance %s with hf=%s on port %d\n", path.c_str(), hf_model.c_str(), inst.port);
+        const bool is_local_model = server_router_is_local_model(model_id);
+        std::string alias = server_router_alias_for_model(model_id, is_local_model);
+
+        SRV_INF("spawning instance %s with model=%s on port %d\n", path.c_str(), model_id.c_str(), inst.port);
         std::vector<std::string> arg_strs;
         arg_strs.push_back(path);
-        arg_strs.push_back("-hf");
-        arg_strs.push_back(hf_model);
+        if (is_local_model) {
+            arg_strs.push_back("-m");
+        } else {
+            arg_strs.push_back("-hf");
+        }
+        arg_strs.push_back(model_id);
         arg_strs.push_back("--alias");
-        arg_strs.push_back(hf_model);
+        arg_strs.push_back(alias);
         arg_strs.push_back("--port");
         arg_strs.push_back(std::to_string(inst.port));
 
@@ -1673,17 +1705,17 @@ inline int server_router_create_instance(char ** envp, std::map<std::string, ser
         }
     }
 
-    inst.th = std::thread([hf_model, pid, &mapping]() {
+    inst.th = std::thread([model_id, pid, &mapping]() {
         int status = 0;
         waitpid(pid, &status, 0);
         SRV_INF("instance with pid %d exited with status %d\n", pid, status);
-        mapping.erase(hf_model); // TODO: thread safety
+        mapping.erase(model_id); // TODO: thread safety
     });
     if (inst.th.joinable()) {
         inst.th.detach();
     }
 
-    mapping[hf_model] = std::move(inst); // TODO: thread safety
+    mapping[model_id] = std::move(inst); // TODO: thread safety
     return 0;
 }
 

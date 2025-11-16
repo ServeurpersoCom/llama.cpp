@@ -1048,25 +1048,55 @@ std::vector<common_cached_model_info> common_list_cached_models() {
     std::vector<common_cached_model_info> models;
     const std::string cache_dir = fs_get_cache_directory();
     const std::vector<common_file_info> files = fs_list_files(cache_dir);
+
+    // First, add any Hugging Face manifests (router-compatible identifiers)
     for (const auto & file : files) {
-        if (string_starts_with(file.name, "manifest=") && string_ends_with(file.name, ".json")) {
-            common_cached_model_info model_info;
-            model_info.manifest_path = file.path;
-            std::string fname = file.name;
-            string_replace_all(fname, ".json", ""); // remove extension
-            auto parts = string_split<std::string>(fname, '=');
-            if (parts.size() == 4) {
-                // expect format: manifest=<user>=<model>=<tag>=<other>
-                model_info.user  = parts[1];
-                model_info.model = parts[2];
-                model_info.tag   = parts[3];
-            } else {
-                // invalid format
-                continue;
-            }
-            model_info.size = 0; // TODO: get GGUF size, not manifest size
-            models.push_back(model_info);
+        if (!string_starts_with(file.name, "manifest=") || !string_ends_with(file.name, ".json")) {
+            continue;
         }
+
+        common_cached_model_info model_info;
+        model_info.manifest_path = file.path;
+        std::string fname = file.name;
+        string_replace_all(fname, ".json", ""); // remove extension
+        auto parts = string_split<std::string>(fname, '=');
+        if (parts.size() != 4) {
+            // invalid format
+            continue;
+        }
+
+        // expect format: manifest=<user>=<model>=<tag>=<other>
+        model_info.user  = parts[1];
+        model_info.model = parts[2];
+        model_info.tag   = parts[3];
+        model_info.size  = 0; // TODO: get GGUF size, not manifest size
+        models.push_back(model_info);
     }
+
+    // Then, expose every GGUF file in the cache directory (including symlinks)
+    for (const auto & file : files) {
+        if (!string_ends_with(file.name, ".gguf")) {
+            continue;
+        }
+
+        common_cached_model_info model_info;
+        model_info.gguf_path    = file.path;
+        model_info.size         = file.size;
+        model_info.is_local_file = true;
+        model_info.model        = file.name;
+
+        // Drop the extension for readability when reporting the display name
+        auto dot_pos = model_info.model.rfind('.');
+        if (dot_pos != std::string::npos) {
+            model_info.model.erase(dot_pos);
+        }
+
+        models.push_back(model_info);
+    }
+
+    std::sort(models.begin(), models.end(), [](const common_cached_model_info & a, const common_cached_model_info & b) {
+        return a.display_name() < b.display_name();
+    });
+
     return models;
 }
