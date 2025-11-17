@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * SSE Transport for MCP Sandbox Server
- * Implements HTTP POST (client->server) + SSE GET (server->client) transport
+ * Streamable HTTP Transport for MCP Sandbox Server
+ * Implements HTTP POST (client->server) + Streamable HTTP GET (server->client) transport
  */
 
 const http = require('http');
@@ -12,7 +12,7 @@ const toolsModule = require('./lib/tools');
 const server = new MCPServer(config, toolsModule);
 server.setupSignalHandlers();
 
-const { host, port } = config.sse;
+const { host, port } = config.streamable_http;
 
 // Session management
 const sessions = new Map(); // sessionId -> { res, pendingNotifications }
@@ -21,7 +21,7 @@ function generateSessionId() {
 	return 'sess_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
 }
 
-console.error('[Sandbox MCP] Starting SSE transport');
+console.error('[Sandbox MCP] Starting Streamable HTTP transport');
 console.error(`[Sandbox MCP] Listening on http://${host}:${port}`);
 console.error(`[Sandbox MCP] Tools available: ${server.tools.length}`);
 
@@ -41,7 +41,7 @@ const httpServer = http.createServer(async (req, res) => {
 
 	const sessionId = req.headers['mcp-session-id'];
 
-	// GET: Open SSE stream for server->client notifications
+	// GET: Open Streamable HTTP stream for server->client notifications
 	if (req.method === 'GET') {
 		if (!sessionId || !sessions.has(sessionId)) {
 			res.writeHead(404, corsHeaders);
@@ -67,7 +67,7 @@ const httpServer = http.createServer(async (req, res) => {
 
 		req.on('close', () => {
 			session.res = null;
-			console.error(`[Sandbox MCP] SSE stream closed for session ${sessionId}`);
+			console.error(`[Sandbox MCP] Streamable HTTP stream closed for session ${sessionId}`);
 		});
 
 		return;
@@ -170,7 +170,7 @@ const httpServer = http.createServer(async (req, res) => {
 });
 
 httpServer.listen(port, host, () => {
-	console.error(`[Sandbox MCP] SSE server listening on http://${host}:${port}`);
+	console.error(`[Sandbox MCP] Streamable HTTP server listening on http://${host}:${port}`);
 });
 
 httpServer.on('error', (error) => {

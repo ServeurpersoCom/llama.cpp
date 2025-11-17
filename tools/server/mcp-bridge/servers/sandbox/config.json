@@ -19,13 +19,13 @@
 		"outputsRoot": "/var/www/ia/outputs"
 	},
 
-	"sse": {
-		"host": "0.0.0.0",
+	"streamable_http": {
+		"host": "127.0.0.1",
 		"port": 8083
 	},
 
 	"websocket": {
-		"host": "0.0.0.0",
+		"host": "127.0.0.1",
 		"port": 8084
 	},
 

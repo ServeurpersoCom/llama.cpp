@@ -784,7 +784,14 @@ class ProxySSE {
 		}
 
 		const trimmed = content.trim();
-		return /^data:image\/(png|jpe?g|gif|webp);base64,[a-zA-Z0-9+/=]+$/.test(trimmed);
+		const match = trimmed.match(/^data:image\/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/]+=*)$/);
+
+		if (!match) {
+			return false;
+		}
+
+		const base64Payload = match[2];
+		return base64Payload.length > 0 && base64Payload.length % 4 === 0;
 	}
 
 	async _readStreamSecure(reader) {

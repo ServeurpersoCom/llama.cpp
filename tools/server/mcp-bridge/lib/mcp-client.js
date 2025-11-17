@@ -4,6 +4,7 @@
 
 const TransportStdio = require('./transport-stdio.js');
 const TransportWebSocket = require('./transport-websocket.js');
+const TransportStreamableHTTP = require('./transport-streamable-http.js');
 const Protocol = require('./protocol.js');
 
 class MCPClient {
@@ -61,7 +62,7 @@ class MCPClient {
 			serverState.protocolVersion = negotiatedVersion;
 
 			// Send initialized notification as required by MCP lifecycle
-			serverState.transport.send(Protocol.createNotification('initialized'));
+			serverState.transport.send(Protocol.createNotification('notifications/initialized'));
 
 			// Discover tools
 			await this._refreshTools(name);
@@ -219,6 +220,9 @@ class MCPClient {
 			case 'websocket':
 			case 'ws':
 				return new TransportWebSocket(transportConfig);
+			case 'streamable-http':
+			case 'http':
+				return new TransportStreamableHTTP(transportConfig);
 			default:
 				throw new Error(
 					`Unsupported transport "${transportType}" for server "${serverName}"`
@@ -249,13 +253,13 @@ class MCPClient {
 				return reject(err);
 			}
 
-			// Timeout 30s
+			// Timeout 300s
 			setTimeout(() => {
 				if (serverState.pending.has(id)) {
 					serverState.pending.delete(id);
 					reject(new Error(`Timeout: ${method} on ${serverName}`));
 				}
-			}, 30000);
+			}, 300000);
 		});
 	}
 

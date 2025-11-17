@@ -15,7 +15,7 @@ class MCPServer {
 		switch (method) {
 			case 'initialize':
 				return this.handleInitialize(id);
-			case 'initialized':
+			case 'notifications/initialized':
 				return null;
 			case 'tools/list':
 				return this.handleToolsList(id);
