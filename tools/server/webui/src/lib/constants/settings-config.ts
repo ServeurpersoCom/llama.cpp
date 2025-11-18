@@ -17,6 +17,10 @@ export const SETTING_CONFIG_DEFAULT: Record<string, string | number | boolean> =
 	disableAutoScroll: false,
 	renderUserContentAsMarkdown: false,
 	modelSelectorEnabled: false,
+	mcpServers: '[]',
+	agenticMaxTurns: 10,
+	agenticMaxToolPreviewLines: 25,
+	agenticFilterReasoningAfterFirstTurn: true,
 	// make sure these default values are in sync with `common.h`
 	samplers: 'top_k;typ_p;top_p;min_p;temperature',
 	temperature: 0.8,
@@ -99,6 +103,14 @@ export const SETTING_CONFIG_INFO: Record<string, string> = {
 	renderUserContentAsMarkdown: 'Render user messages using markdown formatting in the chat.',
 	modelSelectorEnabled:
 		'Enable the model selector in the chat input to choose the inference model. Sends the associated model field in API requests.',
+	mcpServers:
+		'Configure MCP servers as a JSON list. Use the form in the MCP Client settings section to edit.',
+	agenticMaxTurns:
+		'Maximum number of tool execution cycles before stopping (prevents infinite loops).',
+	agenticMaxToolPreviewLines:
+		'Number of lines shown in tool output previews (last N lines). Only these previews and the final LLM response persist after the agentic loop completes.',
+	agenticFilterReasoningAfterFirstTurn:
+		'Only show reasoning from the first agentic turn. When disabled, reasoning from all turns is merged in one (WebUI limitation).',
 	pyInterpreterEnabled:
 		'Enable Python interpreter using Pyodide. Allows running Python code in markdown code blocks.',
 	enableContinueGeneration:

@@ -392,6 +392,12 @@ class ProxySSE {
 
 				currentTurn++;
 			} catch (error) {
+				// Check if error is due to client disconnection (stop button)
+				if (sessionState.clientDisconnected) {
+					this._log('Client disconnection during LLM call (expected)');
+					break;
+				}
+
 				// Handle LLM backend communication errors
 				this._log(`Error during LLM call: ${error.message}`);
 
@@ -404,7 +410,7 @@ class ProxySSE {
 					choices: [
 						{
 							delta: {
-								content: `\n\nUpstream LLM error:\n\`\`\`\n${errorDetails}\n\`\`\`\n`
+								content: `\n\n\`\`\`\nUpstream LLM error:\n${errorDetails}\n\`\`\`\n`
 							},
 							finish_reason: 'stop'
 						}
@@ -430,7 +436,7 @@ class ProxySSE {
 			const warningChunk = {
 				choices: [
 					{
-						delta: { content: '\n\nTurn limit reached' }
+						delta: { content: '\n\n```\nTurn limit reached\n```\n' }
 					}
 				]
 			};

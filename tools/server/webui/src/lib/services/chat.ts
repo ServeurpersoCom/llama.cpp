@@ -20,6 +20,10 @@ import type {
 } from '$lib/types/database';
 import type { ChatMessagePromptProgress, ChatMessageTimings } from '$lib/types/chat';
 import type { SettingsChatServiceOptions } from '$lib/types/settings';
+import { ensureMcpClient } from '$lib/services/mcp-singleton';
+import { getAgenticConfig } from '$lib/config/agentic';
+import { AgenticOrchestrator } from '$lib/agentic/orchestrator';
+import { OpenAISseClient } from '$lib/agentic/openai-sse-client';
 /**
  * ChatService - Low-level API communication layer for llama.cpp server interactions
  *
@@ -190,6 +194,74 @@ export class ChatService {
 				Object.assign(requestBody, customParams);
 			} catch (error) {
 				console.warn('Failed to parse custom parameters:', error);
+			}
+		}
+
+		// MCP agentic orchestration (low-coupling mode)
+		// Check if MCP client is available and agentic mode is enabled
+		const mcpClient = await ensureMcpClient();
+		const agenticConfig = getAgenticConfig(currentConfig);
+
+		// Debug: verify MCP tools are available
+		if (mcpClient) {
+			const availableTools = mcpClient.listTools();
+			console.log(`[MCP] Client initialized with ${availableTools.length} tools:`, availableTools);
+		} else {
+			console.log('[MCP] No MCP client available');
+		}
+
+		if (mcpClient && agenticConfig.enabled && stream) {
+			// MCP mode: use AgenticOrchestrator to handle tool calling loop
+			try {
+				const apiKey = currentConfig.apiKey?.toString().trim();
+				const buildHeaders = apiKey ? () => ({ Authorization: `Bearer ${apiKey}` }) : undefined;
+
+				const llmClient = new OpenAISseClient({
+					url: './v1/chat/completions',
+					buildHeaders
+				});
+
+				const orchestrator = new AgenticOrchestrator({
+					mcpClient,
+					llmClient,
+					maxTurns: agenticConfig.maxTurns,
+					maxToolPreviewLines: agenticConfig.maxToolPreviewLines
+				});
+
+				// Capture last timings from orchestrator
+				let capturedTimings: ChatMessageTimings | undefined;
+				await orchestrator.run({
+					initialMessages: processedMessages,
+					requestTemplate: requestBody,
+					callbacks: {
+						onChunk,
+						onReasoningChunk,
+						onToolCallChunk,
+						onModel,
+						onFirstValidChunk,
+						// Capture timings from onProcessingUpdate and pass to onComplete
+						onComplete: onComplete
+							? () => onComplete('', undefined, capturedTimings, undefined)
+							: undefined,
+						onError
+					},
+					abortSignal: abortController.signal,
+					onProcessingUpdate: (timings, progress) => {
+						if (timings) {
+							capturedTimings = timings;
+						}
+						this.updateProcessingState(timings, progress, conversationId);
+					},
+					maxTurns: agenticConfig.maxTurns,
+					filterReasoningAfterFirstTurn: agenticConfig.filterReasoningAfterFirstTurn
+				});
+
+				return;
+			} catch (error) {
+				// If MCP orchestration fails, log and fall through to standard flow
+				console.warn('MCP orchestration failed, falling back to standard flow:', error);
+			} finally {
+				this.abortControllers.delete(requestId);
 			}
 		}
 
