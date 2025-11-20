@@ -21,7 +21,7 @@ import type {
 import type { ChatMessagePromptProgress, ChatMessageTimings } from '$lib/types/chat';
 import type { SettingsChatServiceOptions } from '$lib/types/settings';
 import { ensureMcpClient } from '$lib/services/mcp-injection';
-import { getAgenticConfig } from '$lib/agentic/config';
+import { getAgenticConfig } from '$lib/config/agentic';
 import { AgenticOrchestrator } from '$lib/agentic';
 import { OpenAISseClient } from '$lib/agentic/openai-sse-client';
 /**

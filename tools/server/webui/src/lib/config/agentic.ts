@@ -1,4 +1,4 @@
-import { mcpConfig } from '$lib/mcp/config';
+import { mcpConfig } from './mcp';
 
 /**
  * Agentic orchestration configuration.

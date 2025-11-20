@@ -4,7 +4,7 @@ import type {
 	MCPClientInfo,
 	MCPServerConfig,
 	MCPTransportType
-} from './types';
+} from '../mcp/types';
 
 /**
  * MCP server configuration entry.

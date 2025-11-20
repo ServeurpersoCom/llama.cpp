@@ -1,7 +1,7 @@
 import { browser } from '$app/environment';
 import { MCPClient } from '$lib/mcp';
 import type { MCPClientConfig } from '$lib/mcp';
-import { buildMcpClientConfig } from '$lib/mcp/config';
+import { buildMcpClientConfig } from '$lib/config/mcp';
 
 /**
  * Lightweight bootstrapper that instantiates a shared MCP client.
