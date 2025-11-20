@@ -99,9 +99,15 @@ export class AgenticOrchestrator {
 					params.abortSignal
 				);
 			} catch (error) {
+				// Check if error is due to abort signal (stop button)
+				if (params.abortSignal?.aborted) {
+					params.callbacks.onComplete?.();
+					return;
+				}
+
 				const normalizedError = error instanceof Error ? error : new Error('LLM stream error');
 				params.callbacks.onError?.(normalizedError);
-				const errorChunk = `\n\nUpstream LLM error:\n\`\`\`\n${normalizedError.message}\n\`\`\`\n`;
+				const errorChunk = `\n\n\`\`\`\nUpstream LLM error:\n${normalizedError.message}\n\`\`\`\n`;
 				params.callbacks.onChunk?.(errorChunk);
 				params.callbacks.onComplete?.();
 				return;
@@ -147,10 +153,19 @@ export class AgenticOrchestrator {
 
 				const result = await this.executeTool(toolCall, params.abortSignal).catch(
 					(error: Error) => {
-						params.callbacks.onError?.(error);
+						// Don't show error for AbortError
+						if (error.name !== 'AbortError') {
+							params.callbacks.onError?.(error);
+						}
 						return `Error: ${error.message}`;
 					}
 				);
+
+				// Stop silently if aborted during tool execution
+				if (params.abortSignal?.aborted) {
+					params.callbacks.onComplete?.();
+					return;
+				}
 
 				this.emitToolPreview(result, params.callbacks.onChunk);
 
@@ -163,7 +178,7 @@ export class AgenticOrchestrator {
 			}
 		}
 
-		params.callbacks.onChunk?.('\n\nTurn limit reached.\n');
+		params.callbacks.onChunk?.('\n\n```\nTurn limit reached\n```\n');
 		params.callbacks.onComplete?.();
 	}
 
