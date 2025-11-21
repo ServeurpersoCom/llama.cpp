@@ -2,154 +2,134 @@ import type {
 	MCPClientCapabilities,
 	MCPClientConfig,
 	MCPClientInfo,
-	MCPServerConfig,
-	MCPTransportType
+	MCPServerConfig
 } from '../mcp/types';
+import type { SettingsConfigType } from '$lib/types/settings';
 
 /**
- * MCP server configuration entry.
- * Supports both WebSocket and Streamable HTTP transports.
+ * Raw MCP server configuration entry stored in settings.
  */
-export type MCPServerEntry = {
-	transport?: string;
-	url?: string;
-	headers?: Record<string, string>;
-	protocols?: string | string[];
-	credentials?: RequestCredentials;
-	sessionId?: string;
-	connectionTimeoutMs?: number;
+export type MCPServerSettingsEntry = {
+	id: string;
+	enabled: boolean;
+	url: string;
+	requestTimeoutSeconds: number;
 };
 
-/**
- * MCP client configuration.
- */
-export type MCPConfig = {
-	protocolVersion?: string;
-	capabilities?: MCPClientCapabilities;
-	clientInfo?: MCPClientInfo;
-	requestTimeoutMs?: number;
-	servers?: Record<string, MCPServerEntry>;
-};
-
-/**
- * Default MCP configuration values.
- *
- * Timeouts are configured for local development with potentially long-running operations:
- * - connectionTimeoutMs: 10s for establishing connections (WebSocket handshake, HTTP initial connect)
- * - requestTimeoutMs: 300s (5 minutes) for MCP tool execution
- *   Long timeout accounts for operations like: git cloning, sandbox initialization,
- *   large file processing, external API calls, etc.
- */
 const defaultMcpConfig = {
 	protocolVersion: '2025-06-18',
 	capabilities: { tools: { listChanged: true } } as MCPClientCapabilities,
 	clientInfo: { name: 'llama-webui-mcp', version: 'dev' } as MCPClientInfo,
-	requestTimeoutMs: 300_000, // 5 minutes for long-running tools
+	requestTimeoutSeconds: 300, // 5 minutes for long-running tools
 	connectionTimeoutMs: 10_000 // 10 seconds for connection establishment
 };
 
-/**
- * MCP servers configuration.
- * Add your MCP servers here for development.
- *
- * Configuration parameters:
- * - transport: 'websocket' or 'streamable_http' (default: 'streamable_http')
- * - url: Server endpoint URL (required)
- * - headers: Custom HTTP headers for streamable_http transport
- * - protocols: WebSocket subprotocols for websocket transport
- * - credentials: Fetch credentials policy ('include', 'same-origin', 'omit')
- * - sessionId: Pre-negotiated session ID for streamable_http
- * - connectionTimeoutMs: Connection timeout (both transports, default: 10000ms)
- *
- * Global settings:
- * - requestTimeoutMs: Timeout for MCP tool execution (default: 300000ms = 5 minutes)
- *   Generous timeout for long operations: git clone, sandbox init, file processing, etc.
- *
- * @example
- * ```typescript
- * servers: {
- *   'local-mcp': {
- *     transport: 'websocket',
- *     url: 'ws://localhost:3100',
- *     protocols: ['mcp'],
- *     connectionTimeoutMs: 15000  // Override default 10s
- *   }
- * }
- * ```
- */
-export const mcpConfig: MCPConfig = {
-	protocolVersion: defaultMcpConfig.protocolVersion,
-	capabilities: defaultMcpConfig.capabilities,
-	clientInfo: defaultMcpConfig.clientInfo,
-	requestTimeoutMs: defaultMcpConfig.requestTimeoutMs,
-	servers: {
-		serveurperso: {
-			transport: 'streamable_http',
-			url: 'https://www.serveurperso.com/ia/mcp-streamable-http'
-			// Uses global requestTimeoutMs (300s = 5 minutes)
-			// Uses default connectionTimeoutMs (10s)
-		}
-		// Example WebSocket server with custom timeouts:
-		// 'local-mcp': {
-		//	transport: 'websocket',
-		//	url: 'ws://localhost:3100',
-		//	protocols: ['mcp'],
-		//	connectionTimeoutMs: 15000  // 15s connection timeout
-		// },
-		// Example Streamable HTTP server with authentication:
-		// 'authenticated-server': {
-		//	transport: 'streamable_http',
-		//	url: 'https://api.example.com/mcp',
-		//	credentials: 'include',  // Send cookies
-		//	headers: {
-		//		'X-API-Key': 'your-api-key'
-		//	}
-		// }
-	}
-};
-
-/**
- * Normalizes transport type string to MCPTransportType.
- */
-function normalizeTransport(transport?: string): MCPTransportType {
-	return transport?.toLowerCase() === 'websocket' ? 'websocket' : 'streamable_http';
+export function detectMcpTransportFromUrl(url: string): 'websocket' | 'streamable_http' {
+	const normalized = url.trim().toLowerCase();
+	return normalized.startsWith('ws://') || normalized.startsWith('wss://')
+		? 'websocket'
+		: 'streamable_http';
 }
 
-/**
- * Converts an MCP server entry to an MCP server config.
- */
-function buildServerConfig(entry: MCPServerEntry): MCPServerConfig | undefined {
+function normalizeRequestTimeoutSeconds(value: unknown, fallback: number): number {
+	const parsed = typeof value === 'string' ? Number.parseFloat(value) : Number(value);
+	if (!Number.isFinite(parsed) || parsed <= 0) {
+		return fallback;
+	}
+
+	return parsed;
+}
+
+function sanitizeId(id: unknown, index: number): string {
+	if (typeof id === 'string' && id.trim()) {
+		return id.trim();
+	}
+
+	return `server-${index + 1}`;
+}
+
+function sanitizeUrl(url: unknown): string {
+	if (typeof url === 'string') {
+		return url.trim();
+	}
+
+	return '';
+}
+
+export function parseMcpServerSettings(
+	rawServers: unknown,
+	fallbackRequestTimeoutSeconds = defaultMcpConfig.requestTimeoutSeconds
+): MCPServerSettingsEntry[] {
+	if (!rawServers) return [];
+
+	let parsed: unknown;
+	if (typeof rawServers === 'string') {
+		const trimmed = rawServers.trim();
+		if (!trimmed) return [];
+
+		try {
+			parsed = JSON.parse(trimmed);
+		} catch (error) {
+			console.warn('[MCP] Failed to parse mcpServers JSON, ignoring value:', error);
+			return [];
+		}
+	} else {
+		parsed = rawServers;
+	}
+
+	if (!Array.isArray(parsed)) return [];
+
+	return parsed.map((entry, index) => {
+		const requestTimeoutSeconds = normalizeRequestTimeoutSeconds(
+			(entry as { requestTimeoutSeconds?: unknown })?.requestTimeoutSeconds,
+			fallbackRequestTimeoutSeconds
+		);
+
+		const url = sanitizeUrl((entry as { url?: unknown })?.url);
+
+		return {
+			id: sanitizeId((entry as { id?: unknown })?.id, index),
+			enabled: Boolean((entry as { enabled?: unknown })?.enabled),
+			url,
+			requestTimeoutSeconds
+		} satisfies MCPServerSettingsEntry;
+	});
+}
+
+function buildServerConfig(
+	entry: MCPServerSettingsEntry,
+	connectionTimeoutMs = defaultMcpConfig.connectionTimeoutMs
+): MCPServerConfig | undefined {
 	if (!entry?.url) {
 		return undefined;
 	}
 
 	return {
 		url: entry.url,
-		transport: normalizeTransport(entry.transport),
-		headers: entry.headers,
-		protocols: entry.protocols,
-		credentials: entry.credentials,
-		sessionId: entry.sessionId,
-		handshakeTimeoutMs: entry.connectionTimeoutMs ?? defaultMcpConfig.connectionTimeoutMs
+		transport: detectMcpTransportFromUrl(entry.url),
+		handshakeTimeoutMs: connectionTimeoutMs,
+		requestTimeoutMs: Math.round(entry.requestTimeoutSeconds * 1000)
 	};
 }
 
 /**
- * Builds MCP client configuration from mcpConfig.
+ * Builds MCP client configuration from settings.
  * Returns undefined if no valid servers are configured.
  */
-export function buildMcpClientConfig(): MCPClientConfig | undefined {
-	const rawServers = mcpConfig.servers;
+export function buildMcpClientConfig(config: SettingsConfigType): MCPClientConfig | undefined {
+	const rawServers = parseMcpServerSettings(config.mcpServers);
 
-	if (!rawServers || Object.keys(rawServers).length === 0) {
+	if (!rawServers.length) {
 		return undefined;
 	}
 
 	const servers: Record<string, MCPServerConfig> = {};
-	for (const [name, entry] of Object.entries(rawServers)) {
+	for (const [index, entry] of rawServers.entries()) {
+		if (!entry.enabled) continue;
+
 		const normalized = buildServerConfig(entry);
 		if (normalized) {
-			servers[name] = normalized;
+			servers[sanitizeId(entry.id, index)] = normalized;
 		}
 	}
 
@@ -158,10 +138,14 @@ export function buildMcpClientConfig(): MCPClientConfig | undefined {
 	}
 
 	return {
-		protocolVersion: mcpConfig.protocolVersion ?? defaultMcpConfig.protocolVersion,
-		capabilities: mcpConfig.capabilities ?? defaultMcpConfig.capabilities,
-		clientInfo: mcpConfig.clientInfo ?? defaultMcpConfig.clientInfo,
-		requestTimeoutMs: mcpConfig.requestTimeoutMs ?? defaultMcpConfig.requestTimeoutMs,
+		protocolVersion: defaultMcpConfig.protocolVersion,
+		capabilities: defaultMcpConfig.capabilities,
+		clientInfo: defaultMcpConfig.clientInfo,
+		requestTimeoutMs: Math.round(defaultMcpConfig.requestTimeoutSeconds * 1000),
 		servers
 	};
+}
+
+export function hasEnabledMcpServers(config: SettingsConfigType): boolean {
+	return Boolean(buildMcpClientConfig(config));
 }

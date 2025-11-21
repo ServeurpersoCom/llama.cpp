@@ -55,7 +55,7 @@ export type MCPClientCapabilities = Record<string, unknown>;
 export type MCPTransportType = 'websocket' | 'streamable_http';
 
 export type MCPServerConfig = {
-	/** MCP transport type. Defaults to `websocket`. */
+	/** MCP transport type. Defaults to `streamable_http`. */
 	transport?: MCPTransportType;
 	/** Remote MCP endpoint URL. */
 	url: string;
@@ -67,6 +67,8 @@ export type MCPServerConfig = {
 	credentials?: RequestCredentials;
 	/** Optional handshake timeout override (ms). */
 	handshakeTimeoutMs?: number;
+	/** Optional per-server request timeout override (ms). */
+	requestTimeoutMs?: number;
 	/** Optional per-server capability overrides. */
 	capabilities?: MCPClientCapabilities;
 	/** Optional pre-negotiated session identifier for Streamable HTTP transport. */

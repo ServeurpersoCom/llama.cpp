@@ -10,12 +10,14 @@
 		Moon,
 		ChevronLeft,
 		ChevronRight,
-		Database
+		Database,
+		Cable
 	} from '@lucide/svelte';
 	import {
 		ChatSettingsFooter,
 		ChatSettingsImportExportTab,
-		ChatSettingsFields
+		ChatSettingsFields,
+		McpSettingsSection
 	} from '$lib/components/app';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
 	import { config, updateMultipleConfig } from '$lib/stores/settings.svelte';
@@ -220,6 +222,27 @@
 			]
 		},
 		{
+			title: 'MCP Client',
+			icon: Cable,
+			fields: [
+				{
+					key: 'agenticMaxTurns',
+					label: 'Agentic loop max turns',
+					type: 'input'
+				},
+				{
+					key: 'agenticMaxToolPreviewLines',
+					label: 'Agentic tool preview lines',
+					type: 'input'
+				},
+				{
+					key: 'agenticFilterReasoningAfterFirstTurn',
+					label: 'Filter reasoning after first turn',
+					type: 'checkbox'
+				}
+			]
+		},
+		{
 			title: 'Import/Export',
 			icon: Database,
 			fields: []
@@ -323,7 +346,9 @@
 			'dry_multiplier',
 			'dry_base',
 			'dry_allowed_length',
-			'dry_penalty_last_n'
+			'dry_penalty_last_n',
+			'agenticMaxTurns',
+			'agenticMaxToolPreviewLines'
 		];
 
 		for (const field of numericFields) {
@@ -471,6 +496,16 @@
 
 				{#if currentSection.title === 'Import/Export'}
 					<ChatSettingsImportExportTab />
+				{:else if currentSection.title === 'MCP Client'}
+					<div class="space-y-6">
+						<McpSettingsSection {localConfig} onConfigChange={handleConfigChange} />
+						<ChatSettingsFields
+							fields={currentSection.fields}
+							{localConfig}
+							onConfigChange={handleConfigChange}
+							onThemeChange={handleThemeChange}
+						/>
+					</div>
 				{:else}
 					<div class="space-y-6">
 						<ChatSettingsFields

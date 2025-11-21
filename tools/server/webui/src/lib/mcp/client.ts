@@ -28,6 +28,7 @@ interface ServerState {
 	pending: Map<number, PendingRequest>;
 	requestId: number;
 	tools: MCPToolDefinition[];
+	requestTimeoutMs?: number;
 	capabilities?: MCPServerCapabilities;
 	protocolVersion?: string;
 }
@@ -163,7 +164,8 @@ export class MCPClient {
 			transport,
 			pending: new Map(),
 			requestId: 0,
-			tools: []
+			tools: [],
+			requestTimeoutMs: config.requestTimeoutMs
 		};
 
 		transport.onMessage((message) => this.handleMessage(name, message));
@@ -256,7 +258,8 @@ export class MCPClient {
 		const id = ++state.requestId;
 		const message = JsonRpcProtocol.createRequest(id, method, params);
 
-		const timeoutDuration = this.config.requestTimeoutMs ?? DEFAULT_TIMEOUT;
+		const timeoutDuration =
+			state.requestTimeoutMs ?? this.config.requestTimeoutMs ?? DEFAULT_TIMEOUT;
 
 		if (abortSignal?.aborted) {
 			return Promise.reject(new DOMException('Aborted', 'AbortError'));

@@ -20,9 +20,9 @@ import type {
 } from '$lib/types/database';
 import type { ChatMessagePromptProgress, ChatMessageTimings } from '$lib/types/chat';
 import type { SettingsChatServiceOptions } from '$lib/types/settings';
-import { ensureMcpClient } from '$lib/services/mcp-injection';
+import { ensureMcpClient } from '$lib/services/mcp-singleton';
 import { getAgenticConfig } from '$lib/config/agentic';
-import { AgenticOrchestrator } from '$lib/agentic';
+import { AgenticOrchestrator } from '$lib/agentic/orchestrator';
 import { OpenAISseClient } from '$lib/agentic/openai-sse-client';
 /**
  * ChatService - Low-level API communication layer for llama.cpp server interactions
@@ -200,7 +200,7 @@ export class ChatService {
 		// MCP agentic orchestration (low-coupling mode)
 		// Check if MCP client is available and agentic mode is enabled
 		const mcpClient = await ensureMcpClient();
-		const agenticConfig = getAgenticConfig();
+		const agenticConfig = getAgenticConfig(currentConfig);
 
 		// Debug: verify MCP tools are available
 		if (mcpClient) {
