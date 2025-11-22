@@ -52,11 +52,6 @@ class MCPClient {
 			});
 
 			const negotiatedVersion = initResult?.protocolVersion || '2025-06-18';
-			if (negotiatedVersion !== '2025-06-18') {
-				throw new Error(
-					`Unsupported MCP protocol version from "${name}": ${negotiatedVersion}`
-				);
-			}
 
 			serverState.capabilities = initResult?.capabilities || {};
 			serverState.protocolVersion = negotiatedVersion;
@@ -198,21 +193,24 @@ class MCPClient {
 
 	// Private methods
 
-	_createTransport(serverName, serverConfig) {
-		const rawTransport = serverConfig.transport ?? 'stdio';
-		let transportType;
-		let transportConfig = serverConfig;
-
-		if (typeof rawTransport === 'string') {
-			transportType = rawTransport.toLowerCase();
-		} else if (rawTransport && typeof rawTransport === 'object') {
-			transportType = (rawTransport.type || 'stdio').toLowerCase();
-			transportConfig = { ...serverConfig, ...rawTransport };
-			delete transportConfig.transport;
-			delete transportConfig.type;
-		} else {
-			transportType = 'stdio';
+	_detectTransportType(serverConfig) {
+		if (serverConfig?.command) {
+			return 'stdio';
 		}
+
+		const normalizedUrl = (serverConfig?.url || '').trim().toLowerCase();
+		if (normalizedUrl.startsWith('ws://') || normalizedUrl.startsWith('wss://')) {
+			return 'websocket';
+		}
+
+		return 'streamable-http';
+	}
+
+	_createTransport(serverName, serverConfig) {
+		const transportType = this._detectTransportType(serverConfig);
+		const transportConfig = { ...serverConfig };
+		delete transportConfig.transport;
+		delete transportConfig.type;
 
 		switch (transportType) {
 			case 'stdio':
