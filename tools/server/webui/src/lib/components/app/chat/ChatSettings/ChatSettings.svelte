@@ -232,7 +232,7 @@
 				},
 				{
 					key: 'agenticMaxToolPreviewLines',
-					label: 'Agentic tool preview lines',
+					label: 'Max lines per tool preview',
 					type: 'input'
 				},
 				{

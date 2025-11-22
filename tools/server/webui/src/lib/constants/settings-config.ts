@@ -102,9 +102,10 @@ export const SETTING_CONFIG_INFO: Record<string, string> = {
 		'Enable the model selector in the chat input to choose the inference model. Sends the associated model field in API requests.',
 	mcpServers:
 		'Configure MCP servers as a JSON list. Use the form in the MCP Client settings section to edit.',
-	agenticMaxTurns: 'Maximum number of agentic loop turns before stopping.',
+	agenticMaxTurns:
+		'Maximum number of tool execution cycles before stopping (prevents infinite loops).',
 	agenticMaxToolPreviewLines:
-		'Number of lines to display when previewing tool output in the agentic loop.',
+		'Number of lines shown in tool output previews (last N lines). Only these previews and the final LLM response persist after the agentic loop completes.',
 	agenticFilterReasoningAfterFirstTurn:
 		'Only show reasoning from the first agentic turn. When disabled, reasoning from all turns is merged in one (WebUI limitation).',
 	pyInterpreterEnabled:

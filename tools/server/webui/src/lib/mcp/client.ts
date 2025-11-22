@@ -182,11 +182,6 @@ export class MCPClient {
 		});
 
 		const negotiatedVersion = (initResult?.protocolVersion as string) ?? protocolVersion;
-		if (negotiatedVersion !== protocolVersion) {
-			throw new Error(
-				`MCP server "${name}" responded with unsupported protocol version ${negotiatedVersion}`
-			);
-		}
 
 		state.capabilities = (initResult?.capabilities as MCPServerCapabilities) ?? {};
 		state.protocolVersion = negotiatedVersion;

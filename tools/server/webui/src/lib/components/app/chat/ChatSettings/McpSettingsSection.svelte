@@ -109,7 +109,6 @@
 					</div>
 
 					<div class="ml-auto flex items-center gap-2">
-						<span class="text-xs text-muted-foreground">Enabled</span>
 						<Button
 							variant="ghost"
 							size="icon"
