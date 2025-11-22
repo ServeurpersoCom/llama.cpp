@@ -24,6 +24,10 @@ const defaultMcpConfig = {
 	connectionTimeoutMs: 10_000 // 10 seconds for connection establishment
 };
 
+export function getDefaultMcpConfig() {
+	return defaultMcpConfig;
+}
+
 export function detectMcpTransportFromUrl(url: string): 'websocket' | 'streamable_http' {
 	const normalized = url.trim().toLowerCase();
 	return normalized.startsWith('ws://') || normalized.startsWith('wss://')

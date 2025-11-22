@@ -1,3 +1,4 @@
+import { getDefaultMcpConfig } from '$lib/config/mcp';
 import { JsonRpcProtocol } from './protocol';
 import type {
 	JsonRpcMessage,
@@ -13,9 +14,7 @@ import type { MCPTransport } from './transports/types';
 import { WebSocketTransport } from './transports/websocket';
 import { StreamableHttpTransport } from './transports/streamable-http';
 
-const DEFAULT_PROTOCOL_VERSION = '2025-06-18';
-const DEFAULT_CLIENT_INFO = { name: 'llama-webui-mcp', version: 'dev' };
-const DEFAULT_TIMEOUT = 30_000;
+const MCP_DEFAULTS = getDefaultMcpConfig();
 
 interface PendingRequest {
 	resolve: (value: Record<string, unknown>) => void;
@@ -156,7 +155,7 @@ export class MCPClient {
 	}
 
 	private async initializeServer(name: string, config: MCPServerConfig): Promise<void> {
-		const protocolVersion = this.config.protocolVersion ?? DEFAULT_PROTOCOL_VERSION;
+		const protocolVersion = this.config.protocolVersion ?? MCP_DEFAULTS.protocolVersion;
 		const transport = this.createTransport(config, protocolVersion);
 		await transport.start();
 
@@ -171,9 +170,9 @@ export class MCPClient {
 		transport.onMessage((message) => this.handleMessage(name, message));
 		this.servers.set(name, state);
 
-		const clientInfo = this.config.clientInfo ?? DEFAULT_CLIENT_INFO;
-		const capabilities = config.capabilities ??
-			this.config.capabilities ?? { tools: { listChanged: true } };
+		const clientInfo = this.config.clientInfo ?? MCP_DEFAULTS.clientInfo;
+		const capabilities =
+			config.capabilities ?? this.config.capabilities ?? MCP_DEFAULTS.capabilities;
 
 		const initResult = await this.call(name, 'initialize', {
 			protocolVersion,
@@ -254,7 +253,9 @@ export class MCPClient {
 		const message = JsonRpcProtocol.createRequest(id, method, params);
 
 		const timeoutDuration =
-			state.requestTimeoutMs ?? this.config.requestTimeoutMs ?? DEFAULT_TIMEOUT;
+			state.requestTimeoutMs ??
+			this.config.requestTimeoutMs ??
+			MCP_DEFAULTS.requestTimeoutSeconds * 1000;
 
 		if (abortSignal?.aborted) {
 			return Promise.reject(new DOMException('Aborted', 'AbortError'));
