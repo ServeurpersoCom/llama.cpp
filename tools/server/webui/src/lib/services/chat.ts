@@ -239,13 +239,9 @@ export class ChatService {
 						onToolCallChunk,
 						onModel,
 						onFirstValidChunk,
+						// Capture timings from onProcessingUpdate and pass to onComplete
 						onComplete: onComplete
-							? () => {
-									// Pass captured timings from onProcessingUpdate
-									if (onComplete) {
-										onComplete('', undefined, capturedTimings, undefined);
-									}
-								}
+							? () => onComplete('', undefined, capturedTimings, undefined)
 							: undefined,
 						onError
 					},

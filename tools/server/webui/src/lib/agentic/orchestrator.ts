@@ -187,16 +187,14 @@ export class AgenticOrchestrator {
 			return [];
 		}
 
-		return toolCalls
-			.map((call, index) => ({
-				id: call?.id ?? `tool_${index}`,
-				type: (call?.type as 'function') ?? 'function',
-				function: {
-					name: call?.function?.name ?? '',
-					arguments: call?.function?.arguments ?? ''
-				}
-			}))
-			.filter((call) => call.function.name.trim().length > 0);
+		return toolCalls.map((call, index) => ({
+			id: call?.id ?? `tool_${index}`,
+			type: (call?.type as 'function') ?? 'function',
+			function: {
+				name: call?.function?.name ?? '',
+				arguments: call?.function?.arguments ?? ''
+			}
+		}));
 	}
 
 	private async executeTool(

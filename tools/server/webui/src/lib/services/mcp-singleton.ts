@@ -18,40 +18,28 @@ function serializeConfigSignature(): string | undefined {
 async function shutdownClient(): Promise<void> {
 	if (!globalState.__llamaMcpClient) return;
 
+	const clientToShutdown = globalState.__llamaMcpClient;
+	globalState.__llamaMcpClient = undefined;
+	globalState.__llamaMcpConfigSignature = undefined;
+
 	try {
-		await globalState.__llamaMcpClient.shutdown();
+		await clientToShutdown.shutdown();
 	} catch (error) {
 		console.error('[MCP] Failed to shutdown client:', error);
-	} finally {
-		globalState.__llamaMcpClient = undefined;
-		globalState.__llamaMcpConfigSignature = undefined;
 	}
 }
 
-async function bootstrapClient(): Promise<MCPClient | undefined> {
-	if (!browser) {
+async function bootstrapClient(
+	signature: string,
+	mcpConfig: ReturnType<typeof buildMcpClientConfig>
+): Promise<MCPClient | undefined> {
+	if (!browser || !mcpConfig) {
 		return undefined;
-	}
-
-	const mcpConfig = buildMcpClientConfig(config());
-	const signature = mcpConfig ? JSON.stringify(mcpConfig) : undefined;
-	if (!mcpConfig || !signature) {
-		return undefined;
-	}
-
-	if (globalState.__llamaMcpClient && globalState.__llamaMcpConfigSignature === signature) {
-		return globalState.__llamaMcpClient;
-	}
-
-	if (
-		globalState.__llamaMcpInitPromise &&
-		globalState.__llamaMcpInitConfigSignature === signature
-	) {
-		return globalState.__llamaMcpInitPromise;
 	}
 
 	const client = new MCPClient(mcpConfig);
 	globalState.__llamaMcpInitConfigSignature = signature;
+
 	const initPromise = client
 		.initialize()
 		.then(() => {
@@ -72,23 +60,32 @@ async function bootstrapClient(): Promise<MCPClient | undefined> {
 		})
 		.catch((error) => {
 			console.error('[MCP] Failed to initialize client:', error);
+
+			// Cleanup global references on error
+			if (globalState.__llamaMcpClient === client) {
+				globalState.__llamaMcpClient = undefined;
+			}
+			if (globalState.__llamaMcpConfigSignature === signature) {
+				globalState.__llamaMcpConfigSignature = undefined;
+			}
+
 			void client.shutdown().catch((shutdownError) => {
 				console.error('[MCP] Failed to shutdown client after init error:', shutdownError);
 			});
 			return undefined;
 		})
 		.finally(() => {
+			// Clear init promise only if it's OUR promise
 			if (globalState.__llamaMcpInitPromise === initPromise) {
 				globalState.__llamaMcpInitPromise = undefined;
-			}
-
-			if (globalState.__llamaMcpInitConfigSignature === signature) {
-				globalState.__llamaMcpInitConfigSignature = undefined;
+				// Clear init signature only if it's still ours
+				if (globalState.__llamaMcpInitConfigSignature === signature) {
+					globalState.__llamaMcpInitConfigSignature = undefined;
+				}
 			}
 		});
 
 	globalState.__llamaMcpInitPromise = initPromise;
-
 	return initPromise;
 }
 
@@ -101,20 +98,43 @@ export async function ensureMcpClient(): Promise<MCPClient | undefined> {
 
 	// Configuration removed: shut down active client if present
 	if (!signature) {
+		// Wait for any in-flight init to complete before shutdown
+		if (globalState.__llamaMcpInitPromise) {
+			await globalState.__llamaMcpInitPromise;
+		}
 		await shutdownClient();
 		globalState.__llamaMcpInitPromise = undefined;
 		globalState.__llamaMcpInitConfigSignature = undefined;
 		return undefined;
 	}
 
-	if (globalState.__llamaMcpConfigSignature !== signature) {
-		await shutdownClient();
-
-		if (globalState.__llamaMcpInitConfigSignature !== signature) {
-			globalState.__llamaMcpInitPromise = undefined;
-			globalState.__llamaMcpInitConfigSignature = undefined;
-		}
+	// Client already initialized with correct config
+	if (globalState.__llamaMcpClient && globalState.__llamaMcpConfigSignature === signature) {
+		return globalState.__llamaMcpClient;
 	}
 
-	return globalState.__llamaMcpClient ?? bootstrapClient();
+	// Init in progress with correct config
+	if (
+		globalState.__llamaMcpInitPromise &&
+		globalState.__llamaMcpInitConfigSignature === signature
+	) {
+		return globalState.__llamaMcpInitPromise;
+	}
+
+	// Config changed - wait for in-flight init before shutdown
+	if (
+		globalState.__llamaMcpInitPromise &&
+		globalState.__llamaMcpInitConfigSignature !== signature
+	) {
+		await globalState.__llamaMcpInitPromise;
+	}
+
+	// Shutdown if config changed
+	if (globalState.__llamaMcpConfigSignature !== signature) {
+		await shutdownClient();
+	}
+
+	// Bootstrap new client
+	const mcpConfig = buildMcpClientConfig(config());
+	return bootstrapClient(signature, mcpConfig);
 }

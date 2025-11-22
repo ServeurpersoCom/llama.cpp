@@ -397,9 +397,8 @@ export class MCPClient {
 			if (typed.type === 'text' && typeof typed.text === 'string') {
 				return typed.text;
 			}
-			if (typed.type === 'image' && typeof typed.data === 'string') {
-				const mime = typed.mimeType ?? 'application/octet-stream';
-				return `data:${mime};base64,${typed.data}`;
+			if (typed.type === 'image' && typeof typed.data === 'string' && typed.mimeType) {
+				return `data:${typed.mimeType};base64,${typed.data}`;
 			}
 			if (typed.type === 'resource' && typed.resource) {
 				return JSON.stringify(typed.resource);
