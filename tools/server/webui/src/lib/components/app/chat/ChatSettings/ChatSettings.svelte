@@ -107,6 +107,11 @@
 					type: 'checkbox'
 				},
 				{
+					key: 'disableAutoScroll',
+					label: 'Disable automatic scroll',
+					type: 'checkbox'
+				},
+				{
 					key: 'renderUserContentAsMarkdown',
 					label: 'Render user content as Markdown',
 					type: 'checkbox'
