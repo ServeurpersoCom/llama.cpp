@@ -1,5 +1,5 @@
+#include "http/context.h"
 #include "server-common.h"
-#include "server-http.h"
 #include "server-task.h"
 #include "server-queue.h"
 
@@ -12,8 +12,15 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
+// auto generated files (see README.md for details)
+#include "index.html.gz.hpp"
+#include "loading.html.hpp"
+
+#include <chrono>
 #include <atomic>
+#include <algorithm>
 #include <cstddef>
+#include <cstdio>
 #include <cinttypes>
 #include <memory>
 #include <signal.h>
@@ -32,6 +39,23 @@
 using json = nlohmann::ordered_json;
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+
+static void http_log_adapter(int level, const char * message) {
+    switch (level) {
+        case SERVER_HTTP_LOG_LEVEL_ERROR:
+            LOG_ERR("%s", message);
+            break;
+        case SERVER_HTTP_LOG_LEVEL_WARN:
+            LOG_WRN("%s", message);
+            break;
+        case SERVER_HTTP_LOG_LEVEL_INFO:
+            LOG_INF("%s", message);
+            break;
+        default:
+            LOG_DBG("%s", message);
+            break;
+    }
+}
 
 // state diagram: https://github.com/ggml-org/llama.cpp/pull/9283
 enum slot_state {
@@ -2518,20 +2542,20 @@ struct server_response_reader {
                     SRV_DBG("%s", "stopping wait for next result due to should_stop condition\n");
                     return nullptr;
                 }
-            } else {
-                if (result->is_error()) {
-                    stop(); // cancel remaining tasks
-                    SRV_DBG("%s", "received error result, stopping further processing\n");
-                    return result;
-                }
-                if (result->is_stop()) {
-                    received_count++;
-                }
+                // timeout, continue
+                continue;
+            }
+
+            if (result->is_error()) {
+                stop(); // cancel remaining tasks
+                SRV_DBG("%s", "received error result, stopping further processing\n");
                 return result;
             }
+            if (result->is_stop()) {
+                received_count++;
+            }
+            return result;
         }
-
-        // should not reach here
     }
 
     struct batch_response {
@@ -2600,9 +2624,9 @@ struct server_res_generator : server_http_res {
 struct server_routes {
     const common_params & params;
     server_context & ctx_server;
-    server_http_context & ctx_http; // for reading is_ready
-    server_routes(const common_params & params, server_context & ctx_server, server_http_context & ctx_http)
-        : params(params), ctx_server(ctx_server), ctx_http(ctx_http) {}
+    std::shared_ptr<readiness_provider> readiness;
+    server_routes(const common_params & params, server_context & ctx_server, std::shared_ptr<readiness_provider> readiness)
+        : params(params), ctx_server(ctx_server), readiness(std::move(readiness)) {}
 
 public:
     // handlers using lambda function, so that they can capture `this` without `std::bind`
@@ -3006,7 +3030,7 @@ public:
 
     server_http_context::handler_t get_models = [this](const server_http_req &) {
         auto res = std::make_unique<server_res_generator>(ctx_server);
-        bool is_model_ready = ctx_http.is_ready.load();
+        bool is_model_ready = readiness ? readiness->is_ready() : true;
         json model_meta = nullptr;
         if (is_model_ready) {
             model_meta = ctx_server.model_meta();
@@ -3355,7 +3379,7 @@ private:
             res->data = format_sse(first_result->to_json()); // to be sent immediately
             res->status = 200;
             res->content_type = "text/event-stream";
-            res->next = [res_this = res.get(), oaicompat, &should_stop](std::string & output) -> bool {
+            res->next = [res_this = res.get(), oaicompat, should_stop](std::string & output) {
                 if (should_stop()) {
                     SRV_DBG("%s", "stopping streaming due to should_stop condition\n");
                     return false; // should_stop condition met
@@ -3367,7 +3391,6 @@ private:
                     res_this->data.clear();
                     return true;
                 }
-
                 server_response_reader & rd = res_this->rd;
 
                 // check if there is more data
@@ -3391,16 +3414,16 @@ private:
                 // send the results
                 json res_json = result->to_json();
                 if (result->is_error()) {
-                    output = format_sse(json {{ "error", res_json }});
+                    output = format_sse(json{{"error", res_json}});
                     SRV_DBG("%s", "error received during streaming, terminating stream\n");
-                    return false; // terminate on error
-                } else {
-                    GGML_ASSERT(
-                        dynamic_cast<server_task_result_cmpl_partial*>(result.get()) != nullptr
-                        || dynamic_cast<server_task_result_cmpl_final*>(result.get()) != nullptr
-                    );
-                    output = format_sse(res_json);
+                    return false;
                 }
+
+                GGML_ASSERT(
+                    dynamic_cast<server_task_result_cmpl_partial*>(result.get()) != nullptr
+                    || dynamic_cast<server_task_result_cmpl_final*>(result.get()) != nullptr
+                );
+                output = format_sse(res_json);
 
                 // has next data, continue
                 return true;
@@ -3684,8 +3707,36 @@ int main(int argc, char ** argv) {
     LOG_INF("%s\n", common_params_get_system_info(params).c_str());
     LOG_INF("\n");
 
+    auto readiness = std::make_shared<flag_readiness_provider>();
+    server_http_config http_config;
+    http_config.logger          = http_log_adapter;
+    http_config.path_prefix     = params.api_prefix;
+    http_config.hostname        = params.hostname;
+    http_config.port            = params.port;
+    http_config.timeout_read    = params.timeout_read;
+    http_config.timeout_write   = params.timeout_write;
+    http_config.n_threads_http  = params.n_threads_http;
+    http_config.parallelism_hint = params.n_parallel;
+    http_config.webui           = params.webui;
+    http_config.public_path     = params.public_path;
+    http_config.ssl_file_key    = params.ssl_file_key;
+    http_config.ssl_file_cert   = params.ssl_file_cert;
+    http_config.readiness       = readiness;
+    http_config.middleware.api_keys = params.api_keys;
+    http_config.middleware.public_endpoints = {
+        "/health",
+        "/v1/health",
+        "/models",
+        "/v1/models",
+        "/api/tags",
+    };
+    http_config.loading_html.assign(reinterpret_cast<const char *>(loading_html), loading_html_len);
+    if (params.webui && params.public_path.empty()) {
+        http_config.index_html_gz.assign(reinterpret_cast<const char *>(index_html_gz), index_html_gz_len);
+    }
+
     server_http_context ctx_http;
-    if (!ctx_http.init(params)) {
+    if (!ctx_http.init(http_config)) {
         LOG_ERR("%s: failed to initialize HTTP server\n", __func__);
         return 1;
     }
@@ -3695,7 +3746,7 @@ int main(int argc, char ** argv) {
     //
 
     // register API routes
-    server_routes routes(params, ctx_server, ctx_http);
+    server_routes routes(params, ctx_server, readiness);
 
     ctx_http.get ("/health",              ex_wrapper(routes.get_health)); // public endpoint (no API key check)
     ctx_http.get ("/v1/health",           ex_wrapper(routes.get_health)); // public endpoint (no API key check)
@@ -3762,7 +3813,7 @@ int main(int argc, char ** argv) {
     }
 
     ctx_server.init();
-    ctx_http.is_ready.store(true);
+    ctx_http.set_ready(true);
 
     LOG_INF("%s: model loaded\n", __func__);
 

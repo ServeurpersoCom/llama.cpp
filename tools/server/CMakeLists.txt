@@ -11,10 +11,20 @@ if (NOT LLAMA_HTTPLIB)
     message(FATAL_ERROR "LLAMA_HTTPLIB is OFF, cannot build llama-server. Hint: to skip building server, set -DLLAMA_BUILD_SERVER=OFF")
 endif()
 
+set(HTTP_SRCS
+    http/context.cpp
+    http/streaming.cpp
+)
+
+add_library(llama-http STATIC ${HTTP_SRCS})
+target_include_directories(llama-http PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/vendor)
+target_link_libraries(llama-http PRIVATE cpp-httplib)
+if (TARGET nlohmann_json::nlohmann_json)
+    target_link_libraries(llama-http PRIVATE nlohmann_json::nlohmann_json)
+endif()
+
 set(TARGET_SRCS
     server.cpp
-    server-http.cpp
-    server-http.h
     server-task.cpp
     server-task.h
     server-queue.cpp
@@ -44,7 +54,7 @@ install(TARGETS ${TARGET} RUNTIME)
 
 target_include_directories(${TARGET} PRIVATE ../mtmd)
 target_include_directories(${TARGET} PRIVATE ${CMAKE_SOURCE_DIR})
-target_link_libraries(${TARGET} PRIVATE common mtmd cpp-httplib ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(${TARGET} PRIVATE llama-http common mtmd cpp-httplib ${CMAKE_THREAD_LIBS_INIT})
 
 if (WIN32)
     TARGET_LINK_LIBRARIES(${TARGET} PRIVATE ws2_32)
