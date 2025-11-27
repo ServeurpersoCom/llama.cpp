@@ -12,6 +12,7 @@
 		deleteConversation,
 		updateConversationName
 	} from '$lib/stores/chat.svelte';
+	import { getPreviewText } from '$lib/utils/text';
 	import ChatSidebarActions from './ChatSidebarActions.svelte';
 
 	const sidebar = Sidebar.useSidebar();
@@ -23,6 +24,9 @@
 	let showEditDialog = $state(false);
 	let selectedConversation = $state<DatabaseConversation | null>(null);
 	let editedName = $state('');
+	let selectedConversationNamePreview = $derived.by(() =>
+		selectedConversation ? getPreviewText(selectedConversation.name) : ''
+	);
 
 	let filteredConversations = $derived.by(() => {
 		if (searchQuery.trim().length > 0) {
@@ -162,7 +166,7 @@
 	bind:open={showDeleteDialog}
 	title="Delete Conversation"
 	description={selectedConversation
-		? `Are you sure you want to delete "${selectedConversation.name}"? This action cannot be undone and will permanently remove all messages in this conversation.`
+		? `Are you sure you want to delete "${selectedConversationNamePreview}"? This action cannot be undone and will permanently remove all messages in this conversation.`
 		: ''}
 	confirmText="Delete"
 	cancelText="Cancel"
