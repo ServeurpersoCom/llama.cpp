@@ -1,4 +1,4 @@
-import { getAuthHeaders, getJsonHeaders } from '$lib/utils';
+import { getAuthHeaders, getJsonHeaders } from '$lib/utils/api-headers';
 import { AttachmentType } from '$lib/enums';
 import { config } from '$lib/stores/settings.svelte';
 import { ensureMcpClient } from '$lib/services/mcp-singleton';

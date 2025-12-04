@@ -1,6 +1,6 @@
 import { base } from '$app/paths';
 import { ServerModelStatus } from '$lib/enums';
-import { getJsonHeaders } from '$lib/utils';
+import { getJsonHeaders } from '$lib/utils/api-headers';
 
 /**
  * ModelsService - Stateless service for model management API communication
