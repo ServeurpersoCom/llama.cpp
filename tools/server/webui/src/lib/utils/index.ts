@@ -8,7 +8,6 @@
  */
 
 // API utilities
-export { getAuthHeaders, getJsonHeaders } from './api-headers';
 export { validateApiKey } from './api-key-validation';
 
 // Attachment utilities
