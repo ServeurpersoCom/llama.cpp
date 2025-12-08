@@ -12,8 +12,6 @@ set(TARGET_SRCS
     server-http.h
     server-models.cpp
     server-models.h
-    server-config.cpp
-    server-config.h
     server-task.cpp
     server-task.h
     server-queue.cpp
