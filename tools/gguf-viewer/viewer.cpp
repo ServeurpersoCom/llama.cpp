@@ -19,6 +19,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -27,13 +28,53 @@
 #include <cstring>
 #include <limits>
 
+#include "app.js.hpp"
+#include "architecture.js.hpp"
+#include "browser.js.hpp"
+#include "common.js.hpp"
+#include "heatmap.js.hpp"
 #include "index.html.hpp"
+#include "metadata.js.hpp"
+#include "statistics.js.hpp"
+#include "tensors.js.hpp"
+#include "tokenizer.js.hpp"
+#include "viewer.css.hpp"
 
 namespace fs = std::filesystem;
 
 namespace {
 
 using json = nlohmann::json;
+
+struct embedded_asset {
+    std::string_view   path;
+    const unsigned char * data;
+    size_t             size;
+    std::string_view   mime;
+};
+
+const std::array<embedded_asset, 11> PUBLIC_ASSETS = {{
+    {"/index.html", index_html, index_html_len, "text/html; charset=utf-8"},
+    {"/app.js", app_js, app_js_len, "application/javascript"},
+    {"/architecture.js", architecture_js, architecture_js_len, "application/javascript"},
+    {"/browser.js", browser_js, browser_js_len, "application/javascript"},
+    {"/common.js", common_js, common_js_len, "application/javascript"},
+    {"/heatmap.js", heatmap_js, heatmap_js_len, "application/javascript"},
+    {"/metadata.js", metadata_js, metadata_js_len, "application/javascript"},
+    {"/statistics.js", statistics_js, statistics_js_len, "application/javascript"},
+    {"/tensors.js", tensors_js, tensors_js_len, "application/javascript"},
+    {"/tokenizer.js", tokenizer_js, tokenizer_js_len, "application/javascript"},
+    {"/viewer.css", viewer_css, viewer_css_len, "text/css; charset=utf-8"},
+}};
+
+const embedded_asset * find_public_asset(std::string_view path) {
+    for (const auto & asset : PUBLIC_ASSETS) {
+        if (asset.path == path) {
+            return &asset;
+        }
+    }
+    return nullptr;
+}
 
 struct tensor_layout {
     size_t width  = 1;
@@ -247,6 +288,10 @@ std::string url_decode(const std::string & value) {
 void set_json_response(httplib::Response & res, const json & body, int status = 200) {
     res.status = status;
     res.set_content(body.dump(), "application/json");
+}
+
+void set_asset_response(httplib::Response & res, const embedded_asset & asset) {
+    res.set_content(reinterpret_cast<const char *>(asset.data), asset.size, std::string(asset.mime));
 }
 
 std::shared_ptr<viewer_state> load_state(const std::string & model_path);
@@ -1674,9 +1719,22 @@ bool ensure_count_in_range(size_t & offset, size_t & limit, size_t total) {
 }
 
 void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state) {
-    server.Get("/", [](const httplib::Request &, httplib::Response & res) {
-        res.set_content(reinterpret_cast<const char *>(index_html), index_html_len, "text/html; charset=utf-8");
-    });
+    auto serve_public = [](const httplib::Request & req, httplib::Response & res) {
+        std::string_view path = req.path;
+        if (path == "/") {
+            path = "/index.html";
+        }
+        if (path.rfind("/api", 0) == 0) {
+            res.status = 404;
+            return;
+        }
+
+        if (const auto * asset = find_public_asset(path)) {
+            set_asset_response(res, *asset);
+        } else {
+            res.status = 404;
+        }
+    };
 
     server.Get("/api/models", [state](const httplib::Request & req, httplib::Response & res) {
         json body;
@@ -2115,6 +2173,8 @@ void setup_routes(httplib::Server & server, std::shared_ptr<server_state> state)
             set_json_response(res, body);
         });
     });
+
+    server.Get(R"(/(?!api/).*)", serve_public);
 }
 
 std::shared_ptr<viewer_state> load_state(const std::string & model_path) {
