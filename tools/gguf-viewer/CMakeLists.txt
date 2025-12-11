@@ -7,7 +7,17 @@ set(TARGET_SRCS
 )
 
 set(PUBLIC_ASSETS
+    app.js
+    architecture.js
+    browser.js
+    common.js
+    heatmap.js
     index.html
+    metadata.js
+    statistics.js
+    tensors.js
+    tokenizer.js
+    viewer.css
 )
 
 foreach(asset ${PUBLIC_ASSETS})
