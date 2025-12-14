@@ -103,7 +103,7 @@ int main(int argc, char ** argv, char ** envp) {
         }
     }
 
-    params.webui_config = std::move(webui_settings);
+    params.webui_config_json = webui_settings.dump();
 
     // TODO: should we have a separate n_parallel parameter for the server?
     //       https://github.com/ggml-org/llama.cpp/pull/16736#discussion_r2483763177

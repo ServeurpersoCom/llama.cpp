@@ -12,8 +12,6 @@
 #include <vector>
 #include <map>
 
-#include <nlohmann/json.hpp>
-
 #if defined(_WIN32) && !defined(_WIN32_WINNT)
 #define _WIN32_WINNT 0x0A00
 #endif
@@ -485,7 +483,7 @@ struct common_params {
     // "advanced" endpoints are disabled by default for better security
     bool webui            = true;
     std::string webui_config_file;
-    nlohmann::ordered_json webui_config = nlohmann::ordered_json::object();
+    std::string webui_config_json;
     bool endpoint_slots   = true;
     bool endpoint_props   = false; // only control POST requests, not GET
     bool endpoint_metrics = false;

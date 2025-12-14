@@ -3104,6 +3104,8 @@ void server_routes::init_routes() {
         }
 
         // this endpoint is publicly available, please only return what is safe to be exposed
+        json webui_settings = params.webui_config_json.empty() ? json::object() : json::parse(params.webui_config_json);
+
         json data = {
             { "default_generation_settings", default_generation_settings_for_props },
             { "total_slots",                 ctx_server.params_base.n_parallel },
@@ -3117,7 +3119,7 @@ void server_routes::init_routes() {
             { "endpoint_props",              params.endpoint_props },
             { "endpoint_metrics",            params.endpoint_metrics },
             { "webui",                       params.webui },
-            { "webui_settings",              params.webui_config },
+            { "webui_settings",              webui_settings },
             { "chat_template",               common_chat_templates_source(ctx_server.chat_templates.get()) },
             { "bos_token",                   common_token_to_piece(ctx_server.ctx, llama_vocab_bos(ctx_server.vocab), /* special= */ true)},
             { "eos_token",                   common_token_to_piece(ctx_server.ctx, llama_vocab_eos(ctx_server.vocab), /* special= */ true)},

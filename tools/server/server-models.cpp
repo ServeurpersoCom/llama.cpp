@@ -811,6 +811,7 @@ void server_models_routes::init_routes() {
         if (name.empty()) {
             // main instance
             auto res = std::make_unique<server_http_res>();
+            json webui_settings = params.webui_config_json.empty() ? json::object() : json::parse(params.webui_config_json);
             res_ok(res, {
                 // TODO: add support for this on web UI
                 {"role",          "router"},
@@ -822,7 +823,7 @@ void server_models_routes::init_routes() {
                     {"params", json{}},
                     {"n_ctx",  0},
                 }},
-                {"webui_settings", params.webui_config},
+                {"webui_settings", webui_settings},
             });
             return res;
         }
