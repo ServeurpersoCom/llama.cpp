@@ -86,7 +86,7 @@ int main(int argc, char ** argv, char ** envp) {
         try {
             webui_settings = json::parse(env);
         } catch (const std::exception & e) {
-            LOG_ERR("failed to parse LLAMA_WEBUI_CONFIG: %s\n", e.what());
+            LOG_ERR("%s: failed to parse LLAMA_WEBUI_CONFIG: %s\n", __file__, e.what());
             return 1;
         }
     } else if (!params.webui_config_file.empty()) {
