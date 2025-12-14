@@ -2,18 +2,23 @@
 #include "server-http.h"
 #include "server-models.h"
 
+#include "server-common.h"
 #include "arg.h"
 #include "common.h"
 #include "llama.h"
 #include "log.h"
 
 #include <atomic>
+#include <cstdlib>
+#include <fstream>
 #include <signal.h>
 #include <thread> // for std::thread::hardware_concurrency
 
 #if defined(_WIN32)
 #include <windows.h>
 #endif
+
+using json = nlohmann::ordered_json;
 
 static std::function<void(int)> shutdown_handler;
 static std::atomic_flag is_terminating = ATOMIC_FLAG_INIT;
@@ -27,6 +32,67 @@ static inline void signal_handler(int signal) {
     }
 
     shutdown_handler(signal);
+}
+
+static bool is_valid_webui_setting_value(const json & value) {
+    return value.is_boolean() || value.is_number() || value.is_string();
+}
+
+static bool merge_webui_settings(const json & overrides, json & target, const std::string & source) {
+    if (overrides.is_null()) {
+        return true;
+    }
+
+    if (!overrides.is_object()) {
+        LOG_ERR("%s must be a JSON object of key/value pairs\n", source.c_str());
+        return false;
+    }
+
+    for (const auto & [key, value] : overrides.items()) {
+        if (!is_valid_webui_setting_value(value)) {
+            LOG_WRN("%s: ignoring '%s' because the value type is not supported (expected string/number/boolean)\n", source.c_str(), key.c_str());
+            continue;
+        }
+        target[key] = value;
+    }
+
+    return true;
+}
+
+static bool load_webui_config_from_file(const std::string & path, json & target) {
+    if (path.empty()) {
+        return true;
+    }
+
+    std::ifstream file(path);
+    if (!file.is_open()) {
+        LOG_WRN("failed to open webui config file '%s', continuing with defaults\n", path.c_str());
+        return true;
+    }
+
+    try {
+        json parsed = json::parse(file);
+        return merge_webui_settings(parsed, target, string_format("webui config file '%s'", path.c_str()));
+    } catch (const std::exception & e) {
+        LOG_ERR("failed to parse webui config file '%s' as JSON: %s\n", path.c_str(), e.what());
+        return false;
+    }
+}
+
+static void merge_webui_config_from_env(json & target) {
+    const char * env_value = std::getenv("LLAMA_WEBUI_CONFIG");
+    if (env_value == nullptr) {
+        return;
+    }
+
+    try {
+        json parsed = json::parse(env_value);
+        if (!merge_webui_settings(parsed, target, "LLAMA_WEBUI_CONFIG")) {
+            LOG_ERR("ignoring LLAMA_WEBUI_CONFIG because it is not a JSON object\n");
+        }
+    } catch (const std::exception & e) {
+        LOG_ERR("failed to parse LLAMA_WEBUI_CONFIG as JSON: %s\n", e.what());
+    }
 }
 
 // wrapper function that handles exceptions and logs errors
@@ -72,6 +138,14 @@ int main(int argc, char ** argv, char ** envp) {
     if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SERVER)) {
         return 1;
     }
+
+    // Merge priority: WebUI built-in defaults -> config file -> LLAMA_WEBUI_CONFIG -> user localStorage
+    json webui_settings = json::object();
+    if (!load_webui_config_from_file(params.webui_config_file, webui_settings)) {
+        return 1;
+    }
+    merge_webui_config_from_env(webui_settings);
+    params.webui_config = std::move(webui_settings);
 
     // TODO: should we have a separate n_parallel parameter for the server?
     //       https://github.com/ggml-org/llama.cpp/pull/16736#discussion_r2483763177
