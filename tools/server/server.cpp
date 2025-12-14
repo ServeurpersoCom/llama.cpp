@@ -1,8 +1,8 @@
+#include "server-common.h"
 #include "server-context.h"
 #include "server-http.h"
 #include "server-models.h"
 
-#include "server-common.h"
 #include "arg.h"
 #include "common.h"
 #include "llama.h"
@@ -86,7 +86,7 @@ int main(int argc, char ** argv, char ** envp) {
         try {
             webui_settings = json::parse(env);
         } catch (const std::exception & e) {
-            LOG_ERR("%s: failed to parse LLAMA_WEBUI_CONFIG: %s\n", __file__, e.what());
+            LOG_ERR("%s: failed to parse LLAMA_WEBUI_CONFIG: %s\n", __func__, e.what());
             return 1;
         }
     } else if (!params.webui_config_file.empty()) {
@@ -95,11 +95,11 @@ int main(int argc, char ** argv, char ** envp) {
             try {
                 webui_settings = json::parse(file);
             } catch (const std::exception & e) {
-                LOG_ERR("%s: failed to parse webui config file: %s\n", __file__, e.what());
+                LOG_ERR("%s: failed to parse webui config file: %s\n", __func__, e.what());
                 return 1;
             }
         } else {
-            LOG_WRN("%s: webui config file not found: %s\n", __file__, params.webui_config_file.c_str());
+            LOG_WRN("%s: webui config file not found: %s\n", __func__, params.webui_config_file.c_str());
         }
     }
 
