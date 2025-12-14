@@ -99,7 +99,7 @@ int main(int argc, char ** argv, char ** envp) {
                 return 1;
             }
         } else {
-            LOG_WRN("webui config file not found: %s\n", params.webui_config_file.c_str());
+            LOG_WRN("%s: webui config file not found: %s\n", __file__, params.webui_config_file.c_str());
         }
     }
 
