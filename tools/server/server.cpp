@@ -9,16 +9,13 @@
 #include "log.h"
 
 #include <atomic>
-#include <cstdlib>
-#include <fstream>
+#include <exception>
 #include <signal.h>
 #include <thread> // for std::thread::hardware_concurrency
 
 #if defined(_WIN32)
 #include <windows.h>
 #endif
-
-using json = nlohmann::ordered_json;
 
 static std::function<void(int)> shutdown_handler;
 static std::atomic_flag is_terminating = ATOMIC_FLAG_INIT;
@@ -78,33 +75,6 @@ int main(int argc, char ** argv, char ** envp) {
         return 1;
     }
 
-    json webui_settings = json::object();
-
-    // Env var takes full precedence
-    const char * env = std::getenv("LLAMA_WEBUI_CONFIG");
-    if (env != nullptr) {
-        try {
-            webui_settings = json::parse(env);
-        } catch (const std::exception & e) {
-            LOG_ERR("%s: failed to parse LLAMA_WEBUI_CONFIG: %s\n", __func__, e.what());
-            return 1;
-        }
-    } else if (!params.webui_config_file.empty()) {
-        std::ifstream file(params.webui_config_file);
-        if (file.is_open()) {
-            try {
-                webui_settings = json::parse(file);
-            } catch (const std::exception & e) {
-                LOG_ERR("%s: failed to parse webui config file: %s\n", __func__, e.what());
-                return 1;
-            }
-        } else {
-            LOG_WRN("%s: webui config file not found: %s\n", __func__, params.webui_config_file.c_str());
-        }
-    }
-
-    params.webui_config_json = webui_settings.dump();
-
     // TODO: should we have a separate n_parallel parameter for the server?
     //       https://github.com/ggml-org/llama.cpp/pull/16736#discussion_r2483763177
     // TODO: this is a common configuration that is suitable for most local use cases
@@ -151,7 +121,12 @@ int main(int argc, char ** argv, char ** envp) {
     std::optional<server_models_routes> models_routes{};
     if (is_router_server) {
         // setup server instances manager
-        models_routes.emplace(params, argc, argv, envp);
+        try {
+            models_routes.emplace(params, argc, argv, envp);
+        } catch (const std::exception & e) {
+            LOG_ERR("%s: failed to initialize router models: %s\n", __func__, e.what());
+            return 1;
+        }
 
         // proxy handlers
         // note: routes.get_health stays the same

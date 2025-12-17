@@ -2494,10 +2494,17 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_API_PREFIX"));
     add_opt(common_arg(
-        {"--webui-config-file"}, "PATH",
-        "JSON file that provides default WebUI settings (overrides WebUI defaults; can be overridden by LLAMA_WEBUI_CONFIG)",
+        {"--webui-config"}, "JSON",
+        "JSON that provides default WebUI settings (overrides WebUI defaults)",
         [](common_params & params, const std::string & value) {
-            params.webui_config_file = value;
+            params.webui_config_json = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_WEBUI_CONFIG"));
+    add_opt(common_arg(
+        {"--webui-config-file"}, "PATH",
+        "JSON file that provides default WebUI settings (overrides WebUI defaults)",
+        [](common_params & params, const std::string & value) {
+            params.webui_config_json = read_file(value);
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_WEBUI_CONFIG_FILE"));
     add_opt(common_arg(
