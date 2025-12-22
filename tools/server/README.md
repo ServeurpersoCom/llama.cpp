@@ -213,6 +213,7 @@ For the ful list of features, please refer to [server's changelog](https://githu
 | `-sps, --slot-prompt-similarity SIMILARITY` | how much the prompt of a request must match the prompt of a slot in order to use that slot (default: 0.10, 0.0 = disabled) |
 | `--lora-init-without-apply` | load LoRA adapters without applying them (apply later via POST /lora-adapters) (default: disabled) |
 | `--sleep-idle-seconds SECONDS` | number of seconds of idleness after which the server will sleep (default: -1; -1 = disabled) |
+| `--shutdown-timeout SECONDS` | after requested shutdown, wait for this many seconds before forcing termination (default: 10; -1 = disabled) |
 | `-td, --threads-draft N` | number of threads to use during generation (default: same as --threads) |
 | `-tbd, --threads-batch-draft N` | number of threads to use during batch and prompt processing (default: same as --threads-draft) |
 | `--draft, --draft-n, --draft-max N` | number of tokens to draft for speculative decoding (default: 16)<br/>(env: LLAMA_ARG_DRAFT_MAX) |
