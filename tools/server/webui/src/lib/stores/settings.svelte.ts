@@ -52,7 +52,7 @@ class SettingsStore {
 	// ─────────────────────────────────────────────────────────────────────────────
 
 	config = $state<SettingsConfigType>({});
-	theme = $state<string>('auto');
+	theme = $state<string>('system');
 	isInitialized = $state(false);
 	userOverrides = $state<Set<string>>(new Set());
 
@@ -134,7 +134,7 @@ class SettingsStore {
 	private loadTheme() {
 		if (!browser) return;
 
-		this.theme = localStorage.getItem('theme') || 'auto';
+		this.theme = localStorage.getItem('theme') || 'system';
 	}
 	// ─────────────────────────────────────────────────────────────────────────────
 	// Config Updates
@@ -246,7 +246,7 @@ class SettingsStore {
 		if (!browser) return;
 
 		try {
-			if (this.theme === 'auto') {
+			if (this.theme === 'system') {
 				localStorage.removeItem('theme');
 			} else {
 				localStorage.setItem('theme', this.theme);
@@ -270,10 +270,10 @@ class SettingsStore {
 	}
 
 	/**
-	 * Reset theme to auto
+	 * Reset theme to system
 	 */
 	resetTheme() {
-		this.theme = 'auto';
+		this.theme = 'system';
 		this.saveTheme();
 	}
 
