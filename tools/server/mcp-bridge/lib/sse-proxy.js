@@ -477,6 +477,7 @@ class ProxySSE {
 
 		// Accumulation state for current turn
 		let accumulatedContent = '';
+		let accumulatedReasoning = '';
 		const toolBuffers = {};
 		const toolIndexMap = {};
 		let sawToolDelta = false;
@@ -525,6 +526,15 @@ class ProxySSE {
 						data.choices[0].delta.content
 					) {
 						accumulatedContent += data.choices[0].delta.content;
+					}
+					// Accumulate reasoning_content
+					if (
+						data.choices &&
+						data.choices[0] &&
+						data.choices[0].delta &&
+						data.choices[0].delta.reasoning_content
+					) {
+						accumulatedReasoning += data.choices[0].delta.reasoning_content;
 					}
 
 					// Remove reasoning content after first turn if configured
@@ -596,6 +606,15 @@ class ProxySSE {
 						data.choices[0].delta.tool_calls
 					) {
 						sawToolDelta = true;
+						// Accumulate reasoning_content
+						if (
+							data.choices &&
+							data.choices[0] &&
+							data.choices[0].delta &&
+							data.choices[0].delta.reasoning_content
+						) {
+							accumulatedReasoning += data.choices[0].delta.reasoning_content;
+						}
 						this._accumulateToolCallsDelta(
 							toolBuffers,
 							toolIndexMap,
@@ -686,6 +705,7 @@ class ProxySSE {
 		sessionMessages.push({
 			role: 'assistant',
 			content: cleanContent || null,
+			reasoning_content: accumulatedReasoning || undefined,
 			tool_calls: toolCalls.map((tc) => ({
 				id: tc.id,
 				type: 'function',
