@@ -19,7 +19,7 @@
 		McpSettingsSection
 	} from '$lib/components/app';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
-	import { config, settingsStore } from '$lib/stores/settings.svelte';
+	import { settingsStore } from '$lib/stores/settings.svelte';
 	import { setMode } from 'mode-watcher';
 	import type { Component } from 'svelte';
 
@@ -302,7 +302,7 @@
 	let currentSection = $derived(
 		settingSections.find((section) => section.title === activeSection) || settingSections[0]
 	);
-	let localConfig: SettingsConfigType = $state({ ...config() });
+	let localConfig: SettingsConfigType = $state({ ...settingsStore.config });
 
 	let canScrollLeft = $state(false);
 	let canScrollRight = $state(false);
@@ -319,7 +319,7 @@
 	}
 
 	function handleReset() {
-		localConfig = { ...config() };
+		localConfig = { ...settingsStore.config };
 
 		setMode(localConfig.theme as 'light' | 'dark' | 'system');
 	}
@@ -411,7 +411,7 @@
 	}
 
 	export function reset() {
-		localConfig = { ...config() };
+		localConfig = { ...settingsStore.config };
 
 		setTimeout(updateScrollButtons, 100);
 	}
