@@ -1,9 +1,10 @@
 import { getAuthHeaders, getJsonHeaders } from '$lib/utils/api-headers';
 import { AttachmentType } from '$lib/enums';
-import { config } from '$lib/stores/settings.svelte';
 import { ensureMcpClient } from '$lib/services/mcp-singleton';
 import { getAgenticConfig } from '$lib/config/agentic';
 import { AgenticOrchestrator } from '$lib/agentic/orchestrator';
+import { settingsStore } from '$lib/stores/settings.svelte';
+import type { SettingsConfigType } from '$lib/types/settings';
 import { OpenAISseClient } from '$lib/agentic/openai-sse-client';
 
 /**
@@ -179,7 +180,16 @@ export class ChatService {
 		// Check if MCP client is available and agentic mode is enabled
 		if (stream) {
 			const mcpClient = await ensureMcpClient();
-			const agenticConfig = mcpClient ? getAgenticConfig(config()) : undefined;
+			const agenticConfig = mcpClient
+				? getAgenticConfig({
+						mcpServers: settingsStore.getConfig('mcpServers'),
+						agenticMaxTurns: settingsStore.getConfig('agenticMaxTurns'),
+						agenticMaxToolPreviewLines: settingsStore.getConfig('agenticMaxToolPreviewLines'),
+						agenticFilterReasoningAfterFirstTurn: settingsStore.getConfig(
+							'agenticFilterReasoningAfterFirstTurn'
+						)
+					} as SettingsConfigType)
+				: undefined;
 
 			// Debug: verify MCP tools are available
 			if (mcpClient) {

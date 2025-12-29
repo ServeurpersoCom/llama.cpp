@@ -1,7 +1,8 @@
 import { browser } from '$app/environment';
 import { MCPClient } from '$lib/mcp';
 import { buildMcpClientConfig } from '$lib/config/mcp';
-import { config } from '$lib/stores/settings.svelte';
+import { settingsStore } from '$lib/stores/settings.svelte';
+import type { SettingsConfigType } from '$lib/types/settings';
 
 const globalState = globalThis as typeof globalThis & {
 	__llamaMcpClient?: MCPClient;
@@ -11,7 +12,9 @@ const globalState = globalThis as typeof globalThis & {
 };
 
 function serializeConfigSignature(): string | undefined {
-	const mcpConfig = buildMcpClientConfig(config());
+	const mcpConfig = buildMcpClientConfig({
+		mcpServers: settingsStore.getConfig('mcpServers')
+	} as SettingsConfigType);
 	return mcpConfig ? JSON.stringify(mcpConfig) : undefined;
 }
 
@@ -135,6 +138,8 @@ export async function ensureMcpClient(): Promise<MCPClient | undefined> {
 	}
 
 	// Bootstrap new client
-	const mcpConfig = buildMcpClientConfig(config());
+	const mcpConfig = buildMcpClientConfig({
+		mcpServers: settingsStore.getConfig('mcpServers')
+	} as SettingsConfigType);
 	return bootstrapClient(signature, mcpConfig);
 }
