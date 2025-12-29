@@ -117,12 +117,10 @@ export interface ApiLlamaCppServerProps {
 		id: number;
 		id_task: number;
 		n_ctx: number;
-		speculative: boolean;
 		is_processing: boolean;
 		params: {
 			n_predict: number;
 			seed: number;
-			temperature: number;
 			dynatemp_range: number;
 			dynatemp_exponent: number;
 			top_k: number;
@@ -290,12 +288,10 @@ export interface ApiSlotData {
 	id: number;
 	id_task: number;
 	n_ctx: number;
-	speculative: boolean;
 	is_processing: boolean;
 	params: {
 		n_predict: number;
 		seed: number;
-		temperature: number;
 		dynatemp_range: number;
 		dynatemp_exponent: number;
 		top_k: number;
@@ -351,9 +347,6 @@ export interface ApiProcessingState {
 	contextTotal: number;
 	outputTokensUsed: number; // Total output tokens (thinking + regular content)
 	outputTokensMax: number; // Max output tokens allowed
-	temperature: number;
-	topP: number;
-	speculative: boolean;
 	hasNextToken: boolean;
 	tokensPerSecond?: number;
 	// Progress information from prompt_progress
