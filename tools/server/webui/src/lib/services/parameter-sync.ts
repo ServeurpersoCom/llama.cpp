@@ -112,6 +112,26 @@ export const SYNCABLE_PARAMETERS: SyncableParameter[] = [
 		type: 'boolean'
 	},
 	{
+		key: 'mcpServers',
+		serverKey: 'mcpServers',
+		type: 'string'
+	},
+	{
+		key: 'agenticMaxTurns',
+		serverKey: 'agenticMaxTurns',
+		type: 'number'
+	},
+	{
+		key: 'agenticMaxToolPreviewLines',
+		serverKey: 'agenticMaxToolPreviewLines',
+		type: 'number'
+	},
+	{
+		key: 'agenticFilterReasoningAfterFirstTurn',
+		serverKey: 'agenticFilterReasoningAfterFirstTurn',
+		type: 'boolean'
+	},
+	{
 		key: 'enableContinueGeneration',
 		serverKey: 'enableContinueGeneration',
 		type: 'boolean'
