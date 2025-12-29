@@ -89,7 +89,6 @@
 	const fallbackToolCalls = $derived(typeof toolCallContent === 'string' ? toolCallContent : null);
 
 	const processingState = useProcessingState();
-
 	let isRouter = $derived(isRouterMode());
 	let displayedModel = $derived((): string | null => {
 		if (message.model) {
