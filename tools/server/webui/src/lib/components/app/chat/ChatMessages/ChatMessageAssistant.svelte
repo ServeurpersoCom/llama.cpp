@@ -216,7 +216,7 @@
 		<div class="mt-6 w-full max-w-[48rem]" in:fade>
 			<div class="processing-container">
 				<span class="processing-text">
-					{promptProgressText() ?? processingState.getProcessingMessage()}
+					{promptProgressText ?? processingState.getProcessingMessage()}
 				</span>
 			</div>
 		</div>
