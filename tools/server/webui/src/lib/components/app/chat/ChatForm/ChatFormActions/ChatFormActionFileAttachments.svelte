@@ -4,7 +4,6 @@
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { FILE_TYPE_ICONS } from '$lib/constants/icons';
-	import McpLogo from '$lib/components/app/misc/McpLogo.svelte';
 
 	interface Props {
 		class?: string;
@@ -22,9 +21,7 @@
 		disabled = false,
 		hasAudioModality = false,
 		hasVisionModality = false,
-		showMcpOption = false,
 		onFileUpload,
-		onMcpClick,
 		onSystemPromptClick
 	}: Props = $props();
 
@@ -121,18 +118,6 @@
 					</Tooltip.Content>
 				{/if}
 			</Tooltip.Root>
-
-			{#if showMcpOption}
-				<DropdownMenu.Separator />
-				<DropdownMenu.Item
-					class="flex cursor-pointer items-center gap-2"
-					onclick={() => onMcpClick?.()}
-				>
-					<McpLogo style="width: 1rem; height: 1rem;" />
-
-					<span>MCP Servers</span>
-				</DropdownMenu.Item>
-			{/if}
 
 			<DropdownMenu.Separator />
 			<Tooltip.Root>
