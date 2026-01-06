@@ -22,9 +22,7 @@
 		disabled = false,
 		hasAudioModality = false,
 		hasVisionModality = false,
-		showMcpOption = false,
 		onFileUpload,
-		onMcpClick,
 		onSystemPromptClick
 	}: Props = $props();
 
@@ -121,18 +119,6 @@
 					</Tooltip.Content>
 				{/if}
 			</Tooltip.Root>
-
-			{#if showMcpOption}
-				<DropdownMenu.Separator />
-				<DropdownMenu.Item
-					class="flex cursor-pointer items-center gap-2"
-					onclick={() => onMcpClick?.()}
-				>
-					<McpLogo style="width: 1rem; height: 1rem;" />
-
-					<span>MCP Servers</span>
-				</DropdownMenu.Item>
-			{/if}
 
 			<DropdownMenu.Separator />
 			<Tooltip.Root>
