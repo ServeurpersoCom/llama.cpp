@@ -26,7 +26,7 @@
 		onSystemPromptClick
 	}: Props = $props();
 
-	const fileUploadTooltipText = 'Add files or MCP servers';
+	const fileUploadTooltipText = 'Add files or context';
 </script>
 
 <div class="flex items-center gap-1 {className}">
