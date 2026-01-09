@@ -4,7 +4,6 @@
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { FILE_TYPE_ICONS } from '$lib/constants/icons';
-	import McpLogo from '$lib/components/app/misc/McpLogo.svelte';
 
 	interface Props {
 		class?: string;
