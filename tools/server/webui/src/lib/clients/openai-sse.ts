@@ -166,6 +166,9 @@ export class OpenAISseClient {
 					}
 
 					processToolCalls(delta?.tool_calls);
+					if (aggregatedToolCalls.length > 0) {
+						callbacks.onToolCallChunk?.(JSON.stringify(aggregatedToolCalls));
+					}
 				}
 			}
 

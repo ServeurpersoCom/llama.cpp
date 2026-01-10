@@ -239,6 +239,42 @@ class AgenticStore {
 		// Prepare session state
 		const sessionMessages: AgenticMessage[] = toAgenticMessages(messages);
 		const allToolCalls: ApiChatCompletionToolCall[] = [];
+
+		// Wrapper to emit agentic tags progressively during streaming
+		const emittedToolCallStates = $state(
+			new Map<number, { emittedOnce: boolean; lastArgs: string }>()
+		);
+		const wrappedOnToolCallChunk = (serializedToolCalls: string) => {
+			const toolCalls: ApiChatCompletionToolCall[] = JSON.parse(serializedToolCalls);
+
+			for (let i = 0; i < toolCalls.length; i++) {
+				const toolCall = toolCalls[i];
+				const toolName = toolCall.function?.name ?? '';
+				const toolArgs = toolCall.function?.arguments ?? '';
+
+				const state = emittedToolCallStates.get(i) || { emittedOnce: false, lastArgs: '' };
+
+				if (!state.emittedOnce) {
+					// First emission: send full header + args
+					let output = `\n\n<<<AGENTIC_TOOL_CALL_START>>>`;
+					output += `\n<<<TOOL_NAME:${toolName}>>>`;
+					output += `\n<<<TOOL_ARGS_START>>>\n`;
+					output += toolArgs;
+					onChunk?.(output);
+					state.emittedOnce = true;
+					state.lastArgs = toolArgs;
+				} else if (toolArgs !== state.lastArgs) {
+					// Subsequent emissions: send only delta
+					const delta = toolArgs.slice(state.lastArgs.length);
+					onChunk?.(delta);
+					state.lastArgs = toolArgs;
+				}
+
+				emittedToolCallStates.set(i, state);
+			}
+
+			onToolCallChunk?.(serializedToolCalls);
+		};
 		let capturedTimings: ChatMessageTimings | undefined;
 
 		// Build base request from options (messages change per turn)
@@ -278,6 +314,7 @@ class AgenticStore {
 					{
 						onChunk,
 						onReasoningChunk: shouldFilterReasoning ? undefined : onReasoningChunk,
+						onToolCallChunk: wrappedOnToolCallChunk,
 						onModel,
 						onFirstValidChunk: undefined,
 						onProcessingUpdate: (timings, progress) => {
@@ -323,7 +360,6 @@ class AgenticStore {
 				});
 			}
 			this._totalToolCalls = allToolCalls.length;
-			onToolCallChunk?.(JSON.stringify(allToolCalls));
 
 			// Add assistant message with tool calls to session
 			sessionMessages.push({
@@ -338,9 +374,6 @@ class AgenticStore {
 					onComplete?.('', undefined, capturedTimings, undefined);
 					return;
 				}
-
-				// Emit tool call start (shows "pending" state in UI)
-				this.emitToolCallStart(toolCall, onChunk);
 
 				const mcpCall: MCPToolCall = {
 					id: toolCall.id,
@@ -405,26 +438,6 @@ class AgenticStore {
 	}
 
 	/**
-	 * Emit tool call start marker (shows "pending" state in UI).
-	 */
-	private emitToolCallStart(
-		toolCall: AgenticToolCallList[number],
-		emit?: (chunk: string) => void
-	): void {
-		if (!emit) return;
-
-		const toolName = toolCall.function.name;
-		const toolArgs = toolCall.function.arguments;
-		// Base64 encode args to avoid conflicts with markdown/HTML parsing
-		const toolArgsBase64 = btoa(unescape(encodeURIComponent(toolArgs)));
-
-		let output = `\n\n<<<AGENTIC_TOOL_CALL_START>>>`;
-		output += `\n<<<TOOL_NAME:${toolName}>>>`;
-		output += `\n<<<TOOL_ARGS_BASE64:${toolArgsBase64}>>>`;
-		emit(output);
-	}
-
-	/**
 	 * Emit tool call result and end marker.
 	 */
 	private emitToolCallResult(
@@ -435,6 +448,7 @@ class AgenticStore {
 		if (!emit) return;
 
 		let output = '';
+		output += `\n<<<TOOL_ARGS_END>>>`;
 		if (this.isBase64Image(result)) {
 			output += `\n![tool-result](${result.trim()})`;
 		} else {

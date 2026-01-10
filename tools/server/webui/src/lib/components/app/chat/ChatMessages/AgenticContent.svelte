@@ -73,13 +73,7 @@
 			}
 
 			const toolName = match[1];
-			const toolArgsBase64 = match[2];
-			let toolArgs = '';
-			try {
-				toolArgs = decodeURIComponent(escape(atob(toolArgsBase64)));
-			} catch {
-				toolArgs = toolArgsBase64;
-			}
+			const toolArgs = match[2]; // Direct JSON
 			const toolResult = match[3].replace(/^\n+|\n+$/g, '');
 
 			sections.push({
@@ -111,14 +105,8 @@
 			}
 
 			const toolName = pendingMatch[1];
-			const toolArgsBase64 = pendingMatch[2];
-			let toolArgs = '';
-			try {
-				toolArgs = decodeURIComponent(escape(atob(toolArgsBase64)));
-			} catch {
-				toolArgs = toolArgsBase64;
-			}
-			// Capture streaming result content (everything after args marker)
+			const toolArgs = pendingMatch[2]; // Direct JSON
+			// Capture streaming result content (everything after TOOL_ARGS_END marker)
 			const streamingResult = (pendingMatch[3] || '').replace(/^\n+|\n+$/g, '');
 
 			sections.push({
@@ -137,24 +125,7 @@
 				}
 			}
 
-			const partialArgsBase64 = partialWithNameMatch[2] || '';
-			let partialArgs = '';
-			if (partialArgsBase64) {
-				try {
-					// Try to decode - may fail if incomplete base64
-					partialArgs = decodeURIComponent(escape(atob(partialArgsBase64)));
-				} catch {
-					// If decoding fails, try padding the base64
-					try {
-						const padded =
-							partialArgsBase64 + '=='.slice(0, (4 - (partialArgsBase64.length % 4)) % 4);
-						partialArgs = decodeURIComponent(escape(atob(padded)));
-					} catch {
-						// Show raw base64 if all decoding fails
-						partialArgs = '';
-					}
-				}
-			}
+			const partialArgs = partialWithNameMatch[2] || ''; // Direct JSON streaming
 
 			sections.push({
 				type: AgenticSectionType.TOOL_CALL_STREAMING,
