@@ -289,6 +289,7 @@ class AgenticStore {
 
 		// Run agentic loop
 		for (let turn = 0; turn < maxTurns; turn++) {
+			emittedToolCallStates.clear(); // Reset for new turn
 			this._currentTurn = turn + 1;
 
 			if (signal?.aborted) {
