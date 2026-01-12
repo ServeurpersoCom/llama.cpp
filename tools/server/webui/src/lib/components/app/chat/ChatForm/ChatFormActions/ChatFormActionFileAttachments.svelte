@@ -11,8 +11,6 @@
 		hasAudioModality?: boolean;
 		hasVisionModality?: boolean;
 		onFileUpload?: () => void;
-		showMcpOption?: boolean;
-		onMcpClick?: () => void;
 		onSystemPromptClick?: () => void;
 	}
 
