@@ -17,6 +17,7 @@
 		"prettier": "^3.6.2"
 	},
 	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.25.2",
 		"ws": "^8.18.3"
 	}
 }

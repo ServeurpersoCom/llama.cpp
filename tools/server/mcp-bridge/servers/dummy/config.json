@@ -1,4 +1,14 @@
 {
+	"streamable_http": {
+		"host": "127.0.0.1",
+		"port": 8085
+	},
+
+	"websocket": {
+		"host": "127.0.0.1",
+		"port": 8086
+	},
+
 	"mcp": {
 		"protocolVersion": "2025-06-18",
 		"serverName": "dummy-mcp",
