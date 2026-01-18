@@ -1,11 +1,15 @@
 /**
- * MCP Client: Manages multiple MCP servers, discovery, routing, and execution
+ * MCP Client wrapper using @modelcontextprotocol/sdk
+ * Manages multiple MCP servers with SDK transports
  */
 
-const TransportStdio = require('./transport-stdio.js');
-const TransportWebSocket = require('./transport-websocket.js');
-const TransportStreamableHTTP = require('./transport-streamable-http.js');
-const Protocol = require('./protocol.js');
+const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
+const { StdioClientTransport } = require('@modelcontextprotocol/sdk/client/stdio.js');
+const {
+	StreamableHTTPClientTransport
+} = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
+const { SSEClientTransport } = require('@modelcontextprotocol/sdk/client/sse.js');
+const { WebSocketClientTransport } = require('@modelcontextprotocol/sdk/client/websocket.js');
 
 class MCPClient {
 	constructor(config) {
@@ -14,12 +18,11 @@ class MCPClient {
 		}
 
 		this.config = config;
-		this.servers = new Map(); // name -> { transport, tools, pending, requestId, capabilities, protocolVersion }
-		this.toolsMap = new Map(); // toolName -> serverName
+		this.clients = new Map(); // serverName -> { client, tools }
 	}
 
 	/**
-	 * Initialize all MCP servers: connect, handshake, discover tools
+	 * Initialize all MCP servers
 	 */
 	async initialize() {
 		console.log('[MCP] Initializing MCP servers...');
@@ -27,61 +30,57 @@ class MCPClient {
 		for (const [name, serverConfig] of Object.entries(this.config.servers)) {
 			console.log(`[MCP] Connecting to server "${name}"...`);
 
-			// Start transport
 			const transport = this._createTransport(name, serverConfig);
-			await transport.start();
+			const client = new Client(
+				{
+					name: 'llama-mcp-bridge',
+					version: '1.0.0'
+				},
+				{
+					capabilities: {
+						tools: {}
+					}
+				}
+			);
 
-			const serverState = {
-				transport: transport,
-				pending: new Map(),
-				requestId: 0,
-				tools: []
-			};
+			await client.connect(transport);
 
-			// Setup message handler
-			transport.onMessage((msg) => this._handleMessage(name, msg));
+			// List tools
+			const toolsResponse = await client.listTools();
+			const tools = toolsResponse.tools || [];
 
-			this.servers.set(name, serverState);
+			this.clients.set(name, { client, tools });
 
-			// Initialize MCP protocol
-			console.log(`[MCP] Initializing protocol for "${name}"...`);
-			const initResult = await this._call(name, 'initialize', {
-				protocolVersion: '2025-06-18',
-				capabilities: { tools: { listChanged: true } },
-				clientInfo: { name: 'llama-mcp-bridge', version: '1.0.0' }
-			});
-
-			const negotiatedVersion = initResult?.protocolVersion || '2025-06-18';
-
-			serverState.capabilities = initResult?.capabilities || {};
-			serverState.protocolVersion = negotiatedVersion;
-
-			// Send initialized notification as required by MCP lifecycle
-			serverState.transport.send(Protocol.createNotification('notifications/initialized'));
-
-			// Discover tools
-			await this._refreshTools(name);
-
-			console.log(`[MCP] Server "${name}" connected (${serverState.tools.length} tools)`);
+			console.log(`[MCP] Server "${name}" connected (${tools.length} tools)`);
 		}
 
-		console.log(`[MCP] Total tools discovered: ${this.toolsMap.size}`);
+		const totalTools = Array.from(this.clients.values()).reduce(
+			(sum, { tools }) => sum + tools.length,
+			0
+		);
+		console.log(`[MCP] Total tools discovered: ${totalTools}`);
 	}
 
 	/**
-	 * Execute a tool call (OpenAI format)
-	 * @param {object} toolCall - { id, function: { name, arguments } }
-	 * @returns {string} Tool result
+	 * Execute tool call (OpenAI format)
 	 */
 	async execute(toolCall) {
 		const toolName = toolCall.function.name;
-		const serverName = this.toolsMap.get(toolName);
 
-		if (!serverName) {
+		// Find server that has this tool
+		let targetServer = null;
+		for (const [serverName, { tools }] of this.clients) {
+			if (tools.some((t) => t.name === toolName)) {
+				targetServer = serverName;
+				break;
+			}
+		}
+
+		if (!targetServer) {
 			throw new Error(`Tool "${toolName}" not found in any MCP server`);
 		}
 
-		// Parse arguments if string
+		// Parse arguments
 		let args = toolCall.function.arguments;
 		if (typeof args === 'string') {
 			try {
@@ -91,54 +90,49 @@ class MCPClient {
 			}
 		}
 
-		// Call MCP server
-		const response = await this._call(serverName, 'tools/call', {
+		// Call tool via SDK
+		const { client } = this.clients.get(targetServer);
+		const response = await client.callTool({
 			name: toolName,
 			arguments: args
 		});
 
 		// Extract content from MCP response
-		if (response && typeof response === 'object') {
-			if (response.content !== undefined) {
-				const contentItems = Array.isArray(response.content)
-					? response.content
-					: [response.content];
-				const flattened = contentItems
-					.map((item) => {
-						if (item == null) return '';
-						if (typeof item === 'string') return item;
-						if (typeof item === 'object') {
-							if (item.type === 'text' && typeof item.text === 'string') {
-								return item.text;
-							}
-							if (item.type === 'resource' && item.resource) {
-								if (typeof item.resource.text === 'string') {
-									return item.resource.text;
-								}
-								return JSON.stringify(item.resource);
-							}
-							if (item.type === 'image' && item.data) {
-								const mimeType = item.mimeType || 'application/octet-stream';
-								return `data:${mimeType};base64,${item.data}`;
-							}
-							if (typeof item.text === 'string') {
-								return item.text;
-							}
-							return JSON.stringify(item);
-						}
-						return String(item);
-					})
-					.filter(Boolean)
-					.join('\n');
-				if (flattened) {
-					return flattened;
-				}
-			}
+		if (response && response.content) {
+			const contentItems = Array.isArray(response.content)
+				? response.content
+				: [response.content];
 
-			if (response.result !== undefined) {
-				if (typeof response.result === 'string') return response.result;
-				if (typeof response.result === 'object') return JSON.stringify(response.result);
-				return String(response.result);
+			const flattened = contentItems
+				.map((item) => {
+					if (item == null) return '';
+					if (typeof item === 'string') return item;
+					if (typeof item === 'object') {
+						if (item.type === 'text' && typeof item.text === 'string') {
+							return item.text;
+						}
+						if (item.type === 'resource' && item.resource) {
+							if (typeof item.resource.text === 'string') {
+								return item.resource.text;
+							}
+							return JSON.stringify(item.resource);
+						}
+						if (item.type === 'image' && item.data) {
+							const mimeType = item.mimeType || 'application/octet-stream';
+							return `data:${mimeType};base64,${item.data}`;
+						}
+						if (typeof item.text === 'string') {
+							return item.text;
+						}
+						return JSON.stringify(item);
+					}
+					return String(item);
+				})
+				.filter(Boolean)
+				.join('\n');
+
+			if (flattened) {
+				return flattened;
 			}
 		}
 
@@ -146,14 +140,13 @@ class MCPClient {
 	}
 
 	/**
-	 * Get OpenAI-compatible tools definition for all servers
-	 * @returns {Array} Tools array for llama.cpp
+	 * Get OpenAI-compatible tools definition
 	 */
 	async getToolsDefinition() {
 		const tools = [];
 
-		for (const [serverName, serverState] of this.servers) {
-			for (const tool of serverState.tools) {
+		for (const [serverName, { tools: serverTools }] of this.clients) {
+			for (const tool of serverTools) {
 				tools.push({
 					type: 'function',
 					function: {
@@ -173,20 +166,23 @@ class MCPClient {
 	}
 
 	/**
-	 * List all available tool names
-	 * @returns {Array<string>} Tool names
+	 * List all tool names
 	 */
 	listTools() {
-		return Array.from(this.toolsMap.keys());
+		const names = [];
+		for (const { tools } of this.clients.values()) {
+			names.push(...tools.map((t) => t.name));
+		}
+		return names;
 	}
 
 	/**
-	 * Shutdown all MCP servers
+	 * Shutdown all servers
 	 */
 	async shutdown() {
 		console.log('[MCP] Shutting down all servers...');
-		for (const [name, serverState] of this.servers) {
-			await serverState.transport.stop();
+		for (const [name, { client }] of this.clients) {
+			await client.close();
 			console.log(`[MCP] Server "${name}" stopped`);
 		}
 	}
@@ -203,126 +199,54 @@ class MCPClient {
 			return 'websocket';
 		}
 
-		return 'streamable-http';
+		return 'http';
 	}
 
 	_createTransport(serverName, serverConfig) {
 		const transportType = this._detectTransportType(serverConfig);
-		const transportConfig = { ...serverConfig };
-		delete transportConfig.transport;
-		delete transportConfig.type;
 
 		switch (transportType) {
 			case 'stdio':
-				return new TransportStdio(transportConfig);
+				return new StdioClientTransport({
+					command: serverConfig.command,
+					args: serverConfig.args || [],
+					env: serverConfig.env
+				});
+
 			case 'websocket':
 			case 'ws':
-				return new TransportWebSocket(transportConfig);
-			case 'streamable-http':
+				return new WebSocketClientTransport(new URL(serverConfig.url));
+
 			case 'http':
-				return new TransportStreamableHTTP(transportConfig);
+			case 'streamable-http':
+				// Try StreamableHTTP first, fallback to SSE
+				const url = new URL(serverConfig.url);
+				const requestInit = {};
+
+				if (serverConfig.headers) {
+					requestInit.headers = serverConfig.headers;
+				}
+
+				try {
+					console.log(
+						`[MCP] Creating StreamableHTTP transport for ${serverName} (${url.href})`
+					);
+					return new StreamableHTTPClientTransport(url, {
+						requestInit,
+						sessionId: serverConfig.sessionId
+					});
+				} catch (httpError) {
+					console.warn(
+						`[MCP] StreamableHTTP failed for ${serverName}, trying SSE...`,
+						httpError
+					);
+					return new SSEClientTransport(url, { requestInit });
+				}
+
 			default:
 				throw new Error(
 					`Unsupported transport "${transportType}" for server "${serverName}"`
 				);
-		}
-	}
-
-	/**
-	 * Call a method on an MCP server
-	 * @private
-	 */
-	_call(serverName, method, params = {}) {
-		return new Promise((resolve, reject) => {
-			const serverState = this.servers.get(serverName);
-			if (!serverState) {
-				return reject(new Error(`Server "${serverName}" not found`));
-			}
-
-			const id = ++serverState.requestId;
-			const request = Protocol.createRequest(id, method, params);
-
-			serverState.pending.set(id, { resolve, reject });
-
-			try {
-				serverState.transport.send(request);
-			} catch (err) {
-				serverState.pending.delete(id);
-				return reject(err);
-			}
-
-			// Timeout 300s
-			setTimeout(() => {
-				if (serverState.pending.has(id)) {
-					serverState.pending.delete(id);
-					reject(new Error(`Timeout: ${method} on ${serverName}`));
-				}
-			}, 300000);
-		});
-	}
-
-	/**
-	 * Handle incoming message from MCP server
-	 * @private
-	 */
-	_handleMessage(serverName, message) {
-		const serverState = this.servers.get(serverName);
-		if (!serverState) return;
-
-		if (
-			message &&
-			typeof message === 'object' &&
-			message.method &&
-			!Object.prototype.hasOwnProperty.call(message, 'id')
-		) {
-			this._handleNotification(serverName, message);
-			return;
-		}
-
-		const response = Protocol.parseResponse(message);
-		if (!response || !response.id) return;
-
-		const pending = serverState.pending.get(response.id);
-		if (!pending) return;
-
-		serverState.pending.delete(response.id);
-
-		if (response.error) {
-			pending.reject(new Error(response.error.message || 'MCP Error'));
-		} else {
-			pending.resolve(response.result);
-		}
-	}
-
-	async _refreshTools(serverName) {
-		const serverState = this.servers.get(serverName);
-		if (!serverState) {
-			return;
-		}
-
-		console.log(`[MCP] Discovering tools from "${serverName}"...`);
-
-		// Remove previous tools for this server from global map
-		for (const tool of serverState.tools) {
-			this.toolsMap.delete(tool.name);
-		}
-
-		const response = await this._call(serverName, 'tools/list');
-		const tools = response.tools || [];
-		serverState.tools = tools;
-
-		for (const tool of tools) {
-			this.toolsMap.set(tool.name, serverName);
-		}
-
-		console.log(`[MCP] Updated tool catalogue for "${serverName}" (${tools.length} tools)`);
-	}
-
-	_handleNotification(serverName, message) {
-		if (message.method === 'notifications/tools/list_changed') {
-			this._refreshTools(serverName).catch((err) => {
-				console.error(`[MCP] Failed to refresh tools for "${serverName}": ${err.message}`);
-			});
 		}
 	}
 }
