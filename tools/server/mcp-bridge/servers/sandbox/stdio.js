@@ -1,35 +1,15 @@
 #!/usr/bin/env node
-const readline = require('readline');
+const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
 const MCPServer = require('../lib/server-core');
 const config = require('./config.json');
 const toolsModule = require('./lib/tools');
 
-const server = new MCPServer(config, toolsModule);
-server.setupSignalHandlers();
+const mcpServer = new MCPServer(config, toolsModule);
+mcpServer.setupSignalHandlers();
 
-const rl = readline.createInterface({
-	input: process.stdin,
-	output: process.stdout,
-	terminal: false
-});
+const transport = new StdioServerTransport();
 
 console.error('[Sandbox MCP] Starting stdio transport');
-console.error(`[Sandbox MCP] Tools available: ${server.tools.length}`);
+console.error(`[Sandbox MCP] Tools available: ${mcpServer.toolsDefinitions.length}`);
 
-rl.on('line', async (line) => {
-	if (!line) {
-		return;
-	}
-
-	try {
-		const request = JSON.parse(line);
-		const response = await server.handleRequest(request);
-		if (response) {
-			console.log(JSON.stringify(response));
-		}
-	} catch (error) {
-		console.error(`[Sandbox MCP] Error parsing or handling request: ${error.message}`);
-	}
-});
-
-rl.on('close', () => process.exit(0));
+mcpServer.getServer().connect(transport);
