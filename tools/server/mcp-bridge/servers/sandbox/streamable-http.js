@@ -34,8 +34,9 @@ const httpServer = http.createServer(async (req, res) => {
 	res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
 	res.setHeader(
 		'Access-Control-Allow-Headers',
-		'Content-Type, Mcp-Session-Id, MCP-Protocol-Version'
+		'Content-Type, Mcp-Session-Id, MCP-Protocol-Version, Accept'
 	);
+	res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id');
 
 	if (req.method === 'OPTIONS') {
 		res.writeHead(204);
