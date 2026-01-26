@@ -3,12 +3,16 @@ const WebSocket = require('ws');
 const MCPServer = require('../lib/server-core');
 const config = require('./config.json');
 const toolsModule = require('./lib/tools');
+const { createPromptsModule } = require('./lib/prompts');
+
+const promptsModule = createPromptsModule(config);
 
 const { host, port } = config.websocket;
 
 console.error('[Sandbox MCP] Starting WebSocket transport');
 console.error(`[Sandbox MCP] Listening on ws://${host}:${port}`);
 console.error(`[Sandbox MCP] Tools available: ${toolsModule.TOOLS_DEFINITIONS.length}`);
+console.error(`[Sandbox MCP] Prompts available: ${promptsModule.PROMPTS_DEFINITIONS.length}`);
 
 const wss = new WebSocket.Server({ host, port });
 
@@ -22,7 +26,7 @@ wss.on('connection', async (ws, req) => {
 		`[Sandbox MCP] Connection ${connectionId} from ${clientIP} (${wss.clients.size} active)`
 	);
 
-	const mcpServer = new MCPServer(config, toolsModule);
+	const mcpServer = new MCPServer(config, toolsModule, promptsModule);
 	const server = mcpServer.getServer();
 
 	const transport = {
