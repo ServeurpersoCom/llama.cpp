@@ -8,7 +8,7 @@
 
 		"systemPromptProfiles": true,
 		"systemPromptPasswords": ["sandbox"],
-		"systemPromptFiles": ["servers/sandbox/system-prompt-fr.txt"],
+		"systemPromptTemplates": ["servers/sandbox/config.json:sandbox_system_prompt_fr"],
 
 		"logging": {
 			"console": true,

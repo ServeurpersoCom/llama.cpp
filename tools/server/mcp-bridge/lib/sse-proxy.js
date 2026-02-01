@@ -35,17 +35,17 @@ class ProxySSE {
 		this.systemPromptProfiles = {
 			enabled: config.systemPromptProfiles || false,
 			passwords: config.systemPromptPasswords || [],
-			files: config.systemPromptFiles || []
+			templates: config.systemPromptTemplates || []
 		};
 
 		// Validate system prompt profiles configuration
 		if (this.systemPromptProfiles.enabled) {
 			if (
 				this.systemPromptProfiles.passwords.length !==
-				this.systemPromptProfiles.files.length
+				this.systemPromptProfiles.templates.length
 			) {
 				throw new Error(
-					'systemPromptPasswords and systemPromptFiles must have same length'
+					'systemPromptPasswords and systemPromptTemplates must have same length'
 				);
 			}
 			this._log('[Profiles] System Prompt Profiles enabled');
@@ -108,23 +108,43 @@ class ProxySSE {
 	}
 
 	/**
-	 * Load system prompt from file
-	 * @param {string} filePath - Path to system prompt file
-	 * @returns {string} System prompt content (empty string if file not found)
+	 * Load system prompt from a prompt template defined in an MCP server config.json
+	 * @param {string} templateRef - Reference in format "path/to/config.json:prompt_name"
+	 * @returns {string} System prompt content (empty string if not found)
 	 */
-	_loadSystemPrompt(filePath) {
+	_loadSystemPrompt(templateRef) {
 		try {
-			// Resolve path relative to project root
-			const fullPath = path.join(process.cwd(), filePath);
-			const content = fs.readFileSync(fullPath, 'utf8');
-			this._log(`[Profiles] Loaded system prompt from: ${filePath}`);
-			return content;
+			const colonIndex = templateRef.indexOf(':');
+			if (colonIndex === -1) {
+				throw new Error(`Invalid template reference "${templateRef}" (expected "path/config.json:prompt_name")`);
+			}
+
+			const jsonPath = templateRef.substring(0, colonIndex);
+			const promptName = templateRef.substring(colonIndex + 1);
+
+			const fullPath = path.join(process.cwd(), jsonPath);
+			const configData = JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+
+			if (!Array.isArray(configData.prompts)) {
+				throw new Error(`No "prompts" array found in ${jsonPath}`);
+			}
+
+			const prompt = configData.prompts.find((p) => p.name === promptName);
+			if (!prompt) {
+				throw new Error(`Prompt template "${promptName}" not found in ${jsonPath}`);
+			}
+
+			const text = prompt.messages
+				.map((m) => (m.content && m.content.text) || '')
+				.join('\n');
+
+			this._log(`[Profiles] Loaded prompt template "${promptName}" from ${jsonPath}`);
+			return text;
 		} catch (error) {
-			// Log error clearly to stderr, return empty string (non-blocking)
 			console.error(
-				`[Proxy] [Profiles] ERROR: Failed to load system prompt from ${filePath}: ${error.message}`
+				`[Proxy] [Profiles] ERROR: Failed to load prompt template "${templateRef}": ${error.message}`
 			);
-			console.error(`[Proxy] [Profiles] System prompt will be empty (file not found)`);
+			console.error(`[Proxy] [Profiles] System prompt will be empty`);
 			return '';
 		}
 	}
@@ -333,14 +353,14 @@ class ProxySSE {
 		} else {
 			// MCP active mode
 			if (profileActivation.activated) {
-				// Profile activated: replace system prompt with file content
-				const profileFile = this.systemPromptProfiles.files[profileActivation.profileIndex];
-				const systemPrompt = this._loadSystemPrompt(profileFile);
+				// Profile activated: replace system prompt with template content
+				const templateRef = this.systemPromptProfiles.templates[profileActivation.profileIndex];
+				const systemPrompt = this._loadSystemPrompt(templateRef);
 
 				sessionMessages = this._replaceSystemPrompt(sessionMessages, systemPrompt);
 
 				this._log(
-					`[Profiles] System prompt replaced with: ${profileFile.split('/').pop()}`
+					`[Profiles] System prompt replaced with template: ${templateRef}`
 				);
 			}
 
