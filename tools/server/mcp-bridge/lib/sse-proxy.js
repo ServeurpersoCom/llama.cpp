@@ -116,7 +116,9 @@ class ProxySSE {
 		try {
 			const colonIndex = templateRef.indexOf(':');
 			if (colonIndex === -1) {
-				throw new Error(`Invalid template reference "${templateRef}" (expected "path/config.json:prompt_name")`);
+				throw new Error(
+					`Invalid template reference "${templateRef}" (expected "path/config.json:prompt_name")`
+				);
 			}
 
 			const jsonPath = templateRef.substring(0, colonIndex);
@@ -134,9 +136,7 @@ class ProxySSE {
 				throw new Error(`Prompt template "${promptName}" not found in ${jsonPath}`);
 			}
 
-			const text = prompt.messages
-				.map((m) => (m.content && m.content.text) || '')
-				.join('\n');
+			const text = prompt.messages.map((m) => (m.content && m.content.text) || '').join('\n');
 
 			this._log(`[Profiles] Loaded prompt template "${promptName}" from ${jsonPath}`);
 			return text;
@@ -354,14 +354,13 @@ class ProxySSE {
 			// MCP active mode
 			if (profileActivation.activated) {
 				// Profile activated: replace system prompt with template content
-				const templateRef = this.systemPromptProfiles.templates[profileActivation.profileIndex];
+				const templateRef =
+					this.systemPromptProfiles.templates[profileActivation.profileIndex];
 				const systemPrompt = this._loadSystemPrompt(templateRef);
 
 				sessionMessages = this._replaceSystemPrompt(sessionMessages, systemPrompt);
 
-				this._log(
-					`[Profiles] System prompt replaced with template: ${templateRef}`
-				);
+				this._log(`[Profiles] System prompt replaced with template: ${templateRef}`);
 			}
 
 			// Get available tools from MCP discovery
