@@ -14,6 +14,8 @@
  *   - Directory listing with size information (2 levels deep)
  *   - Binary file detection and rejection
  *   - Line-numbered file display with optional range selection
+ *   - Automatic output truncation for large files
+ *   - Smart truncation preserving line boundaries
  *   - Filters hidden files and node_modules
  *
  * - create_file: Create new files with automatic directory creation
@@ -200,12 +202,24 @@ async function tool_view(args = {}) {
 
 	const selectedLines = lines.slice(startLine - 1, endLine);
 
-	const numberedLines = selectedLines
+	let numberedLines = selectedLines
 		.map((line, idx) => {
 			const lineNum = startLine + idx;
 			return `${lineNum}\t${line}`;
 		})
 		.join('\n');
+
+	if (numberedLines.length > config.podman.bashOutputLimitBytes) {
+		let tail = numberedLines.slice(-config.podman.bashOutputLimitBytes);
+
+		const firstNewline = tail.indexOf('\n');
+		if (firstNewline !== -1 && firstNewline < 512) {
+			tail = tail.slice(firstNewline + 1);
+		}
+
+		const truncatedBytes = numberedLines.length - tail.length;
+		numberedLines = tail + `\n⚠️ Long output with ${truncatedBytes} bytes hidden from context`;
+	}
 
 	const justification = args.description ? `🎯 ${args.description}\n` : '';
 	if (range && Array.isArray(range) && range.length === 2) {
