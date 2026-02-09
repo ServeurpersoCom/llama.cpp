@@ -1,3 +1,5 @@
+import './chat-tunnel';
+
 /**
  *
  * SERVICES
