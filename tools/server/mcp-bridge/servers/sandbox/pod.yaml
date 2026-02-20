@@ -18,8 +18,8 @@ spec:
     resources:
       limits:
         nvidia.com/gpu=all: 1
-        memory: 16Gi
-        cpu: "16"
+        #memory: 4Gi
+        #cpu: "2"
 
     volumeMounts:
     - name: inputs
@@ -41,7 +41,7 @@ spec:
     - -c
     - |
       find /mnt/inputs -mindepth 1 -delete 2>/dev/null || true
-      find /mnt/workspace -mindepth 1 -delete 2>/dev/null || true
+      #find /mnt/workspace -mindepth 1 -delete 2>/dev/null || true
       find /mnt/outputs -mindepth 1 -delete 2>/dev/null || true
       exec /usr/sbin/sshd -D
 
