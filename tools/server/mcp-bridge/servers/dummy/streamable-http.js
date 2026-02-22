@@ -80,7 +80,18 @@ const httpServer = http.createServer(async (req, res) => {
 				await server.connect(transport);
 				await transport.handleRequest(req, res, parsedBody);
 				return;
+			} else if (sessionId && !transports[sessionId]) {
+				// Session ID provided but not found (server restarted) - MCP spec: MUST return 404
+				res.writeHead(404, { 'Content-Type': 'application/json' });
+				return res.end(
+					JSON.stringify({
+						jsonrpc: '2.0',
+						error: { code: -32600, message: 'Session not found' },
+						id: null
+					})
+				);
 			} else {
+				// No session ID and not an initialize request - MCP spec: SHOULD return 400
 				res.writeHead(400, { 'Content-Type': 'application/json' });
 				return res.end(
 					JSON.stringify({
@@ -99,12 +110,23 @@ const httpServer = http.createServer(async (req, res) => {
 	if (req.method === 'GET') {
 		const sessionId = req.headers['mcp-session-id'];
 
-		if (!sessionId || !transports[sessionId]) {
+		if (!sessionId) {
 			res.writeHead(400, { 'Content-Type': 'application/json' });
 			return res.end(
 				JSON.stringify({
 					jsonrpc: '2.0',
-					error: { code: -32000, message: 'Bad Request: Invalid or missing session ID' },
+					error: { code: -32000, message: 'Bad Request: Mcp-Session-Id required' },
+					id: null
+				})
+			);
+		}
+
+		if (!transports[sessionId]) {
+			res.writeHead(404, { 'Content-Type': 'application/json' });
+			return res.end(
+				JSON.stringify({
+					jsonrpc: '2.0',
+					error: { code: -32600, message: 'Session not found' },
 					id: null
 				})
 			);
