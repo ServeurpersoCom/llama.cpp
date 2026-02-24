@@ -27,6 +27,7 @@
 #include <vector>
 #include <cstring>
 #include <limits>
+#include <random>
 
 #include "app.js.hpp"
 #include "architecture.js.hpp"
@@ -135,31 +136,7 @@ constexpr float SLICE_PERCENTILE_LOWER = 0.01f;
 constexpr float SLICE_PERCENTILE_UPPER = 0.99f;
 constexpr size_t SLICE_STAT_MAX_CHUNK_ELEMENTS = 1u << 18;
 
-constexpr unsigned PERCENTILE_TOTAL_BITS = 32;
-constexpr unsigned PERCENTILE_RADIX_BITS = 8;
-constexpr unsigned PERCENTILE_BUCKETS = 1u << PERCENTILE_RADIX_BITS;
-constexpr unsigned PERCENTILE_PASSES = (PERCENTILE_TOTAL_BITS + PERCENTILE_RADIX_BITS - 1) / PERCENTILE_RADIX_BITS;
-
-uint32_t float_to_ordered_key(float value) {
-    uint32_t bits = 0;
-    std::memcpy(&bits, &value, sizeof(bits));
-    if ((bits & 0x80000000u) != 0) {
-        return ~bits;
-    }
-    return bits ^ 0x80000000u;
-}
-
-float ordered_key_to_float(uint32_t key) {
-    uint32_t bits = 0;
-    if ((key & 0x80000000u) != 0) {
-        bits = key ^ 0x80000000u;
-    } else {
-        bits = ~key;
-    }
-    float value = 0.0f;
-    std::memcpy(&value, &bits, sizeof(value));
-    return value;
-}
+constexpr size_t PERCENTILE_RESERVOIR_SIZE    = 1u << 14;
 
 struct model_descriptor {
     std::string relative;
@@ -1191,12 +1168,25 @@ bool tensor_slice_statistics(
     float min_value = std::numeric_limits<float>::infinity();
     float max_value = -std::numeric_limits<float>::infinity();
 
+    std::vector<float> reservoir;
+    reservoir.reserve(PERCENTILE_RESERVOIR_SIZE);
+    std::mt19937 rng(42);
+
     if (!stream_finite_values([&](float value) {
             if (value < min_value) {
                 min_value = value;
             }
             if (value > max_value) {
                 max_value = value;
+            }
+            if (valid_count < PERCENTILE_RESERVOIR_SIZE) {
+                reservoir.push_back(value);
+            } else {
+                std::uniform_int_distribution<size_t> dist(0, valid_count);
+                const size_t j = dist(rng);
+                if (j < PERCENTILE_RESERVOIR_SIZE) {
+                    reservoir[j] = value;
+                }
             }
             ++valid_count;
         })) {
@@ -1223,168 +1213,22 @@ bool tensor_slice_statistics(
         return true;
     }
 
-    struct percentile_target {
-        double fraction = 0.0;
-        double exact_rank = 0.0;
-        uint64_t lower_rank = 0;
-        uint64_t upper_rank = 0;
-        double weight = 0.0;
+    std::sort(reservoir.begin(), reservoir.end());
+
+    const size_t n = reservoir.size();
+    const double max_idx = static_cast<double>(n - 1);
+    const double lower_pos = SLICE_PERCENTILE_LOWER * max_idx;
+    const double upper_pos = SLICE_PERCENTILE_UPPER * max_idx;
+
+    auto interpolate = [&](double pos) -> float {
+        const size_t lo = static_cast<size_t>(std::floor(pos));
+        const size_t hi = std::min(lo + 1, n - 1);
+        const float  w  = static_cast<float>(pos - static_cast<double>(lo));
+        return reservoir[lo] + w * (reservoir[hi] - reservoir[lo]);
     };
 
-    const double max_index = static_cast<double>(valid_count - 1);
-
-    auto make_target = [&](double fraction) {
-        percentile_target target;
-        const double clamped = std::clamp(fraction, 0.0, 1.0);
-        target.fraction = clamped;
-        target.exact_rank = clamped * max_index;
-        target.lower_rank = static_cast<uint64_t>(std::floor(target.exact_rank));
-        target.upper_rank = static_cast<uint64_t>(std::ceil(target.exact_rank));
-        if (target.upper_rank >= valid_count) {
-            target.upper_rank = valid_count - 1;
-        }
-        if (target.lower_rank >= valid_count) {
-            target.lower_rank = valid_count - 1;
-        }
-        target.weight = target.exact_rank - static_cast<double>(target.lower_rank);
-        return target;
-    };
-
-    const auto lower_target = make_target(SLICE_PERCENTILE_LOWER);
-    const auto upper_target = make_target(SLICE_PERCENTILE_UPPER);
-
-    std::vector<uint64_t> required_ranks;
-    required_ranks.push_back(lower_target.lower_rank);
-    if (lower_target.upper_rank != lower_target.lower_rank) {
-        required_ranks.push_back(lower_target.upper_rank);
-    }
-    required_ranks.push_back(upper_target.lower_rank);
-    if (upper_target.upper_rank != upper_target.lower_rank) {
-        required_ranks.push_back(upper_target.upper_rank);
-    }
-    std::sort(required_ranks.begin(), required_ranks.end());
-    required_ranks.erase(std::unique(required_ranks.begin(), required_ranks.end()), required_ranks.end());
-
-    std::unordered_map<uint64_t, float> rank_values;
-    rank_values.reserve(required_ranks.size());
-
-    if (!required_ranks.empty()) {
-        struct percentile_rank_query {
-            uint64_t target_rank = 0;
-            uint64_t rank = 0;
-            uint32_t range_start = 0;
-            uint32_t range_end = std::numeric_limits<uint32_t>::max();
-            uint32_t resolved_key = 0;
-            bool resolved = false;
-        };
-
-        std::vector<percentile_rank_query> queries;
-        queries.reserve(required_ranks.size());
-        for (uint64_t rank : required_ranks) {
-            percentile_rank_query query;
-            query.target_rank = rank;
-            query.rank = rank;
-            queries.push_back(query);
-        }
-
-        for (unsigned pass = 0; pass < PERCENTILE_PASSES; ++pass) {
-            const unsigned shift = PERCENTILE_TOTAL_BITS - PERCENTILE_RADIX_BITS * (pass + 1);
-            std::vector<std::array<uint64_t, PERCENTILE_BUCKETS>> counts(queries.size());
-            for (auto & bucket_counts : counts) {
-                bucket_counts.fill(0);
-            }
-
-            if (!stream_finite_values([&](float value) {
-                    const uint32_t key = float_to_ordered_key(value);
-                    for (size_t i = 0; i < queries.size(); ++i) {
-                        auto & query = queries[i];
-                        if (query.resolved) {
-                            continue;
-                        }
-                        if (key < query.range_start || key > query.range_end) {
-                            continue;
-                        }
-                        const unsigned bucket = shift >= PERCENTILE_TOTAL_BITS
-                            ? 0u
-                            : ((key >> shift) & (PERCENTILE_BUCKETS - 1));
-                        counts[i][bucket] += 1;
-                    }
-                })) {
-                return false;
-            }
-
-            for (size_t i = 0; i < queries.size(); ++i) {
-                auto & query = queries[i];
-                if (query.resolved) {
-                    continue;
-                }
-                const auto & bucket_counts = counts[i];
-                uint64_t cumulative = 0;
-                uint64_t cumulative_before = 0;
-                unsigned selected_bucket = 0;
-                bool found = false;
-
-                for (unsigned bucket = 0; bucket < PERCENTILE_BUCKETS; ++bucket) {
-                    const uint64_t bucket_count = bucket_counts[bucket];
-                    if (bucket_count == 0) {
-                        continue;
-                    }
-                    if (query.rank < cumulative + bucket_count) {
-                        cumulative_before = cumulative;
-                        cumulative += bucket_count;
-                        selected_bucket = bucket;
-                        found = true;
-                        break;
-                    }
-                    cumulative += bucket_count;
-                }
-
-                if (!found) {
-                    continue;
-                }
-
-                query.rank -= cumulative_before;
-
-                const uint64_t segment_size = shift == 0 ? 1u : (1u << shift);
-                const uint64_t bucket_start = static_cast<uint64_t>(query.range_start) + segment_size * selected_bucket;
-                uint64_t bucket_end = bucket_start + segment_size - 1;
-                if (bucket_end > query.range_end) {
-                    bucket_end = query.range_end;
-                }
-                query.range_start = static_cast<uint32_t>(bucket_start);
-                query.range_end = static_cast<uint32_t>(bucket_end);
-                if (shift == 0) {
-                    query.resolved = true;
-                    query.resolved_key = static_cast<uint32_t>(bucket_start);
-                }
-            }
-        }
-
-        for (const auto & query : queries) {
-            const uint32_t key = query.resolved ? query.resolved_key : query.range_start;
-            rank_values.emplace(query.target_rank, ordered_key_to_float(key));
-        }
-    }
-
-    auto value_for_rank = [&](uint64_t rank) -> float {
-        auto it = rank_values.find(rank);
-        if (it != rank_values.end()) {
-            return it->second;
-        }
-        return min_value;
-    };
-
-    auto resolve_percentile = [&](const percentile_target & target) -> float {
-        const float lower_value = value_for_rank(target.lower_rank);
-        const float upper_value = value_for_rank(target.upper_rank);
-        if (target.lower_rank == target.upper_rank) {
-            return lower_value;
-        }
-        return static_cast<float>(lower_value + (upper_value - lower_value) * target.weight);
-    };
-
-    float lower_value = resolve_percentile(lower_target);
-    float upper_value = resolve_percentile(upper_target);
+    float lower_value = interpolate(lower_pos);
+    float upper_value = interpolate(upper_pos);
 
     if (!std::isfinite(lower_value) || lower_value < min_value) {
         lower_value = min_value;

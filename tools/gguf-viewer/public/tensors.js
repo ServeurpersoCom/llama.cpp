@@ -47,7 +47,7 @@ function refreshHeatmapTensorSelect() {
     const fragment = document.createDocumentFragment();
     const placeholder = document.createElement("option");
     placeholder.value = "";
-    placeholder.textContent = tensorData.length > 0 ? "Select tensor…" : "No tensors available";
+    placeholder.textContent = tensorData.length > 0 ? "Select tensor..." : "No tensors available";
     placeholder.disabled = tensorData.length > 0;
     placeholder.selected = !heatmapState.tensor;
     fragment.appendChild(placeholder);

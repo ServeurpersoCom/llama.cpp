@@ -186,7 +186,7 @@ async function fetchHistogram() {
     const controller = new AbortController();
     histogramState.controller = controller;
     histogramState.fetching = true;
-    const loadingMessage = "Generating histogram…";
+    const loadingMessage = "Generating histogram...";
     statisticsHeaderMessage = loadingMessage;
     updateStatisticsHeader();
     setHistogramOverlay(loadingMessage, "loading");

@@ -550,7 +550,7 @@ const TOKEN_TYPE_LABELS = Object.freeze({
     5: "byte",
 });
 const NO_MODEL_MESSAGE = "Select a GGUF model to inspect.";
-const LOADING_MESSAGE = "Loading…";
+const LOADING_MESSAGE = "Loading...";
 const BROWSER_EMPTY_MESSAGE = "No GGUF files found in the root directory.";
 const HEATMAP_DEFAULT_HEADER_MESSAGE = "Select a tensor to open the heatmap viewer.";
 const HEATMAP_DEFAULT_STREAM_MESSAGE = "Select a tensor to stream its weights.";

@@ -572,7 +572,7 @@ async function fetchHeatmapWindow() {
     heatmapState.controller = controller;
     heatmapState.fetching = true;
     if (!heatmapState.imageReady) {
-        setHeatmapOverlay("Loading heatmap…", "loading");
+        setHeatmapOverlay("Loading heatmap...", "loading");
     }
 
     const tensor = heatmapState.tensor;
@@ -683,6 +683,10 @@ async function fetchHeatmapWindow() {
 
         const values = Array.isArray(data.values) ? data.values : [];
         heatmapState.values = values;
+        if (heatmapControls) {
+            heatmapControls.hidden = false;
+        }
+        syncHeatmapToViewport(false);
         updateHeatmapImage(values, heatmapState.scaleMin, heatmapState.scaleMax);
         syncHeatmapControls();
         updateHeatmapHeader();
@@ -700,7 +704,6 @@ async function fetchHeatmapWindow() {
             requestHeatmapValue(heatmapHoverState.globalX, heatmapHoverState.globalY, heatmapState.slice);
         }
         updateHeatmapUrlState({ syncPending: true });
-        syncHeatmapToViewport(false);
     } catch (err) {
         if (controller.signal.aborted) {
             return;
@@ -893,11 +896,13 @@ function openHeatmap(nameEncoded, options = {}) {
     histogramState.tensor = tensor;
     histogramState.slice = heatmapState.slice;
     syncHistogramToViewport(false);
-    setHistogramOverlay("Generating histogram…", "loading");
+    setHistogramOverlay("Generating histogram...", "loading");
     void fetchHistogram();
+    if (heatmapControls) {
+        heatmapControls.hidden = false;
+    }
     syncHeatmapToViewport(false);
-    syncHeatmapControls();
-    setHeatmapOverlay("Preparing heatmap…", "loading");
+    setHeatmapOverlay("Preparing heatmap...", "loading");
     void fetchHeatmapWindow();
     const shouldApplySliceScale = !heatmapState.pendingScale;
     void fetchSliceProperties({ slice: heatmapState.slice, applyScale: shouldApplySliceScale });
@@ -923,8 +928,8 @@ function handleTensorAction(target) {
 
     const action = target.dataset.action || "heatmap";
     const destination = action === "statistics" ? "statistics" : "heatmap";
-    const current = normalizePageId(window.location.hash.slice(1));
-    if (current !== destination) {
+    renderActivePage(destination);
+    if (window.location.hash.slice(1) !== destination) {
         window.location.hash = destination;
     }
     openHeatmap(target.dataset.name);
