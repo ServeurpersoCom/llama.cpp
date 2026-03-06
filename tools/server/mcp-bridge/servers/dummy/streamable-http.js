@@ -10,7 +10,7 @@ const toolsModule = require('./lib/tools');
 
 const { host, port } = config.streamable_http;
 
-console.error('[Sandbox MCP] Starting Streamable HTTP transport (SDK)');
+console.error('[Sandbox MCP] Starting Streamable HTTP transport');
 console.error(`[Sandbox MCP] Listening on http://${host}:${port}`);
 console.error(`[Sandbox MCP] Tools available: ${toolsModule.TOOLS_DEFINITIONS.length}`);
 
