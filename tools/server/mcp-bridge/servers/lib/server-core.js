@@ -66,44 +66,43 @@ class MCPServer {
 			}
 		});
 
-		// Register prompts list handler
-		this.server.setRequestHandler(ListPromptsRequestSchema, async (request) => {
-			// Simple implementation without pagination (suitable for small prompt lists)
-			return {
-				prompts: this.promptsDefinitions
-			};
-		});
-
-		// Register prompt get handler
-		this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
-			const { name, arguments: promptArgs } = request.params;
-
-			if (!this.promptsMapping[name]) {
-				throw new Error(`Unknown prompt: ${name}`);
-			}
-
-			const prompt = this.promptsMapping[name];
-
-			// Process messages with argument substitution if needed
-			const messages = prompt.messages.map((msg) => {
-				if (msg.content?.type === 'text' && promptArgs) {
-					let text = msg.content.text;
-					for (const [key, value] of Object.entries(promptArgs)) {
-						text = text.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value);
-					}
-					return {
-						role: msg.role,
-						content: { type: 'text', text }
-					};
-				}
-				return msg;
+		// Register prompt handlers only when prompts are available
+		if (this.promptsDefinitions.length > 0) {
+			this.server.setRequestHandler(ListPromptsRequestSchema, async (request) => {
+				return {
+					prompts: this.promptsDefinitions
+				};
 			});
 
-			return {
-				description: prompt.description,
-				messages
-			};
-		});
+			this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+				const { name, arguments: promptArgs } = request.params;
+
+				if (!this.promptsMapping[name]) {
+					throw new Error(`Unknown prompt: ${name}`);
+				}
+
+				const prompt = this.promptsMapping[name];
+
+				const messages = prompt.messages.map((msg) => {
+					if (msg.content?.type === 'text' && promptArgs) {
+						let text = msg.content.text;
+						for (const [key, value] of Object.entries(promptArgs)) {
+							text = text.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value);
+						}
+						return {
+							role: msg.role,
+							content: { type: 'text', text }
+						};
+					}
+					return msg;
+				});
+
+				return {
+					description: prompt.description,
+					messages
+				};
+			});
+		}
 	}
 
 	_createContentBlock(result) {
