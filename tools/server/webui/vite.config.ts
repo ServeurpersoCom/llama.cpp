@@ -98,6 +98,12 @@ export default defineConfig({
 			'katex-fonts': resolve('node_modules/katex/dist/fonts')
 		}
 	},
+	esbuild: {
+		lineLimit: 500,
+		minifyIdentifiers: false,
+		minifySyntax: true,
+		minifyWhitespace: true
+	},
 	build: {
 		assetsInlineLimit: MAX_ASSET_SIZE,
 		chunkSizeWarningLimit: 3072,
