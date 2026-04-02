@@ -41,7 +41,7 @@
 		"containerUser": "root",
 
 		"timeout": 300,
-		"bashOutputLimitBytes": 4096
+		"bashOutputLimitBytes": 16384
 	},
 
 	"paths": {
