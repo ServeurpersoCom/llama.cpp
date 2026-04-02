@@ -72,14 +72,9 @@
 							{
 								"maxItems": 2,
 								"minItems": 2,
-								"prefixItems": [
-									{
-										"type": "integer"
-									},
-									{
-										"type": "integer"
-									}
-								],
+								"items": {
+									"type": "integer"
+								},
 								"type": "array"
 							},
 							{
