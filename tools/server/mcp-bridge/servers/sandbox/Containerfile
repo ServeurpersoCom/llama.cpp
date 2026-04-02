@@ -16,7 +16,7 @@ RUN apt update && apt install -y \
     sudo \
     git \
     build-essential \
-    cmake ccache \
+    cmake ccache clang-format \
     python3 python3-pip \
     curl wget \
     nano vim \
