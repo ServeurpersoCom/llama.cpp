@@ -1,4 +1,5 @@
 #include "server-tools.h"
+#include "http.h"
 
 #include <sheredom/subprocess.h>
 
@@ -729,6 +730,204 @@ struct server_tool_apply_diff : server_tool {
 // public API
 //
 
+//
+// web_search: search the web using DuckDuckGo
+//
+
+static constexpr int SERVER_TOOL_WEB_SEARCH_MAX_RESULTS = 10;
+static constexpr int SERVER_TOOL_WEB_SEARCH_TIMEOUT     = 10;
+
+// strip HTML tags from a string
+static std::string html_strip_tags(const std::string & html) {
+    std::string result;
+    result.reserve(html.size());
+    bool in_tag = false;
+    for (char c : html) {
+        if (c == '<') { in_tag = true; }
+        else if (c == '>') { in_tag = false; }
+        else if (!in_tag) { result += c; }
+    }
+    return result;
+}
+
+// decode common HTML entities
+static std::string html_decode(const std::string & s) {
+    std::string r = s;
+    static const std::pair<const char *, const char *> entities[] = {
+        {"&amp;",  "&"},  {"&lt;",   "<"},  {"&gt;",   ">"},
+        {"&quot;", "\""}, {"&apos;", "'"}, {"&#39;",  "'"},
+        {"&#x27;", "'"}, {"&nbsp;", " "},
+    };
+    for (const auto & [entity, replacement] : entities) {
+        size_t pos = 0;
+        size_t elen = strlen(entity);
+        size_t rlen = strlen(replacement);
+        while ((pos = r.find(entity, pos)) != std::string::npos) {
+            r.replace(pos, elen, replacement);
+            pos += rlen;
+        }
+    }
+    return r;
+}
+
+// trim leading and trailing whitespace
+static std::string str_trim(const std::string & s) {
+    size_t start = s.find_first_not_of(" \t\n\r");
+    if (start == std::string::npos) return "";
+    size_t end = s.find_last_not_of(" \t\n\r");
+    return s.substr(start, end - start + 1);
+}
+
+// clean raw HTML fragment into readable text
+static std::string html_clean(const std::string & html) {
+    return str_trim(html_decode(html_strip_tags(html)));
+}
+
+struct server_tool_web_search : server_tool {
+
+    server_tool_web_search() {
+        name = "web_search";
+        display_name = "Web search";
+        permission_write = false;
+    }
+
+    json get_definition() override {
+        return {
+            {"type", "function"},
+            {"function", {
+                {"name", name},
+                {"description",
+                    "Search the web for a given query. "
+                    "Returns a list of results with title, URL and snippet."},
+                {"parameters", {
+                    {"type", "object"},
+                    {"properties", {
+                        {"query", {{"type", "string"}, {"description", "Search query"}}},
+                        {"count", {{"type", "integer"}, {"description",
+                            string_format("Max results (default 5, max %d)", SERVER_TOOL_WEB_SEARCH_MAX_RESULTS)}}},
+                    }},
+                    {"required", json::array({"query"})},
+                }},
+            }},
+        };
+    }
+
+    json invoke(json params) override {
+        std::string query = params.at("query").get<std::string>();
+        int count = std::min(
+            json_value(params, "count", 5),
+            SERVER_TOOL_WEB_SEARCH_MAX_RESULTS);
+
+        try {
+            return search_duckduckgo(query, count);
+        } catch (const std::exception & e) {
+            return {{"error", std::string("web search error: ") + e.what()}};
+        }
+    }
+
+private:
+    // DuckDuckGo HTML search (autonomous, no config needed)
+    json search_duckduckgo(const std::string & query, int count) {
+        auto [cli, parts] = common_http_client("https://html.duckduckgo.com");
+        cli.set_read_timeout(SERVER_TOOL_WEB_SEARCH_TIMEOUT);
+        cli.set_connection_timeout(SERVER_TOOL_WEB_SEARCH_TIMEOUT);
+        cli.set_follow_location(true);
+
+        httplib::Headers headers = {
+            {"User-Agent",  "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"},
+            {"Referer",     "https://html.duckduckgo.com/"},
+            {"Accept",      "text/html"},
+        };
+
+        std::string body = "q=" + httplib::encode_query_component(query) + "&b=";
+        auto res = cli.Post("/html", headers, body, "application/x-www-form-urlencoded");
+        if (!res) {
+            return {{"error", "DuckDuckGo request failed: " + httplib::to_string(res.error())}};
+        }
+        if (res->status != 200) {
+            return {{"error", string_format("DuckDuckGo returned HTTP %d", res->status)}};
+        }
+
+        const std::string & html = res->body;
+
+        // detect CAPTCHA
+        if (html.find("anomaly") != std::string::npos) {
+            return {{"error", "DuckDuckGo returned a CAPTCHA challenge, try again later"}};
+        }
+
+        // parse results from HTML
+        // each result has: class="result__a" ... href="URL">TITLE</a>
+        //                  class="result__snippet" ...>SNIPPET</
+        const std::string cls_link    = "class=\"result__a\"";
+        const std::string cls_snippet = "class=\"result__snippet\"";
+        const std::string ad_marker   = "duckduckgo.com/y.js";
+
+        std::ostringstream output;
+        int n = 0;
+        size_t pos = 0;
+
+        while (n < count) {
+            pos = html.find(cls_link, pos);
+            if (pos == std::string::npos) break;
+
+            // extract URL from href="..."
+            auto href_pos = html.find("href=\"", pos);
+            if (href_pos == std::string::npos) break;
+            href_pos += 6;
+            auto href_end = html.find('"', href_pos);
+            if (href_end == std::string::npos) break;
+            std::string url = html.substr(href_pos, href_end - href_pos);
+
+            // skip ads
+            if (url.find(ad_marker) != std::string::npos) {
+                pos = href_end;
+                continue;
+            }
+
+            // extract title: text between > and </a>
+            auto title_start = html.find('>', href_end);
+            if (title_start == std::string::npos) break;
+            title_start++;
+            auto title_end = html.find("</a>", title_start);
+            if (title_end == std::string::npos) break;
+            std::string title = html_clean(html.substr(title_start, title_end - title_start));
+
+            // extract snippet: find result__snippet after current position
+            std::string snippet;
+            auto snip_pos = html.find(cls_snippet, title_end);
+            if (snip_pos != std::string::npos) {
+                // check this snippet belongs to the current result (before next result__a)
+                auto next_result = html.find(cls_link, title_end);
+                if (next_result == std::string::npos || snip_pos < next_result) {
+                    auto snip_start = html.find('>', snip_pos);
+                    if (snip_start != std::string::npos) {
+                        snip_start++;
+                        auto snip_end = html.find("</a", snip_start);
+                        if (snip_end != std::string::npos) {
+                            snippet = html_clean(html.substr(snip_start, snip_end - snip_start));
+                        }
+                    }
+                }
+            }
+
+            if (!title.empty()) {
+                output << title << "\n" << url << "\n" << snippet << "\n\n";
+                n++;
+            }
+
+            pos = title_end;
+        }
+
+        if (n == 0) {
+            return {{"error", "no results found"}};
+        }
+
+        return {{"plain_text_response", output.str()}};
+    }
+
+};
+
+
 static std::vector<std::unique_ptr<server_tool>> build_tools() {
     std::vector<std::unique_ptr<server_tool>> tools;
     tools.push_back(std::make_unique<server_tool_read_file>());
@@ -738,6 +937,7 @@ static std::vector<std::unique_ptr<server_tool>> build_tools() {
     tools.push_back(std::make_unique<server_tool_write_file>());
     tools.push_back(std::make_unique<server_tool_edit_file>());
     tools.push_back(std::make_unique<server_tool_apply_diff>());
+    tools.push_back(std::make_unique<server_tool_web_search>());
     return tools;
 }
 
