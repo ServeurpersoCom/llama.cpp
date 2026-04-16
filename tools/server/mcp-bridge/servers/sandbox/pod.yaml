@@ -48,13 +48,13 @@ spec:
   volumes:
   - name: inputs
     hostPath:
-      path: /var/www/ia/inputs
+      path: /var/www/ia/ssd/inputs
       type: Directory
   - name: workspace
     hostPath:
-      path: /var/www/ia/workspace
+      path: /var/www/ia/ssd/workspace
       type: Directory
   - name: outputs
     hostPath:
-      path: /var/www/ia/outputs
+      path: /var/www/ia/ssd/outputs
       type: Directory
