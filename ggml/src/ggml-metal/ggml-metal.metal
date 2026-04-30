@@ -4887,6 +4887,63 @@ kernel void kernel_conv_transpose_1d<half>(
     uint3    tgpg[[threadgroups_per_grid]]);
 
 
+template <typename T>
+kernel void kernel_col2im_1d(
+        constant ggml_metal_kargs_col2im_1d & args,
+        device const T * col,
+        device       T * dst,
+        uint         tgpig [[threadgroup_position_in_grid]],
+        uint         tpitg [[thread_position_in_threadgroup]],
+        uint         ntg   [[threads_per_threadgroup]]) {
+
+    const int idx = tgpig * ntg + tpitg;
+    if (idx >= args.T_out * args.OC) return;
+
+    const int t_out = idx % args.T_out;
+    const int oc    = idx / args.T_out;
+    const int t_abs = t_out + args.p0;  // absolute position in uncropped signal
+
+    int t_in_min = (t_abs - args.K + args.s0) / args.s0;
+    if (t_in_min < 0) t_in_min = 0;
+    int t_in_max = t_abs / args.s0;
+    if (t_in_max >= args.T_in) t_in_max = args.T_in - 1;
+
+    float sum = 0.0f;
+    for (int t_in = t_in_min; t_in <= t_in_max; t_in++) {
+        const int k = t_abs - t_in * args.s0;
+        sum += float(col[(oc * args.K + k) + t_in * args.K_OC]);
+    }
+
+    dst[t_out + oc * args.T_out] = T(sum);
+}
+
+template [[host_name("kernel_col2im_1d_f32")]]  kernel void kernel_col2im_1d<float>(constant ggml_metal_kargs_col2im_1d &, device const float *, device float *, uint, uint, uint);
+template [[host_name("kernel_col2im_1d_f16")]]  kernel void kernel_col2im_1d<half>(constant ggml_metal_kargs_col2im_1d &, device const half *, device half *, uint, uint, uint);
+template [[host_name("kernel_col2im_1d_bf16")]] kernel void kernel_col2im_1d<bfloat>(constant ggml_metal_kargs_col2im_1d &, device const bfloat *, device bfloat *, uint, uint, uint);
+
+template <typename T>
+kernel void kernel_snake(
+        device const ggml_metal_kargs_snake & args [[buffer(0)]],
+        device const T     * x      [[buffer(1)]],
+        device const float * a      [[buffer(2)]],
+        device const float * inv_b  [[buffer(3)]],
+        device       T     * dst    [[buffer(4)]],
+        uint         tgpig [[threadgroup_position_in_grid]],
+        uint         tpitg [[thread_position_in_threadgroup]],
+        uint         ntg   [[threads_per_threadgroup]]) {
+    const int idx = tgpig * ntg + tpitg;
+    if (idx >= args.T * args.C) return;
+
+    const int c = idx / args.T;
+    const float xi = float(x[idx]);
+    const float s  = sin(a[c] * xi);
+    dst[idx] = T(xi + s * s * inv_b[c]);
+}
+
+template [[host_name("kernel_snake_f32")]]  kernel void kernel_snake<float>(device const ggml_metal_kargs_snake &, device const float *, device const float *, device const float *, device float *, uint, uint, uint);
+template [[host_name("kernel_snake_f16")]]  kernel void kernel_snake<half>(device const ggml_metal_kargs_snake &, device const half *, device const float *, device const float *, device half *, uint, uint, uint);
+template [[host_name("kernel_snake_bf16")]] kernel void kernel_snake<bfloat>(device const ggml_metal_kargs_snake &, device const bfloat *, device const float *, device const float *, device bfloat *, uint, uint, uint);
+
 typedef void (conv_transpose_2d_t)(
         constant ggml_metal_kargs_conv_transpose_2d & args,
         device const float * src0,

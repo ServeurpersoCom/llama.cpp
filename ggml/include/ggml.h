@@ -529,6 +529,8 @@ extern "C" {
         GGML_OP_IM2COL,
         GGML_OP_IM2COL_BACK,
         GGML_OP_IM2COL_3D,
+        GGML_OP_COL2IM_1D,
+        GGML_OP_SNAKE,
         GGML_OP_CONV_2D,
         GGML_OP_CONV_3D,
         GGML_OP_CONV_2D_DW,
@@ -1995,6 +1997,24 @@ extern "C" {
         int                   d0, // dilation dimension 0
         int                   d1, // dilation dimension 1
         bool                  is_2D);
+
+    // col2im_1d: scatter-add GEMM columns back to 1D signal
+    // a: [K*OC, T_in]  (columns from matmul, K = a->ne[0]/OC)
+    // result: [T_out, OC]  where T_out = (T_in - 1)*s0 + K - 2*p0
+    GGML_API struct ggml_tensor * ggml_col2im_1d(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,   // columns [K*OC, T_in]
+        int                   s0,  // stride
+        int                   oc,  // output channels
+        int                   p0); // padding to crop from both sides
+
+    // Fused Snake activation: y = x + sin^2(a * x) * inv_b
+    // x: [T, C], a: [1, C] or [C], inv_b: [1, C] or [C]
+    GGML_API struct ggml_tensor * ggml_snake(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * x,
+        struct ggml_tensor  * a,
+        struct ggml_tensor  * inv_b);
 
     GGML_API struct ggml_tensor * ggml_conv_1d(
             struct ggml_context * ctx,
