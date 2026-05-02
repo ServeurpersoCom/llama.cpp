@@ -5086,6 +5086,83 @@ struct test_conv_transpose_2d : public test_case {
     }
 };
 
+// GGML_OP_COL2IM_1D: naive vs fused equivalence
+// naive : ggml_conv_transpose_1d(kernel, input, s, 0, 1)
+// fused : reshape + transpose + mul_mat -> ggml_col2im_1d
+// out   : naive - fused, expected ~0 if the fused path matches the math
+struct test_col2im_1d_equiv : public test_case {
+    const int64_t T_in;
+    const int64_t IC;
+    const int64_t K;
+    const int64_t OC;
+    const int     s0;
+
+    std::string vars() override {
+        return VARS_TO_STR5(T_in, IC, K, OC, s0);
+    }
+
+    test_col2im_1d_equiv(int64_t T_in = 64, int64_t IC = 32, int64_t K = 8, int64_t OC = 16, int s0 = 4)
+        : T_in(T_in), IC(IC), K(K), OC(OC), s0(s0) {}
+
+    // Same rationale as test_snake_equiv: output is (naive - fused) ~ 0,
+    // default nmse mse(a, b) / mse(a, 0) is unstable when a ~ 0. Use mean
+    // absolute error between backends, well-defined near zero.
+    double err(const float * a, const float * b, size_t n) override {
+        double sum = 0.0;
+        for (size_t i = 0; i < n; i++) {
+            sum += std::fabs(a[i] - b[i]);
+        }
+        return sum / (double)n;
+    }
+
+    // Both branches go through F32 GEMM with different reduction order on CPU
+    // vs CUDA, so the cross backend MAE bottoms out at the GEMM rounding floor
+    // around a few times 1e-4. 2e-3 leaves a comfortable margin while still
+    // catching any real algorithmic divergence.
+    double max_nmse_err() override {
+        return 2e-3;
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        // input  : [T_in, IC, 1, 1]
+        // kernel : [K, OC, IC, 1]    (ggml_conv_transpose_1d convention)
+        ggml_tensor * input = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, T_in, IC, 1, 1);
+        ggml_set_name(input, "input");
+
+        ggml_tensor * kernel = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, K, OC, IC, 1);
+        ggml_set_name(kernel, "kernel");
+
+        // naive : conv_transpose_1d -> [T_out, OC, 1, 1], stride s, no padding
+        ggml_tensor * naive_4d = ggml_conv_transpose_1d(ctx, kernel, input, s0, 0, 1);
+        ggml_tensor * naive    = ggml_reshape_2d(ctx, naive_4d, naive_4d->ne[0], naive_4d->ne[1]);
+        ggml_set_name(naive, "naive");
+
+        // fused : reshape kernel [K, OC, IC, 1] -> [K*OC, IC] then transpose -> [IC, K*OC]
+        // memory layout of [K, OC, IC] flattens row major, so [K*OC, IC] keeps the
+        // (k, oc) pair contiguous along dim 0 with the same K*OC + k indexing that
+        // ggml_col2im_1d expects for the (oc * K + k, t_in) -> (t_abs, oc) scatter.
+        ggml_tensor * w_2d   = ggml_reshape_2d(ctx, kernel, K * OC, IC);
+        ggml_tensor * w_perm = ggml_cont(ctx, ggml_transpose(ctx, w_2d));
+
+        // input [T_in, IC, 1, 1] -> [T_in, IC] -> [IC, T_in]
+        ggml_tensor * x_2d  = ggml_reshape_2d(ctx, input, T_in, IC);
+        ggml_tensor * x_t   = ggml_cont(ctx, ggml_transpose(ctx, x_2d));
+
+        // mul_mat contracts over IC : [IC, K*OC] x [IC, T_in] -> [K*OC, T_in]
+        ggml_tensor * cols  = ggml_mul_mat(ctx, w_perm, x_t);
+
+        // col2im_1d : [K*OC, T_in] -> [T_out, OC]
+        ggml_tensor * fused = ggml_col2im_1d(ctx, cols, s0, OC, 0);
+        ggml_set_name(fused, "fused");
+
+        // delta : pointwise ~0 if both paths compute the same transposed conv
+        ggml_tensor * out = ggml_sub(ctx, naive, fused);
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+};
+
 // GGML_OP_IM2COL
 struct test_im2col : public test_case {
     const ggml_type type_input;
@@ -7967,6 +8044,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     }
     test_cases.emplace_back(new test_col2im_1d({35, 7},  5, 5, 2));  // K=7, OC=5 (primes)
     test_cases.emplace_back(new test_col2im_1d({32, 17}, 1, 4, 0));  // stride=1 degenerate
+
+    // GGML_OP_COL2IM_1D: naive vs fused equivalence (acestep SEANet upsample shapes)
+    test_cases.emplace_back(new test_col2im_1d_equiv(64, 32, 8, 16, 4));  // stride=4, K=8, IC=32, OC=16
+    test_cases.emplace_back(new test_col2im_1d_equiv(48, 16, 16, 8, 8)); // stride=8, K=16, IC=16, OC=8
+    test_cases.emplace_back(new test_col2im_1d_equiv(32, 8,  4, 4,  2));  // stride=2, K=4, small
 
     for (ggml_type kernel_type : {GGML_TYPE_F32, GGML_TYPE_F16}) {
         test_cases.emplace_back(new test_conv_transpose_2d({3, 2, 3, 1}, {2, 2, 1, 3}, 1, kernel_type));
