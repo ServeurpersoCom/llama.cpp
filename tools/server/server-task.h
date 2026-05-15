@@ -114,6 +114,7 @@ struct task_result_state {
 
     task_result_state(const common_chat_parser_params & chat_parser_params)
         : chat_parser_params(chat_parser_params)
+        , chat_msg(common_chat_parse("", true, chat_parser_params))
         , oai_resp_id("resp_" + random_string())
         , oai_resp_reasoning_id("rs_" + random_string())
         , oai_resp_message_id("msg_" + random_string()) {}
