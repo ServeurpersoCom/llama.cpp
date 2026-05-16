@@ -681,3 +681,5 @@ export { default as ChatScreenActionScrollDown } from './ChatScreen/ChatScreenAc
  * Rendered inside ChatScreen when `serverError` store has a value.
  */
 export { default as ChatScreenServerError } from './ChatScreen/ChatScreenServerError.svelte';
+
+export { default as ChatScreenStreamResumeStatus } from './ChatScreen/ChatScreenStreamResumeStatus.svelte';

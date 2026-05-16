@@ -8,6 +8,7 @@
 		ChatScreenDragOverlay,
 		ChatScreenProcessingInfo,
 		ChatScreenActionScrollDown,
+		ChatScreenStreamResumeStatus,
 		DialogEmptyFileAlert,
 		DialogFileUploadError,
 		DialogChatError,
@@ -427,6 +428,10 @@
 				<ChatScreenProcessingInfo onVisibilityChange={handleProcessingInfoVisibility} />
 
 				<ChatScreenServerError />
+
+				{#if page.params.id}
+					<ChatScreenStreamResumeStatus />
+				{/if}
 
 				<div class="conversation-chat-form pointer-events-auto rounded-t-3xl">
 					<ChatScreenForm
