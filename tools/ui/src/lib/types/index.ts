@@ -30,7 +30,8 @@ export type {
 	ApiRouterModelsListResponse,
 	ApiRouterModelsUnloadRequest,
 	ApiRouterModelsUnloadResponse,
-	AudioInputFormat
+	AudioInputFormat,
+	ApiStreamSession
 } from './api';
 
 // Chat types
@@ -77,6 +78,7 @@ export type {
 	SettingsConfigValue,
 	SettingsFieldConfig,
 	SettingsChatServiceOptions,
+	StreamConnectionState,
 	SettingsConfigType,
 	SettingsExportType,
 	ParameterValue,
