@@ -6,6 +6,8 @@ add_library(mtmd
             mtmd.cpp
             mtmd-audio.cpp
             mtmd-image.cpp
+            code2wav.cpp
+            code2wav.h
             mtmd.h
             mtmd-helper.cpp
             mtmd-helper.h
@@ -123,3 +125,9 @@ add_executable(llama-mtmd-debug debug/mtmd-debug.cpp)
 set_target_properties(llama-mtmd-debug PROPERTIES OUTPUT_NAME llama-mtmd-debug)
 target_link_libraries(llama-mtmd-debug PRIVATE llama-common mtmd Threads::Threads)
 target_compile_features(llama-mtmd-debug PRIVATE cxx_std_17)
+
+# code2wav qwen3-omni standalone vocoder POC
+add_executable(code2wav-qwen3omni code2wav-qwen3omni.cpp code2wav.cpp)
+target_link_libraries     (code2wav-qwen3omni PRIVATE ggml)
+target_include_directories(code2wav-qwen3omni PRIVATE ../..)
+target_compile_features   (code2wav-qwen3omni PRIVATE cxx_std_17)

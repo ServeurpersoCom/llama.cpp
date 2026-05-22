@@ -118,6 +118,10 @@ def parse_args() -> argparse.Namespace:
         help="Export multimodal projector (mmproj) for vision models. This will only work on some vision models. An 'mmproj-' prefix will be added to the output file name.",
     )
     parser.add_argument(
+        "--code2wav", action="store_true",
+        help="Export the code2wav vocoder of a Qwen3-Omni model as its own GGUF.",
+    )
+    parser.add_argument(
         "--mtp", action="store_true",
         help="Export only the multi-token prediction (MTP) head as a separate GGUF, suitable for use as a speculative draft. An 'mtp-' prefix will be added to the output file name.",
     )
@@ -224,13 +228,13 @@ def main() -> None:
 
     with torch.inference_mode():
         output_type = ftype_map[args.outtype]
-        model_type = ModelType.MMPROJ if args.mmproj else ModelType.TEXT
+        model_type = ModelType.MMPROJ if args.mmproj else ModelType.CODE2WAV if args.code2wav else ModelType.TEXT
         hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
         if not is_mistral_format:
             model_architecture = get_model_architecture(hparams, model_type)
             logger.info(f"Model architecture: {model_architecture}")
             try:
-                model_class = get_model_class(model_architecture, mmproj=(model_type == ModelType.MMPROJ))
+                model_class = get_model_class(model_architecture, mmproj=(model_type == ModelType.MMPROJ), code2wav=(model_type == ModelType.CODE2WAV))
             except NotImplementedError:
                 logger.error(f"Model {model_architecture} is not supported")
                 sys.exit(1)

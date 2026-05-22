@@ -472,6 +472,7 @@ class MODEL_ARCH(IntEnum):
     GRANITE_HYBRID   = auto()
     CHAMELEON        = auto()
     WAVTOKENIZER_DEC = auto()
+    QWEN3OMNI_CODE2WAV = auto()
     PLM              = auto()
     BAILINGMOE       = auto()
     BAILINGMOE2      = auto()
@@ -991,6 +992,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.GRANITE_HYBRID:   "granitehybrid",
     MODEL_ARCH.CHAMELEON:        "chameleon",
     MODEL_ARCH.WAVTOKENIZER_DEC: "wavtokenizer-dec",
+    MODEL_ARCH.QWEN3OMNI_CODE2WAV: "qwen3omni-code2wav",
     MODEL_ARCH.PLM:              "plm",
     MODEL_ARCH.BAILINGMOE:       "bailingmoe",
     MODEL_ARCH.BAILINGMOE2:      "bailingmoe2",
@@ -3440,6 +3442,9 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.POSNET_ATTN_K,
         MODEL_TENSOR.POSNET_ATTN_V,
         MODEL_TENSOR.POSNET_ATTN_OUT,
+    ],
+    MODEL_ARCH.QWEN3OMNI_CODE2WAV: [
+        MODEL_TENSOR.TOKEN_EMBD,
     ],
     MODEL_ARCH.BAILINGMOE: [
         MODEL_TENSOR.TOKEN_EMBD,

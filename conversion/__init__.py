@@ -290,6 +290,10 @@ MMPROJ_MODEL_MAP: dict[str, str] = {
 _TEXT_MODEL_MODULES = sorted(set(TEXT_MODEL_MAP.values()))
 _MMPROJ_MODEL_MODULES = sorted(set(MMPROJ_MODEL_MAP.values()))
 
+CODE2WAV_MODEL_MAP: dict[str, str] = {
+    "Qwen3OmniMoeForConditionalGeneration": "qwen3omni",
+}
+
 
 _loaded_text_modules: set[str] = set()
 _loaded_mmproj_modules: set[str] = set()
@@ -316,14 +320,18 @@ def load_all_models() -> None:
                     logger.warning(f"Failed to load model module {module_name}: {e}")
 
 
-def get_model_class(name: str, mmproj: bool = False) -> Type[ModelBase]:
+def get_model_class(name: str, mmproj: bool = False, code2wav: bool = False) -> Type[ModelBase]:
     """Dynamically import and return a model class by its HuggingFace architecture name."""
-    relevant_map = MMPROJ_MODEL_MAP if mmproj else TEXT_MODEL_MAP
+    if code2wav:
+        relevant_map, model_type = CODE2WAV_MODEL_MAP, ModelType.CODE2WAV
+    elif mmproj:
+        relevant_map, model_type = MMPROJ_MODEL_MAP, ModelType.MMPROJ
+    else:
+        relevant_map, model_type = TEXT_MODEL_MAP, ModelType.TEXT
     if name not in relevant_map:
         raise NotImplementedError(f"Architecture {name!r} not supported!")
     module_name = relevant_map[name]
     __import__(f"conversion.{module_name}")
-    model_type = ModelType.MMPROJ if mmproj else ModelType.TEXT
     return ModelBase._model_classes[model_type][name]
 
 

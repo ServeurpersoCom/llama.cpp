@@ -70,12 +70,14 @@ class SentencePieceTokenTypes(IntEnum):
 class ModelType(IntEnum):
     TEXT = 1
     MMPROJ = 2
+    CODE2WAV = 3
 
 
 class ModelBase:
     _model_classes: dict[ModelType, dict[str, type[ModelBase]]] = {
         ModelType.TEXT: {},
         ModelType.MMPROJ: {},
+        ModelType.CODE2WAV: {},
     }
 
     dir_model: Path
@@ -1073,7 +1075,12 @@ class ModelBase:
         assert names
 
         def func(modelcls: AnyModel) -> AnyModel:
-            model_type = ModelType.MMPROJ if modelcls.model_arch == gguf.MODEL_ARCH.MMPROJ else ModelType.TEXT
+            if modelcls.model_arch == gguf.MODEL_ARCH.MMPROJ:
+                model_type = ModelType.MMPROJ
+            elif modelcls.model_arch == gguf.MODEL_ARCH.QWEN3OMNI_CODE2WAV:
+                model_type = ModelType.CODE2WAV
+            else:
+                model_type = ModelType.TEXT
             for name in names:
                 cls._model_classes[model_type][name] = modelcls
             return modelcls

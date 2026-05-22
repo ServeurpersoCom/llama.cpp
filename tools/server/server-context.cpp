@@ -15,6 +15,7 @@
 #include "speculative.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
+#include "code2wav.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -4281,6 +4282,100 @@ void server_routes::init_routes() {
             body_parsed,
             files,
             TASK_RESPONSE_TYPE_OAI_ASR);
+    };
+
+    // OpenAI compatible text to speech. mirror of post_transcriptions_oai but reversed :
+    // text in, audio out. the code2wav detokenizer lives in libmtmd, see code2wav.h.
+    this->post_audio_speech = [this](const server_http_req & req) {
+        auto res = create_response();
+
+        json body = json::parse(req.body);
+        const std::string input = json_value(body, "input",           std::string());
+        const std::string fmt   = json_value(body, "response_format", std::string("wav"));
+
+        // POC seam : the talker is not in server yet so the codes come from a cached file.
+        // when the in server talker lands, replace the cached load with talker_generate(input).
+        const char * codes_env = std::getenv("LLAMA_CODE2WAV_CODES");
+        if (!std::getenv("LLAMA_CODE2WAV_GGUF") || !codes_env) {
+            res->error(format_error_response(
+                "code2wav POC needs LLAMA_CODE2WAV_GGUF and LLAMA_CODE2WAV_CODES", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        // load the detokenizer once, the magic static keeps it shared and thread safe.
+        static code2wav_context * c2w = []() -> code2wav_context * {
+            const char * g = std::getenv("LLAMA_CODE2WAV_GGUF");
+            code2wav_params cp;
+            return g ? code2wav_init(g, cp) : nullptr;
+        }();
+        if (!c2w) {
+            res->error(format_error_response("failed to load code2wav gguf", ERROR_TYPE_SERVER));
+            return res;
+        }
+
+        // load the cached talker codes, frame major, num_quantizers per frame.
+        const int Q = code2wav_n_quantizers(c2w);
+        std::vector<int32_t> codes;
+        {
+            FILE * f = fopen(codes_env, "rb");
+            if (!f) {
+                res->error(format_error_response("cannot open cached codes file", ERROR_TYPE_SERVER));
+                return res;
+            }
+            fseek(f, 0, SEEK_END);
+            const long nb = ftell(f);
+            fseek(f, 0, SEEK_SET);
+            codes.resize(nb / (long) sizeof(int32_t));
+            if (fread(codes.data(), 1, nb, f) != (size_t) nb) {
+                fclose(f);
+                res->error(format_error_response("short read on codes file", ERROR_TYPE_SERVER));
+                return res;
+            }
+            fclose(f);
+        }
+        const int T = (int) (codes.size() / Q);
+        SRV_INF("audio/speech: input=%zu chars, %d code frames, format=%s\n", input.size(), T, fmt.c_str());
+
+        // decode to pcm. one shot here since the cached codes are all available, the live
+        // talker will drive code2wav_stream_push per generated frame instead.
+        std::vector<float> pcm = code2wav_decode(c2w, codes.data(), T);
+        const uint32_t sr = code2wav_sample_rate(c2w);
+
+        // pack pcm16 little endian, with a wav header unless raw pcm is requested.
+        auto buf = std::make_shared<std::string>();
+        const bool wav = fmt != "pcm";
+        if (wav) {
+            const uint32_t data_bytes = (uint32_t) pcm.size() * 2;
+            auto put32 = [&](uint32_t v) { buf->append((const char *) &v, 4); };
+            auto put16 = [&](uint16_t v) { buf->append((const char *) &v, 2); };
+            buf->append("RIFF", 4); put32(36 + data_bytes); buf->append("WAVE", 4);
+            buf->append("fmt ", 4); put32(16); put16(1); put16(1);
+            put32(sr); put32(sr * 2); put16(2); put16(16);
+            buf->append("data", 4); put32(data_bytes);
+        }
+        for (float s : pcm) {
+            int v = (int) (s * 32767.0f + (s >= 0.0f ? 0.5f : -0.5f));
+            if (v >  32767) v =  32767;
+            if (v < -32768) v = -32768;
+            const int16_t s16 = (int16_t) v;
+            buf->append((const char *) &s16, 2);
+        }
+
+        // stream the bytes as http chunked transfer so the client plays as data arrives.
+        res->content_type = wav ? "audio/wav" : "audio/pcm";
+        auto pos = std::make_shared<size_t>(0);
+        res->next = [buf, pos](std::string & chunk) -> bool {
+            const size_t CH = 16384;
+            const size_t n = buf->size();
+            if (*pos >= n) {
+                return false;
+            }
+            const size_t end = *pos + CH < n ? *pos + CH : n;
+            chunk.assign(buf->data() + *pos, end - *pos);
+            *pos = end;
+            return *pos < n;
+        };
+        return res;
     };
 
     this->post_anthropic_messages = [this](const server_http_req & req) {
