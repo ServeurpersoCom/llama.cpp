@@ -314,6 +314,7 @@ struct common_sampler * common_sampler_init(const struct llama_model * model, st
     if (params.mirostat == 0) {
 
         bool use_adaptive_p = false; // see below
+        bool use_dna_bp     = false; // dna-bp is pushed after the loop, before dist
 
         for (const auto & cnstr : params.samplers) {
             switch (cnstr) {
@@ -361,9 +362,17 @@ struct common_sampler * common_sampler_init(const struct llama_model * model, st
                     // so we know to add the sampler at the very end.
                     use_adaptive_p = true;
                     break;
+                case COMMON_SAMPLER_TYPE_DNA_BP:
+                    // collapse the k-mer block to one base selected k-mer; defer the push
+                    // until after the loop so it lands after temp/top_k/top_p
+                    use_dna_bp = true;
+                    break;
                 default:
                     GGML_ASSERT(false && "unknown sampler type");
             }
+        }
+        if (use_dna_bp) {
+            samplers.push_back(llama_sampler_init_dna_bp(vocab, params.seed, params.temp > 0.0f));
         }
         if (use_adaptive_p) {
             // only if user explicitly included adaptive-p sampler
@@ -740,6 +749,7 @@ char common_sampler_type_to_chr(enum common_sampler_type cnstr) {
         case COMMON_SAMPLER_TYPE_INFILL:      return 'i';
         case COMMON_SAMPLER_TYPE_PENALTIES:   return 'e';
         case COMMON_SAMPLER_TYPE_ADAPTIVE_P:  return 'a';
+        case COMMON_SAMPLER_TYPE_DNA_BP:      return 'b';
         default : return '?';
     }
 }
@@ -757,6 +767,7 @@ std::string common_sampler_type_to_str(enum common_sampler_type cnstr) {
         case COMMON_SAMPLER_TYPE_INFILL:      return "infill";
         case COMMON_SAMPLER_TYPE_PENALTIES:   return "penalties";
         case COMMON_SAMPLER_TYPE_ADAPTIVE_P:  return "adaptive_p";
+        case COMMON_SAMPLER_TYPE_DNA_BP:      return "dna_bp";
         default : return "";
     }
 }
@@ -774,6 +785,7 @@ std::vector<common_sampler_type> common_sampler_types_from_names(const std::vect
         { "infill",      COMMON_SAMPLER_TYPE_INFILL },
         { "penalties",   COMMON_SAMPLER_TYPE_PENALTIES },
         { "adaptive_p",  COMMON_SAMPLER_TYPE_ADAPTIVE_P },
+        { "dna_bp",      COMMON_SAMPLER_TYPE_DNA_BP },
     };
 
     // since samplers names are written multiple ways
@@ -790,6 +802,7 @@ std::vector<common_sampler_type> common_sampler_types_from_names(const std::vect
         { "min-p",       COMMON_SAMPLER_TYPE_MIN_P },
         { "temp",        COMMON_SAMPLER_TYPE_TEMPERATURE },
         { "adaptive-p",  COMMON_SAMPLER_TYPE_ADAPTIVE_P },
+        { "dna-bp",      COMMON_SAMPLER_TYPE_DNA_BP },
     };
 
     std::vector<common_sampler_type> samplers;
