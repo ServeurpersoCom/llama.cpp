@@ -1410,6 +1410,16 @@ extern "C" {
                           const char ** seq_breakers,
                               size_t    num_breakers);
 
+    /// @details Base pair selector for Carbon/HybridDNA vocabs. Marginalizes the k-mer
+    /// distribution to per position base probabilities, picks one base per position
+    /// (argmax when do_sample is false, multinomial otherwise), and forces the
+    /// reconstructed k-mer token. Runs last in the chain. No-op when the vocab has no
+    /// DNA k-mers or when the top candidate is not a k-mer.
+    LLAMA_API struct llama_sampler * llama_sampler_init_dna_bp(
+            const struct llama_vocab * vocab,
+                              uint32_t seed,
+                                  bool do_sample);
+
     /// adaptive-p: select tokens near a configurable target probability over time.
     ///
     /// the adaptive-p sampler transforms the token probability distribution to favor tokens

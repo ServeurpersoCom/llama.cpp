@@ -3259,6 +3259,183 @@ struct llama_sampler * llama_sampler_init_dry_testing(int32_t context_size, floa
     return result;
 }
 
+// dna-bp: base pair selector for Carbon/HybridDNA vocabs
+//
+// mirrors the python _BPLogitsProcessor: it runs as the last transform, so
+// temperature, top_k and top_p have already shaped the k-mer logits. it
+// softmaxes the k-mer block, marginalizes to per position base probabilities,
+// picks one base per position (argmax when greedy, multinomial when sampling),
+// reconstructs the k-mer and forces it as the only candidate
+
+struct llama_sampler_dna_bp {
+    int32_t k;
+    int32_t n_kmers;
+    bool    do_sample;
+
+    llama_token kmer_first;
+
+    std::vector<int32_t> pow4;
+
+    const uint32_t seed;
+          uint32_t seed_cur;
+       std::mt19937 rng;
+};
+
+static const char * llama_sampler_dna_bp_name(const struct llama_sampler * /*smpl*/) {
+    return "dna-bp";
+}
+
+static void llama_sampler_dna_bp_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
+    auto * ctx = (llama_sampler_dna_bp *) smpl->ctx;
+
+    if (ctx->k == 0 || cur_p->size == 0) {
+        return;
+    }
+
+    const llama_token lo = ctx->kmer_first;
+    const llama_token hi = ctx->kmer_first + ctx->n_kmers;
+
+    // stay in DNA mode only when the most likely candidate is a k-mer, so text
+    // and the closing </dna> token flow through to the terminal selector
+    size_t imax = 0;
+    for (size_t i = 1; i < cur_p->size; ++i) {
+        if (cur_p->data[i].logit > cur_p->data[imax].logit) {
+            imax = i;
+        }
+    }
+    const llama_token top = cur_p->data[imax].id;
+    if (top < lo || top >= hi) {
+        return;
+    }
+
+    // softmax over the surviving k-mer logits, shifted by their running max
+    float maxl = -INFINITY;
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        const llama_token id = cur_p->data[i].id;
+        if (id >= lo && id < hi) {
+            maxl = std::max(maxl, cur_p->data[i].logit);
+        }
+    }
+
+    // marginalize: each k-mer adds its weight to exactly one base per position,
+    // so the four weights at every position share the same normalizer
+    std::vector<std::array<float, 4>> bp(ctx->k, {0.0f, 0.0f, 0.0f, 0.0f});
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        const llama_token id = cur_p->data[i].id;
+        if (id < lo || id >= hi) {
+            continue;
+        }
+        const float w = expf(cur_p->data[i].logit - maxl);
+        const int32_t flat = id - lo;
+        for (int32_t pos = 0; pos < ctx->k; ++pos) {
+            const int32_t base = (flat / ctx->pow4[pos]) % 4;
+            bp[pos][base] += w;
+        }
+    }
+
+    // pick a base at every position then reconstruct the flat k-mer index
+    int32_t flat = 0;
+    for (int32_t pos = 0; pos < ctx->k; ++pos) {
+        int32_t base;
+        if (ctx->do_sample) {
+            std::discrete_distribution<int> dist(bp[pos].begin(), bp[pos].end());
+            base = dist(ctx->rng);
+        } else {
+            base = 0;
+            for (int32_t b = 1; b < 4; ++b) {
+                if (bp[pos][b] > bp[pos][base]) {
+                    base = b;
+                }
+            }
+        }
+        flat += base * ctx->pow4[pos];
+    }
+
+    // force the reconstructed k-mer as the sole candidate, like the python one
+    // hot: the chosen token wins even if top_k or top_p pruned it
+    cur_p->data[0].id    = lo + flat;
+    cur_p->data[0].logit = 0.0f;
+    cur_p->data[0].p     = 1.0f;
+    cur_p->size          = 1;
+    cur_p->selected      = 0;
+}
+
+static void llama_sampler_dna_bp_reset(struct llama_sampler * smpl) {
+    auto * ctx = (llama_sampler_dna_bp *) smpl->ctx;
+    ctx->seed_cur = get_rng_seed(ctx->seed);
+    ctx->rng.seed(ctx->seed_cur);
+}
+
+static struct llama_sampler * llama_sampler_dna_bp_clone(const struct llama_sampler * smpl) {
+    const auto * ctx = (const llama_sampler_dna_bp *) smpl->ctx;
+    return llama_sampler_init(smpl->iface, new llama_sampler_dna_bp(*ctx));
+}
+
+static void llama_sampler_dna_bp_free(struct llama_sampler * smpl) {
+    delete (llama_sampler_dna_bp *) smpl->ctx;
+}
+
+static struct llama_sampler_i llama_sampler_dna_bp_i = {
+    /* .name              = */ llama_sampler_dna_bp_name,
+    /* .accept            = */ nullptr,
+    /* .apply             = */ llama_sampler_dna_bp_apply,
+    /* .reset             = */ llama_sampler_dna_bp_reset,
+    /* .clone             = */ llama_sampler_dna_bp_clone,
+    /* .free              = */ llama_sampler_dna_bp_free,
+    /* .backend_init      = */ nullptr,
+    /* .backend_accept    = */ nullptr,
+    /* .backend_apply     = */ nullptr,
+    /* .backend_set_input = */ nullptr,
+};
+
+struct llama_sampler * llama_sampler_init_dna_bp(const struct llama_vocab * vocab, uint32_t seed, bool do_sample) {
+    auto seed_cur = get_rng_seed(seed);
+
+    auto * ctx = new llama_sampler_dna_bp {
+        /* .k         = */ 0,
+        /* .n_kmers   = */ 0,
+        /* .do_sample = */ do_sample,
+        /* .kmer_first= */ LLAMA_TOKEN_NULL,
+        /* .pow4      = */ {},
+        /* .seed      = */ seed,
+        /* .seed_cur  = */ seed_cur,
+        /* .rng       = */ std::mt19937(seed_cur),
+    };
+
+    // HybridDNA lays out the DNA block as <dna>, </dna>, <oov>, then the 4^k
+    // k-mers in itertools.product(['A','T','C','G'], repeat=k) order. the k-mer
+    // at id (oov + 1 + flat) is the flat-th product entry, so flat itself is the
+    // base index in product order (A=0, T=1, C=2, G=3). identifying k-mers by id
+    // range stays correct even for a k-mer that collides with a BPE token
+    const llama_token oov_id = vocab->text_to_token("<oov>");
+    if (oov_id != LLAMA_TOKEN_NULL) {
+        const int32_t first = oov_id + 1;
+        const int32_t avail = (int32_t) vocab->n_tokens() - first;
+
+        // largest power of four that leaves fewer than 128 padding tokens
+        int32_t k = 0, n = 1;
+        while (n * 4 <= avail) {
+            n *= 4;
+            k++;
+        }
+        if (k > 0 && avail - n < 128) {
+            ctx->k          = k;
+            ctx->n_kmers    = n;
+            ctx->kmer_first = first;
+            ctx->pow4.resize(k);
+            for (int32_t pos = 0; pos < k; ++pos) {
+                int32_t p = 1;
+                for (int32_t j = 0; j < k - 1 - pos; ++j) {
+                    p *= 4;
+                }
+                ctx->pow4[pos] = p;
+            }
+        }
+    }
+
+    return llama_sampler_init(&llama_sampler_dna_bp_i, ctx);
+}
+
 // adaptive-p sampler state
 //
 // maintains an exponential moving average of the *ORIGINAL* probabilities
