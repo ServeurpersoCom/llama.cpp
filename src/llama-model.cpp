@@ -2202,6 +2202,41 @@ int32_t llama_model_n_embd_out(const llama_model * model) {
     return model->hparams.n_embd_out();
 }
 
+void llama_model_embed_tokens(const llama_model * model, const llama_token * tokens, int32_t n_tokens, float * out) {
+    ggml_tensor * te = model->tok_embd;
+    GGML_ASSERT(te != nullptr);
+    const int64_t n_embd = te->ne[0];
+
+    // run get_rows on the device that holds tok_embd so a quantized table dequantizes
+    ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(te->buffer);
+    ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft);
+    ggml_backend_t backend = dev ? ggml_backend_dev_init(dev, nullptr)
+                                 : ggml_backend_init_by_type(GGML_BACKEND_DEVICE_TYPE_CPU, nullptr);
+
+    ggml_init_params ip = { ggml_tensor_overhead() * 8 + ggml_graph_overhead(), nullptr, true };
+    ggml_context * ctx = ggml_init(ip);
+    ggml_cgraph * gf = ggml_new_graph(ctx);
+
+    ggml_tensor * ids = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n_tokens);
+    ggml_set_input(ids);
+    ggml_tensor * rows = ggml_get_rows(ctx, te, ids);
+    if (rows->type != GGML_TYPE_F32) {
+        rows = ggml_cast(ctx, rows, GGML_TYPE_F32);
+    }
+    ggml_set_output(rows);
+    ggml_build_forward_expand(gf, rows);
+
+    ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend));
+    ggml_gallocr_alloc_graph(alloc, gf);
+    ggml_backend_tensor_set(ids, tokens, 0, (size_t) n_tokens * sizeof(int32_t));
+    ggml_backend_graph_compute(backend, gf);
+    ggml_backend_tensor_get(rows, out, 0, (size_t) n_embd * n_tokens * sizeof(float));
+
+    ggml_gallocr_free(alloc);
+    ggml_free(ctx);
+    ggml_backend_free(backend);
+}
+
 int32_t llama_model_n_layer(const llama_model * model) {
     return model->hparams.n_layer;
 }

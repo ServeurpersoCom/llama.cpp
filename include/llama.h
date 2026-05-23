@@ -557,6 +557,16 @@ extern "C" {
     LLAMA_API int32_t llama_model_n_embd     (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd_inp (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd_out (const struct llama_model * model);
+
+    // embed token ids through the input embedding table, writing f32 word embeds of
+    // shape [n_embd_inp, n_tokens] to out (n_embd_inp contiguous per token). out must
+    // hold n_embd_inp*n_tokens floats. runs get_rows on the device holding the table
+    // so a quantized table dequantizes. used to assemble talker tts conditioning.
+    LLAMA_API void llama_model_embed_tokens(
+            const struct llama_model * model,
+                 const llama_token   * tokens,
+                           int32_t     n_tokens,
+                             float   * out);
     LLAMA_API int32_t llama_model_n_layer    (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_head     (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_head_kv  (const struct llama_model * model);

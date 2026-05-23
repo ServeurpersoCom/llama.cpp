@@ -18,6 +18,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <cstring>
 
 #define TK_ARCH "qwen3omni-talker"
 
@@ -72,6 +73,12 @@ struct talker_context {
     ggml_tensor * mtp_norm;     // mtp.output_norm.weight
     ggml_tensor * mtp_head;     // mtp.lm_head.weight, stacked [n_embd, vocab, 15]
     ggml_tensor * mtp_embd;     // mtp.codec_embd.weight, stacked [n_embd, vocab, 15]
+
+    // thinker hidden to talker text projections, ResizeMLP fc2(silu(fc1(x))).
+    // txt_proj maps word embeds for text tokens, hid_proj maps layer 24 hidden for
+    // multimodal tokens. hid_proj loads here, the text path uses txt_proj only.
+    ggml_tensor * txt_fc1_w, * txt_fc1_b, * txt_fc2_w, * txt_fc2_b;
+    ggml_tensor * hid_fc1_w, * hid_fc1_b, * hid_fc2_w, * hid_fc2_b;
 };
 
 static ggml_tensor * tk_get(ggml_context * ctx, const std::string & n) {
@@ -506,6 +513,15 @@ talker_context * talker_init(const char * gguf_path, talker_params params) {
     ctx->mtp_head   = tk_get(ctx->ctx_data, "mtp.lm_head.weight");
     ctx->mtp_embd   = tk_get(ctx->ctx_data, "mtp.codec_embd.weight");
 
+    ctx->txt_fc1_w  = tk_get(ctx->ctx_data, "txt_proj.fc1.weight");
+    ctx->txt_fc1_b  = tk_get(ctx->ctx_data, "txt_proj.fc1.bias");
+    ctx->txt_fc2_w  = tk_get(ctx->ctx_data, "txt_proj.fc2.weight");
+    ctx->txt_fc2_b  = tk_get(ctx->ctx_data, "txt_proj.fc2.bias");
+    ctx->hid_fc1_w  = tk_get(ctx->ctx_data, "hid_proj.fc1.weight");
+    ctx->hid_fc1_b  = tk_get(ctx->ctx_data, "hid_proj.fc1.bias");
+    ctx->hid_fc2_w  = tk_get(ctx->ctx_data, "hid_proj.fc2.weight");
+    ctx->hid_fc2_b  = tk_get(ctx->ctx_data, "hid_proj.fc2.bias");
+
     return ctx;
 }
 
@@ -520,6 +536,130 @@ void talker_free(talker_context * ctx) {
 int talker_n_embd     (const talker_context * ctx) { return ctx->hp.n_embd; }
 int talker_n_codebooks(const talker_context * ctx) { return ctx->hp.n_codebooks; }
 int talker_codec_eos  (const talker_context * ctx) { return ctx->hp.codec_eos; }
+
+// apply a ResizeMLP : fc2(silu(fc1(x))). x is [in_dim, n] f32, returns [n_embd, n].
+// dims come from the loaded weights so nothing is hardcoded. biases cast to f32.
+static std::vector<float> tk_project(talker_context * ctx,
+                                     ggml_tensor * fc1_w, ggml_tensor * fc1_b,
+                                     ggml_tensor * fc2_w, ggml_tensor * fc2_b,
+                                     const float * x, int n) {
+    const int in_dim = (int) fc1_w->ne[0];
+    const int out    = (int) fc2_w->ne[1];
+
+    ggml_init_params ip; ip.mem_size = ggml_tensor_overhead() * 32 + ggml_graph_overhead(); ip.mem_buffer = nullptr; ip.no_alloc = true;
+    ggml_context * c = ggml_init(ip);
+    ggml_cgraph * gf = ggml_new_graph(c);
+
+    ggml_tensor * inp = ggml_new_tensor_2d(c, GGML_TYPE_F32, in_dim, n); ggml_set_input(inp);
+    ggml_tensor * cur = ggml_mul_mat(c, fc1_w, inp);
+    cur = ggml_add(c, cur, ggml_cast(c, fc1_b, GGML_TYPE_F32));
+    cur = ggml_silu(c, cur);
+    cur = ggml_mul_mat(c, fc2_w, cur);
+    cur = ggml_add(c, cur, ggml_cast(c, fc2_b, GGML_TYPE_F32));
+    ggml_set_output(cur);
+    ggml_build_forward_expand(gf, cur);
+
+    ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(ctx->backend));
+    ggml_gallocr_alloc_graph(alloc, gf);
+    ggml_backend_tensor_set(inp, x, 0, (size_t) in_dim * n * sizeof(float));
+    ggml_backend_graph_compute(ctx->backend, gf);
+
+    std::vector<float> y((size_t) out * n);
+    ggml_backend_tensor_get(cur, y.data(), 0, y.size() * sizeof(float));
+    ggml_gallocr_free(alloc);
+    ggml_free(c);
+    return y;
+}
+
+int talker_n_thinker_embd(talker_context * ctx) {
+    return (int) ctx->txt_fc1_w->ne[0];
+}
+
+talker_cond talker_cond_buffers::view() const {
+    talker_cond c;
+    c.input_embed   = prefill.data();
+    c.n_prefill     = n_prefill;
+    c.trailing_text = trailing.data();
+    c.n_trail       = n_trail;
+    c.tts_pad       = tts_pad.data();
+    c.prefill_pos   = pos.data();
+    return c;
+}
+
+// codec special ids from the talker config. these index codec_embd, the talker own
+// codec table, never the projection path.
+// nothink 2155, think_bos 2156, think_eos 2157, codec_pad 2148, codec_bos 2149
+talker_cond_buffers talker_build_cond(talker_context * ctx, const talker_cond_build & in) {
+    const int d  = ctx->hp.n_embd;
+    const int id = talker_n_thinker_embd(ctx);
+    const int nu = in.user_end - in.user_begin;
+    const int na = in.asst_end - in.asst_begin;
+
+    // project the user and assistant word embed slices through txt_proj
+    std::vector<float> U = tk_project(ctx, ctx->txt_fc1_w, ctx->txt_fc1_b, ctx->txt_fc2_w, ctx->txt_fc2_b,
+                                      in.thinker_embed + (size_t) in.user_begin * id, nu);
+    std::vector<float> A = tk_project(ctx, ctx->txt_fc1_w, ctx->txt_fc1_b, ctx->txt_fc2_w, ctx->txt_fc2_b,
+                                      in.thinker_embed + (size_t) in.asst_begin * id, na);
+
+    // project the three tts special word embeds in one batch, order bos eos pad
+    std::vector<float> spec((size_t) id * 3);
+    memcpy(spec.data() + (size_t) 0 * id, in.tts_bos_src, (size_t) id * sizeof(float));
+    memcpy(spec.data() + (size_t) 1 * id, in.tts_eos_src, (size_t) id * sizeof(float));
+    memcpy(spec.data() + (size_t) 2 * id, in.tts_pad_src, (size_t) id * sizeof(float));
+    std::vector<float> S = tk_project(ctx, ctx->txt_fc1_w, ctx->txt_fc1_b, ctx->txt_fc2_w, ctx->txt_fc2_b,
+                                      spec.data(), 3);
+    const float * bos = S.data() + (size_t) 0 * d;
+    const float * eos = S.data() + (size_t) 1 * d;
+    const float * pad = S.data() + (size_t) 2 * d;
+
+    // codec special embeds through the talker own table
+    std::vector<float> e_nothink  = tk_embed(ctx, ctx->codec_embd, 0, 2155);
+    std::vector<float> e_thinkbos = tk_embed(ctx, ctx->codec_embd, 0, 2156);
+    std::vector<float> e_thinkeos = tk_embed(ctx, ctx->codec_embd, 0, 2157);
+    std::vector<float> e_speaker  = tk_embed(ctx, ctx->codec_embd, 0, in.speaker_id);
+    std::vector<float> e_codecpad = tk_embed(ctx, ctx->codec_embd, 0, 2148);
+    std::vector<float> e_codecbos = tk_embed(ctx, ctx->codec_embd, 0, 2149);
+
+    talker_cond_buffers out;
+    out.n_prefill = nu + 9;
+    out.n_trail   = (na - 4) + 1;
+    out.prefill.resize((size_t) d * out.n_prefill);
+    out.trailing.resize((size_t) d * out.n_trail);
+    out.tts_pad.assign(pad, pad + d);
+    out.pos.resize((size_t) 3 * out.n_prefill);
+
+    auto col = [&](std::vector<float> & dst, int c, const float * src) {
+        memcpy(dst.data() + (size_t) c * d, src, (size_t) d * sizeof(float));
+    };
+    auto add_col = [&](std::vector<float> & dst, int c, const float * a, const float * b) {
+        float * q = dst.data() + (size_t) c * d;
+        for (int i = 0; i < d; i++) q[i] = a[i] + b[i];
+    };
+
+    // prefill : user projection then the 9 assistant head columns
+    for (int c = 0; c < nu; c++) col(out.prefill, c, U.data() + (size_t) c * d);
+    const int b = nu;
+    col    (out.prefill, b + 0, A.data() + (size_t) 0 * d);
+    col    (out.prefill, b + 1, A.data() + (size_t) 1 * d);
+    col    (out.prefill, b + 2, A.data() + (size_t) 2 * d);
+    add_col(out.prefill, b + 3, pad, e_nothink.data());
+    add_col(out.prefill, b + 4, pad, e_thinkbos.data());
+    add_col(out.prefill, b + 5, pad, e_thinkeos.data());
+    add_col(out.prefill, b + 6, pad, e_speaker.data());
+    add_col(out.prefill, b + 7, bos, e_codecpad.data());
+    add_col(out.prefill, b + 8, A.data() + (size_t) 3 * d, e_codecbos.data());
+
+    // trailing : assistant projection from index 4 then the tts eos column
+    for (int c = 4; c < na; c++) col(out.trailing, c - 4, A.data() + (size_t) c * d);
+    col(out.trailing, na - 4, eos);
+
+    // mrope positions, three equal rows 0..n_prefill-1
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < out.n_prefill; c++)
+            out.pos[(size_t) r * out.n_prefill + c] = c;
+
+    return out;
+}
 
 int talker_generate(talker_context * ctx, const talker_cond & cond, std::vector<int32_t> & codes) {
     const tk_hparams & hp = ctx->hp;

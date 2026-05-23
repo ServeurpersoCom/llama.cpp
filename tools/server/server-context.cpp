@@ -4289,89 +4289,121 @@ void server_routes::init_routes() {
     // text in, audio out. the code2wav detokenizer lives in libmtmd, see code2wav.h.
     this->post_audio_speech = [this](const server_http_req & req) {
         auto res = create_response();
+        auto & rd = res->rd;
+
+        if (params.talker_model.empty() || params.code2wav_model.empty()) {
+            res->error(format_error_response(
+                "audio/speech needs --talker-model and --code2wav-model", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
 
         json body = json::parse(req.body);
         const std::string input = json_value(body, "input",           std::string());
         const std::string fmt   = json_value(body, "response_format", std::string("wav"));
+        const std::string voice = json_value(body, "voice",           std::string("ethan"));
 
-        // POC seam : the thinker conditioning is not assembled in server yet, so the
-        // talker prefill comes from a cached conditioning file. when the thinker side
-        // lands, build the talker_cond from the live thinker hidden instead of loading.
-        const char * cond_env = std::getenv("LLAMA_TALKER_COND");
-        if (params.code2wav_model.empty() || params.talker_model.empty() || !cond_env) {
-            res->error(format_error_response(
-                "audio/speech needs --code2wav-model, --talker-model and the LLAMA_TALKER_COND seam", ERROR_TYPE_NOT_SUPPORTED));
-            return res;
-        }
+        // codec speaker id from the talker config speaker map
+        const int speaker_id = voice == "chelsie" ? 2301 : (voice == "aiden" ? 2303 : 2302);
 
-        // load the detokenizer and the talker once, the magic statics keep them shared.
+        // load the talker and the detokenizer once, the magic statics keep them shared
         static code2wav_context * c2w = [this]() -> code2wav_context * {
             code2wav_params cp;
             return code2wav_init(params.code2wav_model.c_str(), cp);
         }();
-        if (!c2w) {
-            res->error(format_error_response("failed to load code2wav gguf", ERROR_TYPE_SERVER));
-            return res;
-        }
         static talker_context * tk = [this]() -> talker_context * {
             talker_params tp;
             return talker_init(params.talker_model.c_str(), tp);
         }();
-        if (!tk) {
-            res->error(format_error_response("failed to load talker gguf", ERROR_TYPE_SERVER));
+        if (!c2w || !tk) {
+            res->error(format_error_response("failed to load talker or code2wav gguf", ERROR_TYPE_SERVER));
             return res;
         }
 
-        // load the cached talker conditioning : a small int32 header [n_prefill, n_trail]
-        // then f32 blocks prefill [n_prefill, n_embd], trailing [n_trail, n_embd],
-        // tts_pad [n_embd] and the i32 prefill positions [3, n_prefill].
-        const int Q = code2wav_n_quantizers(c2w);
-        const int n_embd = talker_n_embd(tk);
-        std::vector<float> prefill, trailing, tts_pad;
-        std::vector<int32_t> cond_pos;
-        int n_prefill = 0, n_trail = 0;
+        // full pipeline : the thinker is instructed to speak the input verbatim, the
+        // talker voices the assistant reply. the thinker really generates in server.
+        json chat;
+        chat["messages"] = json::array({
+            { {"role", "user"},
+              {"content", "Repeat this sentence out loud, exactly, with nothing else: \"" + input + "\""} }
+        });
+        std::vector<raw_buffer> files;
+        json data = oaicompat_chat_params_parse(chat, meta->chat_params, files);
+        data["return_tokens"] = true;
+        data["stream"]        = false;
+        data["n_predict"]     = json_value(body, "max_tokens", 512);
+
+        // tokenize the templated prompt, the prompt tokens fix the chatml segments
+        std::vector<server_tokens> inputs =
+            tokenize_input_prompts(ctx_server.vocab, ctx_server.mctx, data.at("prompt"), true, true);
+        llama_tokens seq = inputs[0].get_tokens();
+
+        // run the thinker generation as a proper task on the main loop
+        server_task task(SERVER_TASK_TYPE_COMPLETION);
+        task.id     = rd.get_new_id();
+        task.tokens = std::move(inputs[0]);
+        task.params = server_task::params_from_json_cmpl(
+            ctx_server.vocab, params, meta->slot_n_ctx, meta->logit_bias_eog, data);
+        task.params.res_type = TASK_RESPONSE_TYPE_NONE;
         {
-            FILE * f = fopen(cond_env, "rb");
-            if (!f) {
-                res->error(format_error_response("cannot open conditioning file", ERROR_TYPE_SERVER));
-                return res;
-            }
-            int32_t hdr[2] = {0, 0};
-            bool ok = fread(hdr, sizeof(int32_t), 2, f) == 2;
-            n_prefill = hdr[0]; n_trail = hdr[1];
-            if (ok && (n_prefill <= 0 || n_trail < 0)) ok = false;
-            if (ok) {
-                prefill.resize((size_t) n_prefill * n_embd);
-                trailing.resize((size_t) n_trail * n_embd);
-                tts_pad.resize(n_embd);
-                cond_pos.resize((size_t) 3 * n_prefill);
-                ok = ok && fread(prefill.data(),  sizeof(float),   prefill.size(),  f) == prefill.size();
-                ok = ok && fread(trailing.data(), sizeof(float),   trailing.size(), f) == trailing.size();
-                ok = ok && fread(tts_pad.data(),  sizeof(float),   tts_pad.size(),  f) == tts_pad.size();
-                ok = ok && fread(cond_pos.data(),  sizeof(int32_t), cond_pos.size(),  f) == cond_pos.size();
-            }
-            fclose(f);
-            if (!ok) {
-                res->error(format_error_response("bad conditioning file", ERROR_TYPE_SERVER));
-                return res;
-            }
+            std::vector<server_task> tasks;
+            tasks.push_back(std::move(task));
+            rd.post_tasks(std::move(tasks));
+        }
+        auto all = rd.wait_for_all(req.should_stop);
+        if (all.is_terminated) return res;
+        if (all.error) { res->error(all.error->to_json()); return res; }
+        auto * fin = dynamic_cast<server_task_result_cmpl_final *>(all.results[0].get());
+        if (!fin) {
+            res->error(format_error_response("no completion result", ERROR_TYPE_SERVER));
+            return res;
         }
 
-        // run the talker to produce the codes, frame major, num_quantizers per frame.
-        talker_cond cond;
-        cond.input_embed   = prefill.data();
-        cond.n_prefill     = n_prefill;
-        cond.trailing_text = trailing.data();
-        cond.n_trail       = n_trail;
-        cond.tts_pad       = tts_pad.data();
-        cond.prefill_pos   = cond_pos.data();
+        // full thinker sequence : prompt then the generated reply
+        for (llama_token t : fin->tokens) seq.push_back(t);
+        const int n_seq = (int) seq.size();
+
+        // chatml segments by scanning im_start (151644). the last im_start opens the
+        // assistant segment, the one before it opens the user turn. the last sequence
+        // position has no thinker embed in the reference, drop it.
+        const llama_token IM_START = 151644;
+        std::vector<int> starts;
+        for (int i = 0; i < n_seq; i++) if (seq[i] == IM_START) starts.push_back(i);
+        if (starts.empty()) {
+            res->error(format_error_response("no chatml im_start in thinker sequence", ERROR_TYPE_SERVER));
+            return res;
+        }
+        const int asst_begin = starts.back();
+        const int user_begin = starts.size() >= 2 ? starts[starts.size() - 2] : 0;
+        const int asst_end   = n_seq - 1;
+
+        // embed the sequence and the three tts special tokens through tok_embd
+        const int n_id = llama_model_n_embd_inp(ctx_server.model_tgt);
+        std::vector<float> emb((size_t) n_id * n_seq);
+        llama_model_embed_tokens(ctx_server.model_tgt, seq.data(), n_seq, emb.data());
+
+        const llama_token tts_ids[3] = { 151672, 151673, 151671 }; // bos, eos, pad
+        std::vector<float> spec((size_t) n_id * 3);
+        llama_model_embed_tokens(ctx_server.model_tgt, tts_ids, 3, spec.data());
+
+        // assemble the talker conditioning live, then run talker -> code2wav
+        talker_cond_build cin;
+        cin.thinker_embed = emb.data();
+        cin.n_seq         = n_seq;
+        cin.user_begin    = user_begin;   cin.user_end = asst_begin;
+        cin.asst_begin    = asst_begin;   cin.asst_end = asst_end;
+        cin.tts_bos_src   = spec.data() + (size_t) 0 * n_id;
+        cin.tts_eos_src   = spec.data() + (size_t) 1 * n_id;
+        cin.tts_pad_src   = spec.data() + (size_t) 2 * n_id;
+        cin.speaker_id    = speaker_id;
+
+        talker_cond_buffers cbuf = talker_build_cond(tk, cin);
+        talker_cond cond = cbuf.view();
+
         std::vector<int32_t> codes;
         const int T = talker_generate(tk, cond, codes);
-        SRV_INF("audio/speech: input=%zu chars, %d code frames, format=%s\n", input.size(), T, fmt.c_str());
-        (void) Q;
+        SRV_INF("audio/speech: input=%zu chars, seq=%d, prefill=%d, %d code frames, format=%s\n",
+                input.size(), n_seq, cond.n_prefill, T, fmt.c_str());
 
-        // decode to pcm. one shot here since the cached codes are all available, the live
-        // talker will drive code2wav_stream_push per generated frame instead.
         std::vector<float> pcm = code2wav_decode(c2w, codes.data(), T);
         const uint32_t sr = code2wav_sample_rate(c2w);
 

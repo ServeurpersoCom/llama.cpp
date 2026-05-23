@@ -55,3 +55,38 @@ MTMD_API int talker_codec_eos    (const talker_context * ctx);  // 2150
 // per frame, cb0 first) and returns the frame count. codes is resized by the call.
 // this is the harness and endpoint path, both share the same loop.
 MTMD_API int talker_generate(talker_context * ctx, const talker_cond & cond, std::vector<int32_t> & codes);
+
+// number of thinker hidden dims the cond builder expects as input (2048).
+MTMD_API int talker_n_thinker_embd(talker_context * ctx);
+
+// inputs to assemble the talker_cond live from the thinker, text path.
+//   thinker_embed   thinker word embeds for the whole sequence, [n_thinker_embd, n_seq]
+//   user/asst       chatml segment ranges in the sequence, half open
+//   tts_*_src       thinker word embed of the tts bos/eos/pad token id, [n_thinker_embd]
+//   speaker_id      codec speaker id, indexes the talker codec table
+struct talker_cond_build {
+    const float * thinker_embed;
+    int           n_seq;
+    int           user_begin, user_end;
+    int           asst_begin, asst_end;
+    const float * tts_bos_src;
+    const float * tts_eos_src;
+    const float * tts_pad_src;
+    int           speaker_id;
+};
+
+// owns the assembled buffers, view() points a talker_cond into them. keep this alive
+// for as long as the talker_cond is used.
+struct talker_cond_buffers {
+    std::vector<float>   prefill;
+    std::vector<float>   trailing;
+    std::vector<float>   tts_pad;
+    std::vector<int32_t> pos;
+    int n_prefill = 0;
+    int n_trail   = 0;
+    talker_cond view() const;
+};
+
+// assemble the talker_cond from the thinker word embeds and the chatml segments,
+// applying txt_proj and the codec specials per the reference recipe.
+MTMD_API talker_cond_buffers talker_build_cond(talker_context * ctx, const talker_cond_build & in);
