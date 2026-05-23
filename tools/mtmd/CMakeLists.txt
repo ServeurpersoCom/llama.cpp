@@ -8,6 +8,8 @@ add_library(mtmd
             mtmd-image.cpp
             code2wav.cpp
             code2wav.h
+            talker.cpp
+            talker.h
             mtmd.h
             mtmd-helper.cpp
             mtmd-helper.h
@@ -132,14 +134,4 @@ target_link_libraries     (code2wav-qwen3omni PRIVATE ggml)
 target_include_directories(code2wav-qwen3omni PRIVATE ../..)
 target_compile_features   (code2wav-qwen3omni PRIVATE cxx_std_17)
 
-# qwen3-omni talker bisect harness (temporary, validation only)
-add_executable(talker-bisect talker-bisect.cpp)
-target_link_libraries     (talker-bisect PRIVATE ggml)
-target_include_directories(talker-bisect PRIVATE ../..)
-target_compile_features   (talker-bisect PRIVATE cxx_std_17)
 
-# qwen3-omni talker module test (temporary, validation only)
-add_executable(talker-test talker-test.cpp talker.cpp)
-target_link_libraries     (talker-test PRIVATE ggml)
-target_include_directories(talker-test PRIVATE ../..)
-target_compile_features   (talker-test PRIVATE cxx_std_17)

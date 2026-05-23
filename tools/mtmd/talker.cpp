@@ -128,7 +128,8 @@ static ggml_tensor * tk_body_layer_kv(ggml_context * ctx, const tk_hparams & hp,
     // expose the new k/v for cache writeback, flattened [kv_dim, n_new]
     ggml_tensor * kf = ggml_reshape_2d(ctx, ggml_cont(ctx, k), kvd, n_new);
     ggml_tensor * vf = ggml_reshape_2d(ctx, ggml_cont(ctx, v), kvd, n_new);
-    *newk = kf; *newv = vf;
+    *newk = ggml_cont(ctx, kf);
+    *newv = ggml_cont(ctx, vf);
 
     ggml_tensor * kall = pastk ? ggml_concat(ctx, pastk, kf, 1) : kf;
     ggml_tensor * vall = pastv ? ggml_concat(ctx, pastv, vf, 1) : vf;
@@ -201,7 +202,8 @@ static ggml_tensor * tk_mtp_layer_kv(ggml_context * ctx, const tk_hparams & hp, 
 
     ggml_tensor * kf = ggml_reshape_2d(ctx, ggml_cont(ctx, k), kvd, n_new);
     ggml_tensor * vf = ggml_reshape_2d(ctx, ggml_cont(ctx, v), kvd, n_new);
-    *newk = kf; *newv = vf;
+    *newk = ggml_cont(ctx, kf);
+    *newv = ggml_cont(ctx, vf);
 
     ggml_tensor * kall = pastk ? ggml_concat(ctx, pastk, kf, 1) : kf;
     ggml_tensor * vall = pastv ? ggml_concat(ctx, pastv, vf, 1) : vf;
@@ -225,49 +227,95 @@ static ggml_tensor * tk_mtp_layer_kv(ggml_context * ctx, const tk_hparams & hp, 
     return ggml_add(ctx, ffn_in, cur);
 }
 
-// run the body over a full prefix of embeds [n_embd, T] with a causal mask and a
-// scalar position counter starting at pos0. recompute prefix, byte exact against
-// the reference. returns the last position post norm hidden and the cb0 logits.
-static void tk_body_recompute(talker_context * ctx, const std::vector<float> & embeds, int T, int pos0,
-                              std::vector<float> & hidden_out, std::vector<float> & cb0_logits) {
+// a growable per layer kv cache, flat [kv_dim * n_pos] for k and v.
+struct tk_kv {
+    int n_pos;
+    int kv_dim;
+    std::vector<std::vector<float>> k, v;
+    void reset(int n_layer, int dim) {
+        n_pos = 0;
+        kv_dim = dim;
+        k.assign(n_layer, {});
+        v.assign(n_layer, {});
+    }
+};
+
+// run the body over n_new tokens using the kv cache, append the new k/v, return the
+// last position post norm hidden and the cb0 logits. pos0 is the absolute position
+// of the first new token.
+static void tk_body_kv_forward(talker_context * ctx, tk_kv & kv, const float * emb, int n_new, int pos0,
+                               std::vector<float> & hidden_out, std::vector<float> & cb0_logits) {
     const tk_hparams & hp = ctx->hp;
+    const int past = kv.n_pos;
+    const int T = past + n_new;
+
     const size_t meta = ggml_tensor_overhead() * GGML_DEFAULT_GRAPH_SIZE * 16 + ggml_graph_overhead_custom(GGML_DEFAULT_GRAPH_SIZE * 16, false);
     ggml_init_params ip; ip.mem_size = meta; ip.mem_buffer = nullptr; ip.no_alloc = true;
     ggml_context * c = ggml_init(ip);
     ggml_cgraph * gf = ggml_new_graph_custom(c, GGML_DEFAULT_GRAPH_SIZE * 16, false);
 
-    ggml_tensor * inp = ggml_new_tensor_2d(c, GGML_TYPE_F32, hp.n_embd, T); ggml_set_input(inp);
-    ggml_tensor * pos = ggml_new_tensor_1d(c, GGML_TYPE_I32, T); ggml_set_input(pos);
-    ggml_tensor * mask = ggml_new_tensor_2d(c, GGML_TYPE_F32, T, T); ggml_set_input(mask);
+    ggml_tensor * inp = ggml_new_tensor_2d(c, GGML_TYPE_F32, hp.n_embd, n_new); ggml_set_input(inp);
+    ggml_tensor * pos = ggml_new_tensor_1d(c, GGML_TYPE_I32, n_new); ggml_set_input(pos);
+    ggml_tensor * mask = n_new > 1 ? ggml_new_tensor_2d(c, GGML_TYPE_F32, T, n_new) : nullptr;
+    if (mask) ggml_set_input(mask);
+
+    std::vector<ggml_tensor *> pastk(hp.n_layer, nullptr), pastv(hp.n_layer, nullptr), newk(hp.n_layer), newv(hp.n_layer);
+    for (int i = 0; i < hp.n_layer; i++) {
+        if (past > 0) {
+            pastk[i] = ggml_new_tensor_2d(c, GGML_TYPE_F32, kv.kv_dim, past); ggml_set_input(pastk[i]);
+            pastv[i] = ggml_new_tensor_2d(c, GGML_TYPE_F32, kv.kv_dim, past); ggml_set_input(pastv[i]);
+        }
+    }
 
     ggml_tensor * cur = inp;
     for (int i = 0; i < hp.n_layer; i++) {
-        ggml_tensor * nk, * nv;
-        cur = tk_body_layer_kv(c, hp, ctx->body[i], cur, pos, mask, nullptr, nullptr, &nk, &nv);
+        cur = tk_body_layer_kv(c, hp, ctx->body[i], cur, pos, mask, pastk[i], pastv[i], &newk[i], &newv[i]);
+        ggml_set_output(newk[i]); ggml_set_output(newv[i]);
     }
     ggml_tensor * normed = tk_rmsnorm(c, cur, ctx->out_norm, hp.rms_eps); ggml_set_output(normed);
     ggml_tensor * logits = ggml_mul_mat(c, ctx->codec_head, normed); ggml_set_output(logits);
+    for (int i = 0; i < hp.n_layer; i++) { ggml_build_forward_expand(gf, newk[i]); ggml_build_forward_expand(gf, newv[i]); }
     ggml_build_forward_expand(gf, normed);
     ggml_build_forward_expand(gf, logits);
 
     ggml_gallocr_t alloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(ctx->backend));
     ggml_gallocr_alloc_graph(alloc, gf);
-    ggml_backend_tensor_set(inp, embeds.data(), 0, (size_t) hp.n_embd * T * sizeof(float));
-    std::vector<int32_t> posd(T);
-    for (int i = 0; i < T; i++) posd[i] = pos0 + i;
+
+    ggml_backend_tensor_set(inp, emb, 0, (size_t) hp.n_embd * n_new * sizeof(float));
+    std::vector<int32_t> posd(n_new);
+    for (int i = 0; i < n_new; i++) posd[i] = pos0 + i;
     ggml_backend_tensor_set(pos, posd.data(), 0, posd.size() * sizeof(int32_t));
-    std::vector<float> md((size_t) T * T);
-    for (int q = 0; q < T; q++) {
-        for (int kk = 0; kk < T; kk++) md[(size_t) q * T + kk] = kk <= q ? 0.0f : -INFINITY;
+    if (mask) {
+        std::vector<float> md((size_t) n_new * T);
+        for (int q = 0; q < n_new; q++) {
+            for (int kk = 0; kk < T; kk++) md[(size_t) q * T + kk] = kk <= past + q ? 0.0f : -INFINITY;
+        }
+        ggml_backend_tensor_set(mask, md.data(), 0, md.size() * sizeof(float));
     }
-    ggml_backend_tensor_set(mask, md.data(), 0, md.size() * sizeof(float));
+    for (int i = 0; i < hp.n_layer; i++) {
+        if (pastk[i]) {
+            ggml_backend_tensor_set(pastk[i], kv.k[i].data(), 0, kv.k[i].size() * sizeof(float));
+            ggml_backend_tensor_set(pastv[i], kv.v[i].data(), 0, kv.v[i].size() * sizeof(float));
+        }
+    }
+
     ggml_backend_graph_compute(ctx->backend, gf);
+
+    for (int i = 0; i < hp.n_layer; i++) {
+        const int kvd = kv.kv_dim;
+        std::vector<float> nk((size_t) kvd * n_new), nv((size_t) kvd * n_new);
+        ggml_backend_tensor_get(newk[i], nk.data(), 0, nk.size() * sizeof(float));
+        ggml_backend_tensor_get(newv[i], nv.data(), 0, nv.size() * sizeof(float));
+        kv.k[i].insert(kv.k[i].end(), nk.begin(), nk.end());
+        kv.v[i].insert(kv.v[i].end(), nv.begin(), nv.end());
+    }
+    kv.n_pos += n_new;
 
     const int vocab = (int) logits->ne[0];
     hidden_out.resize(hp.n_embd);
     cb0_logits.resize(vocab);
-    ggml_backend_tensor_get(normed, hidden_out.data(), (size_t)(T - 1) * hp.n_embd * sizeof(float), hp.n_embd * sizeof(float));
-    ggml_backend_tensor_get(logits, cb0_logits.data(), (size_t)(T - 1) * vocab * sizeof(float), vocab * sizeof(float));
+    ggml_backend_tensor_get(normed, hidden_out.data(), (size_t)(n_new - 1) * hp.n_embd * sizeof(float), hp.n_embd * sizeof(float));
+    ggml_backend_tensor_get(logits, cb0_logits.data(), (size_t)(n_new - 1) * vocab * sizeof(float), vocab * sizeof(float));
     ggml_gallocr_free(alloc);
     ggml_free(c);
 }
@@ -394,7 +442,7 @@ talker_context * talker_init(const char * gguf_path, talker_params params) {
     hp.mtp_head_kv  = 8;
     hp.mtp_vocab    = 2048;
     hp.n_codebooks  = 16;
-    hp.codec_eos    = 4198;
+    hp.codec_eos    = (int) tk_u32(g, TK_ARCH ".codec_eos_token_id", 2150);
 
     ggml_backend_alloc_ctx_tensors(ctx->ctx_data, ctx->backend);
     FILE * wf = fopen(gguf_path, "rb");
@@ -482,12 +530,12 @@ int talker_generate(talker_context * ctx, const talker_cond & cond, std::vector<
         ? cond.prefill_pos[(size_t) 2 * cond.n_prefill + (cond.n_prefill - 1)] - (cond.n_prefill - 1)
         : 0;
 
-    // the growing embed prefix, starts as the assembled prefill
-    std::vector<float> prefix(cond.input_embed, cond.input_embed + (size_t) cond.n_prefill * hp.n_embd);
-    int T = cond.n_prefill;
+    // the body runs on a growing kv cache, prefill then one token per frame
+    tk_kv body_kv;
+    body_kv.reset(hp.n_layer, hp.head_dim * hp.n_head_kv);
 
     std::vector<float> hidden, cb0_logits;
-    tk_body_recompute(ctx, prefix, T, pos0, hidden, cb0_logits);
+    tk_body_kv_forward(ctx, body_kv, cond.input_embed, cond.n_prefill, pos0, hidden, cb0_logits);
 
     int step = 0;
     while (step < ctx->params.max_frames) {
@@ -510,10 +558,8 @@ int talker_generate(talker_context * ctx, const talker_cond & cond, std::vector<
         const float * txt = step < cond.n_trail ? cond.trailing_text + (size_t) step * hp.n_embd : cond.tts_pad;
         for (int i = 0; i < hp.n_embd; i++) cond_e[i] += txt[i];
 
-        // append the new frame and recompute the body over the grown prefix
-        prefix.insert(prefix.end(), cond_e.begin(), cond_e.end());
-        T++;
-        tk_body_recompute(ctx, prefix, T, pos0, hidden, cb0_logits);
+        // advance one frame on the kv cache
+        tk_body_kv_forward(ctx, body_kv, cond_e.data(), 1, pos0 + cond.n_prefill + step, hidden, cb0_logits);
         step++;
     }
 
