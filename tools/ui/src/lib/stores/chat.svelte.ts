@@ -54,12 +54,7 @@ import type {
 	DatabaseMessage,
 	DatabaseMessageExtra
 } from '$lib/types';
-import {
-	ErrorDialogType,
-	MessageRole,
-	MessageType,
-	StreamConnectionState
-} from '$lib/enums';
+import { ErrorDialogType, MessageRole, MessageType, StreamConnectionState } from '$lib/enums';
 
 interface ConversationStateEntry {
 	lastAccessed: number;
