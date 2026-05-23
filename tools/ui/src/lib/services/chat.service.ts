@@ -13,7 +13,11 @@ import {
 	ATTACHMENT_LABEL_MCP_RESOURCE,
 	LEGACY_AGENTIC_REGEX,
 	SETTINGS_KEYS,
-	STREAM_VISIBILITY_KICK_MS
+	STREAM_VISIBILITY_KICK_MS,
+	SSE_DONE_MARKER,
+	SSE_DATA_PREFIX,
+	NEWLINE,
+	API_STREAM
 } from '$lib/constants';
 import {
 	AttachmentType,
@@ -22,6 +26,7 @@ import {
 	MessageRole,
 	MimeTypeAudio,
 	ReasoningFormat,
+	StreamConnectionState,
 	UrlProtocol
 } from '$lib/enums';
 import type {
@@ -32,8 +37,7 @@ import type {
 import type {
 	AudioInputFormat,
 	DatabaseMessageExtraMcpPrompt,
-	DatabaseMessageExtraMcpResource,
-	StreamConnectionState
+	DatabaseMessageExtraMcpResource
 } from '$lib/types';
 import { modelsStore } from '$lib/stores/models.svelte';
 import { settingsStore } from '../stores/settings.svelte';
@@ -426,7 +430,7 @@ export class ChatService {
 		if (!conversationId) return;
 		try {
 			const id = streamIdentity(conversationId, model);
-			await fetch(`./v1/stream/${encodeURIComponent(id)}`, {
+			await fetch(`${API_STREAM.BASE}/${encodeURIComponent(id)}`, {
 				method: 'DELETE',
 				headers: getAuthHeaders()
 			});
@@ -559,7 +563,7 @@ export class ChatService {
 		if (conversationId) {
 			saveStreamState(conversationId, 0, streamModel);
 		}
-		onConnectionState?.('streaming');
+		onConnectionState?.(StreamConnectionState.STREAMING);
 
 		let decoder = new TextDecoder();
 		let aggregatedContent = '';
@@ -660,12 +664,12 @@ export class ChatService {
 						lastByteAt = Date.now();
 						if (!madeProgress) {
 							madeProgress = true;
-							onConnectionState?.('streaming');
+							onConnectionState?.(StreamConnectionState.STREAMING);
 						}
 					}
 
 					chunk += decoder.decode(value, { stream: true });
-					const lines = chunk.split('\n');
+					const lines = chunk.split(NEWLINE);
 					chunk = lines.pop() || '';
 
 					// the persisted offset must point right after the last fully parsed line,
@@ -680,8 +684,8 @@ export class ChatService {
 						if (abortSignal?.aborted) break;
 
 						if (line.startsWith(UrlProtocol.DATA)) {
-							const data = line.slice(6);
-							if (data === '[DONE]') {
+							const data = line.slice(SSE_DATA_PREFIX.length);
+							if (data === SSE_DONE_MARKER) {
 								streamFinished = true;
 
 								continue;
@@ -744,12 +748,12 @@ export class ChatService {
 				if (!conversationId) break;
 
 				if (!madeProgress) {
-					onConnectionState?.('lost');
+					onConnectionState?.(StreamConnectionState.LOST);
 					onError?.(new Error('Stream resume produced no new bytes, giving up'));
 					break;
 				}
 
-				onConnectionState?.('resuming');
+				onConnectionState?.(StreamConnectionState.RESUMING);
 				madeProgress = false;
 
 				// the server resends starting at bytesParsed, discard any partial line we held
@@ -762,7 +766,7 @@ export class ChatService {
 				// an abort landing during the resume request is intentional, not a lost connection
 				if (abortSignal?.aborted) break;
 				if (!resumeResp || resumeResp.status !== 200) {
-					onConnectionState?.('lost');
+					onConnectionState?.(StreamConnectionState.LOST);
 					onError?.(new Error('Stream connection lost and could not be resumed'));
 					break;
 				}

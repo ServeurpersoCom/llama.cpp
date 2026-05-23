@@ -10,6 +10,7 @@ export { AgenticSectionType, ToolCallType } from './agentic.enums';
 
 export {
 	ChatMessageStatsView,
+	StreamConnectionState,
 	ContentPartType,
 	ConversationSelectionMode,
 	ErrorDialogType,
