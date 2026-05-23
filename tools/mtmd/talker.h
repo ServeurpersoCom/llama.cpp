@@ -56,6 +56,14 @@ MTMD_API int talker_codec_eos    (const talker_context * ctx);  // 2150
 // this is the harness and endpoint path, both share the same loop.
 MTMD_API int talker_generate(talker_context * ctx, const talker_cond & cond, std::vector<int32_t> & codes);
 
+// resumable streaming variant. pull one frame at a time so the caller can pipe codes
+// into code2wav as they land. the cond buffers must outlive the stream. out_frame must
+// hold n_codebooks ints. talker_generate is a thin wrapper over this loop.
+struct talker_stream;
+MTMD_API talker_stream * talker_stream_init(talker_context * ctx, const talker_cond & cond);
+MTMD_API bool            talker_stream_next(talker_stream * s, int32_t * out_frame);
+MTMD_API void            talker_stream_free(talker_stream * s);
+
 // number of thinker hidden dims the cond builder expects as input (2048).
 MTMD_API int talker_n_thinker_embd(talker_context * ctx);
 
@@ -84,7 +92,19 @@ struct talker_cond_buffers {
     std::vector<int32_t> pos;
     int n_prefill = 0;
     int n_trail   = 0;
-    talker_cond view() const;
+
+    // inline so the http server unit can build the view without crossing the dll
+    // boundary into libmtmd, which would need the method exported on windows
+    talker_cond view() const {
+        talker_cond c;
+        c.input_embed   = prefill.data();
+        c.n_prefill     = n_prefill;
+        c.trailing_text = trailing.data();
+        c.n_trail       = n_trail;
+        c.tts_pad       = tts_pad.data();
+        c.prefill_pos   = pos.data();
+        return c;
+    }
 };
 
 // assemble the talker_cond from the thinker word embeds and the chatml segments,

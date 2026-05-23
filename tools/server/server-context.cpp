@@ -39,6 +39,23 @@ using json = nlohmann::ordered_json;
 
 constexpr int HTTP_POLLING_SECONDS = 1;
 
+// Qwen3-Omni text to speech endpoint knobs, no magic numbers in the handler below
+constexpr llama_token QWEN_IM_START_ID       = 151644;
+constexpr llama_token QWEN_TTS_BOS_ID        = 151672;
+constexpr llama_token QWEN_TTS_EOS_ID        = 151673;
+constexpr llama_token QWEN_TTS_PAD_ID        = 151671;
+constexpr int         TTS_SPEAKER_CHELSIE    = 2301;
+constexpr int         TTS_SPEAKER_ETHAN      = 2302;  // default voice
+constexpr int         TTS_SPEAKER_AIDEN      = 2303;
+constexpr int         TTS_MAX_TOKENS_DEFAULT = 512;
+constexpr int         TTS_CODE2WAV_WINDOW    = 300;   // detok window frames, fidelity over latency
+constexpr int         TTS_CODE2WAV_LOOKBACK  = 25;    // left context frames for seamless windows
+constexpr uint32_t    WAV_STREAM_SIZE        = 0xFFFFFFFFu; // streaming wav, total length unknown up front
+constexpr uint32_t    WAV_FMT_CHUNK          = 16;    // pcm fmt chunk size
+constexpr uint16_t    WAV_FORMAT_PCM         = 1;
+constexpr uint16_t    WAV_CHANNELS           = 1;     // mono
+constexpr uint16_t    WAV_BITS               = 16;    // pcm16
+
 // state diagram: https://github.com/ggml-org/llama.cpp/pull/9283
 enum slot_state {
     SLOT_STATE_IDLE,
@@ -2143,6 +2160,24 @@ private:
 
                     if (task.metrics_reset_bucket) {
                         metrics.reset_bucket();
+                    }
+                    queue_results.send(std::move(res));
+                } break;
+            case SERVER_TASK_TYPE_EMBED_WORDS:
+                {
+                    // look up word embeds for the token ids on the main loop, so the gpu
+                    // work serializes with the decode loop. read only on the weights, no
+                    // slot or kv touched. used to assemble the talker tts conditioning.
+                    const llama_tokens & ids = task.embed_tokens;
+                    const int n = (int) ids.size();
+                    const int n_embd = llama_model_n_embd_inp(model_tgt);
+                    auto res = std::make_unique<server_task_result_embed_words>();
+                    res->id       = task.id;
+                    res->n_embd   = n_embd;
+                    res->n_tokens = n;
+                    res->embeds.resize((size_t) n_embd * n);
+                    if (n > 0) {
+                        llama_model_embed_tokens(model_tgt, ids.data(), n, res->embeds.data());
                     }
                     queue_results.send(std::move(res));
                 } break;
@@ -4303,11 +4338,16 @@ void server_routes::init_routes() {
         const std::string voice = json_value(body, "voice",           std::string("ethan"));
 
         // codec speaker id from the talker config speaker map
-        const int speaker_id = voice == "chelsie" ? 2301 : (voice == "aiden" ? 2303 : 2302);
+        const int speaker_id = voice == "chelsie" ? TTS_SPEAKER_CHELSIE : (voice == "aiden" ? TTS_SPEAKER_AIDEN : TTS_SPEAKER_ETHAN);
 
         // load the talker and the detokenizer once, the magic statics keep them shared
         static code2wav_context * c2w = [this]() -> code2wav_context * {
             code2wav_params cp;
+            // keep the reference window : the streamed pcm is byte for byte the one shot
+            // decode. a smaller window would cut latency but shift the conv edges and
+            // change the audio, so streaming emits one faithful window at a time.
+            cp.chunk_size   = TTS_CODE2WAV_WINDOW;
+            cp.left_context = TTS_CODE2WAV_LOOKBACK;
             return code2wav_init(params.code2wav_model.c_str(), cp);
         }();
         static talker_context * tk = [this]() -> talker_context * {
@@ -4330,7 +4370,7 @@ void server_routes::init_routes() {
         json data = oaicompat_chat_params_parse(chat, meta->chat_params, files);
         data["return_tokens"] = true;
         data["stream"]        = false;
-        data["n_predict"]     = json_value(body, "max_tokens", 512);
+        data["n_predict"]     = json_value(body, "max_tokens", TTS_MAX_TOKENS_DEFAULT);
 
         // tokenize the templated prompt, the prompt tokens fix the chatml segments
         std::vector<server_tokens> inputs =
@@ -4365,7 +4405,7 @@ void server_routes::init_routes() {
         // chatml segments by scanning im_start (151644). the last im_start opens the
         // assistant segment, the one before it opens the user turn. the last sequence
         // position has no thinker embed in the reference, drop it.
-        const llama_token IM_START = 151644;
+        const llama_token IM_START = QWEN_IM_START_ID;
         std::vector<int> starts;
         for (int i = 0; i < n_seq; i++) if (seq[i] == IM_START) starts.push_back(i);
         if (starts.empty()) {
@@ -4376,70 +4416,122 @@ void server_routes::init_routes() {
         const int user_begin = starts.size() >= 2 ? starts[starts.size() - 2] : 0;
         const int asst_end   = n_seq - 1;
 
-        // embed the sequence and the three tts special tokens through tok_embd
-        const int n_id = llama_model_n_embd_inp(ctx_server.model_tgt);
-        std::vector<float> emb((size_t) n_id * n_seq);
-        llama_model_embed_tokens(ctx_server.model_tgt, seq.data(), n_seq, emb.data());
+        // embed the full sequence and the three tts special tokens through tok_embd,
+        // routed as a task so the gpu lookup serializes with the decode loop
+        llama_tokens embed_ids = seq;
+        embed_ids.push_back(QWEN_TTS_BOS_ID);
+        embed_ids.push_back(QWEN_TTS_EOS_ID);
+        embed_ids.push_back(QWEN_TTS_PAD_ID);
 
-        const llama_token tts_ids[3] = { 151672, 151673, 151671 }; // bos, eos, pad
-        std::vector<float> spec((size_t) n_id * 3);
-        llama_model_embed_tokens(ctx_server.model_tgt, tts_ids, 3, spec.data());
+        std::vector<float> embeds;
+        int n_id = 0;
+        {
+            // a reader can post only once, the completion already used res->rd, so the
+            // embed task gets its own fresh reader
+            auto eres = create_response();
+            auto & rd2 = eres->rd;
+            server_task et(SERVER_TASK_TYPE_EMBED_WORDS);
+            et.id           = rd2.get_new_id();
+            et.embed_tokens = embed_ids;
+            std::vector<server_task> ets;
+            ets.push_back(std::move(et));
+            rd2.post_tasks(std::move(ets));
+            auto er = rd2.wait_for_all(req.should_stop);
+            if (er.is_terminated) return res;
+            if (er.error) { res->error(er.error->to_json()); return res; }
+            auto * ew = dynamic_cast<server_task_result_embed_words *>(er.results[0].get());
+            if (!ew) {
+                res->error(format_error_response("no embed result", ERROR_TYPE_SERVER));
+                return res;
+            }
+            embeds = std::move(ew->embeds);
+            n_id   = ew->n_embd;
+        }
+        const float * emb  = embeds.data();
+        const float * spec = embeds.data() + (size_t) n_seq * n_id;
 
-        // assemble the talker conditioning live, then run talker -> code2wav
+        // assemble the talker conditioning live
         talker_cond_build cin;
-        cin.thinker_embed = emb.data();
+        cin.thinker_embed = emb;
         cin.n_seq         = n_seq;
         cin.user_begin    = user_begin;   cin.user_end = asst_begin;
         cin.asst_begin    = asst_begin;   cin.asst_end = asst_end;
-        cin.tts_bos_src   = spec.data() + (size_t) 0 * n_id;
-        cin.tts_eos_src   = spec.data() + (size_t) 1 * n_id;
-        cin.tts_pad_src   = spec.data() + (size_t) 2 * n_id;
+        cin.tts_bos_src   = spec + (size_t) 0 * n_id;
+        cin.tts_eos_src   = spec + (size_t) 1 * n_id;
+        cin.tts_pad_src   = spec + (size_t) 2 * n_id;
         cin.speaker_id    = speaker_id;
 
-        talker_cond_buffers cbuf = talker_build_cond(tk, cin);
-        talker_cond cond = cbuf.view();
+        // keep the cond buffers alive for the talker stream lifetime, the cond view
+        // points into them. the stream pulls one frame, code2wav vocodes it as it lands,
+        // the http layer drains the pcm as it is produced.
+        auto cbuf = std::make_shared<talker_cond_buffers>(talker_build_cond(tk, cin));
+        code2wav_stream_reset(c2w);
 
-        std::vector<int32_t> codes;
-        const int T = talker_generate(tk, cond, codes);
-        SRV_INF("audio/speech: input=%zu chars, seq=%d, prefill=%d, %d code frames, format=%s\n",
-                input.size(), n_seq, cond.n_prefill, T, fmt.c_str());
+        SRV_INF("audio/speech: input=%zu chars, seq=%d, prefill=%d, streaming, format=%s\n",
+                input.size(), n_seq, cbuf->n_prefill, fmt.c_str());
 
-        std::vector<float> pcm = code2wav_decode(c2w, codes.data(), T);
-        const uint32_t sr = code2wav_sample_rate(c2w);
+        struct tts_stream {
+            code2wav_context *                   c2w;
+            talker_stream *                      ts;
+            std::shared_ptr<talker_cond_buffers> cbuf;
+            std::vector<int32_t>                 frame;
+            bool                                 wav;
+            bool                                 header_done = false;
+            bool                                 talker_done = false;
+            bool                                 finished    = false;
+            uint32_t                             sr;
+            ~tts_stream() { if (ts) talker_stream_free(ts); }
+        };
+        auto st = std::make_shared<tts_stream>();
+        st->c2w  = c2w;
+        st->cbuf = cbuf;
+        st->frame.resize(talker_n_codebooks(tk));
+        st->wav  = fmt != "pcm";
+        st->sr   = code2wav_sample_rate(c2w);
+        st->ts   = talker_stream_init(tk, cbuf->view());
 
-        // pack pcm16 little endian, with a wav header unless raw pcm is requested.
-        auto buf = std::make_shared<std::string>();
-        const bool wav = fmt != "pcm";
-        if (wav) {
-            const uint32_t data_bytes = (uint32_t) pcm.size() * 2;
-            auto put32 = [&](uint32_t v) { buf->append((const char *) &v, 4); };
-            auto put16 = [&](uint16_t v) { buf->append((const char *) &v, 2); };
-            buf->append("RIFF", 4); put32(36 + data_bytes); buf->append("WAVE", 4);
-            buf->append("fmt ", 4); put32(16); put16(1); put16(1);
-            put32(sr); put32(sr * 2); put16(2); put16(16);
-            buf->append("data", 4); put32(data_bytes);
-        }
-        for (float s : pcm) {
-            int v = (int) (s * 32767.0f + (s >= 0.0f ? 0.5f : -0.5f));
-            if (v >  32767) v =  32767;
-            if (v < -32768) v = -32768;
-            const int16_t s16 = (int16_t) v;
-            buf->append((const char *) &s16, 2);
-        }
+        res->content_type = st->wav ? "audio/wav" : "audio/pcm";
+        res->next = [st](std::string & chunk) -> bool {
+            chunk.clear();
+            if (st->finished) return false;
 
-        // stream the bytes as http chunked transfer so the client plays as data arrives.
-        res->content_type = wav ? "audio/wav" : "audio/pcm";
-        auto pos = std::make_shared<size_t>(0);
-        res->next = [buf, pos](std::string & chunk) -> bool {
-            const size_t CH = 16384;
-            const size_t n = buf->size();
-            if (*pos >= n) {
-                return false;
+            // pull frames until a code2wav window yields pcm or the talker is done
+            std::vector<float> pcm;
+            while (pcm.empty() && !st->talker_done) {
+                if (talker_stream_next(st->ts, st->frame.data())) {
+                    code2wav_stream_push(st->c2w, st->frame.data(), 1, pcm);
+                } else {
+                    code2wav_stream_flush(st->c2w, pcm);
+                    st->talker_done = true;
+                }
             }
-            const size_t end = *pos + CH < n ? *pos + CH : n;
-            chunk.assign(buf->data() + *pos, end - *pos);
-            *pos = end;
-            return *pos < n;
+
+            // a streaming wav header goes out first, the data length is unknown up front
+            // so the size fields carry the streaming sentinel
+            if (!st->header_done) {
+                if (st->wav) {
+                    auto put32 = [&](uint32_t v) { chunk.append((const char *) &v, 4); };
+                    auto put16 = [&](uint16_t v) { chunk.append((const char *) &v, 2); };
+                    const uint16_t block_align = WAV_CHANNELS * WAV_BITS / 8;
+                    chunk.append("RIFF", 4); put32(WAV_STREAM_SIZE); chunk.append("WAVE", 4);
+                    chunk.append("fmt ", 4); put32(WAV_FMT_CHUNK); put16(WAV_FORMAT_PCM); put16(WAV_CHANNELS);
+                    put32(st->sr); put32(st->sr * block_align); put16(block_align); put16(WAV_BITS);
+                    chunk.append("data", 4); put32(WAV_STREAM_SIZE);
+                }
+                st->header_done = true;
+            }
+
+            // pack the new pcm as pcm16 little endian
+            for (float s : pcm) {
+                int v = (int) (s * 32767.0f + (s >= 0.0f ? 0.5f : -0.5f));
+                if (v >  32767) v =  32767;
+                if (v < -32768) v = -32768;
+                const int16_t s16 = (int16_t) v;
+                chunk.append((const char *) &s16, 2);
+            }
+
+            if (st->talker_done) st->finished = true;
+            return !st->finished;
         };
         return res;
     };

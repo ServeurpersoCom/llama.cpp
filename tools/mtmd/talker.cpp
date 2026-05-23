@@ -22,6 +22,13 @@
 
 #define TK_ARCH "qwen3omni-talker"
 
+// codec special ids from the talker config, indexing codec_embd, the talker own table
+static constexpr int TK_CODEC_NOTHINK   = 2155;
+static constexpr int TK_CODEC_THINK_BOS = 2156;
+static constexpr int TK_CODEC_THINK_EOS = 2157;
+static constexpr int TK_CODEC_PAD       = 2148;
+static constexpr int TK_CODEC_BOS       = 2149;
+
 // body hparams plus the mtp config that the gguf does not key separately.
 struct tk_hparams {
     int   n_layer;        // body blocks
@@ -575,20 +582,8 @@ int talker_n_thinker_embd(talker_context * ctx) {
     return (int) ctx->txt_fc1_w->ne[0];
 }
 
-talker_cond talker_cond_buffers::view() const {
-    talker_cond c;
-    c.input_embed   = prefill.data();
-    c.n_prefill     = n_prefill;
-    c.trailing_text = trailing.data();
-    c.n_trail       = n_trail;
-    c.tts_pad       = tts_pad.data();
-    c.prefill_pos   = pos.data();
-    return c;
-}
-
-// codec special ids from the talker config. these index codec_embd, the talker own
-// codec table, never the projection path.
-// nothink 2155, think_bos 2156, think_eos 2157, codec_pad 2148, codec_bos 2149
+// codec special ids index codec_embd, the talker own codec table, never the projection
+// path. the ids are the TK_CODEC_* constants at the top of the unit.
 talker_cond_buffers talker_build_cond(talker_context * ctx, const talker_cond_build & in) {
     const int d  = ctx->hp.n_embd;
     const int id = talker_n_thinker_embd(ctx);
@@ -613,12 +608,12 @@ talker_cond_buffers talker_build_cond(talker_context * ctx, const talker_cond_bu
     const float * pad = S.data() + (size_t) 2 * d;
 
     // codec special embeds through the talker own table
-    std::vector<float> e_nothink  = tk_embed(ctx, ctx->codec_embd, 0, 2155);
-    std::vector<float> e_thinkbos = tk_embed(ctx, ctx->codec_embd, 0, 2156);
-    std::vector<float> e_thinkeos = tk_embed(ctx, ctx->codec_embd, 0, 2157);
+    std::vector<float> e_nothink  = tk_embed(ctx, ctx->codec_embd, 0, TK_CODEC_NOTHINK);
+    std::vector<float> e_thinkbos = tk_embed(ctx, ctx->codec_embd, 0, TK_CODEC_THINK_BOS);
+    std::vector<float> e_thinkeos = tk_embed(ctx, ctx->codec_embd, 0, TK_CODEC_THINK_EOS);
     std::vector<float> e_speaker  = tk_embed(ctx, ctx->codec_embd, 0, in.speaker_id);
-    std::vector<float> e_codecpad = tk_embed(ctx, ctx->codec_embd, 0, 2148);
-    std::vector<float> e_codecbos = tk_embed(ctx, ctx->codec_embd, 0, 2149);
+    std::vector<float> e_codecpad = tk_embed(ctx, ctx->codec_embd, 0, TK_CODEC_PAD);
+    std::vector<float> e_codecbos = tk_embed(ctx, ctx->codec_embd, 0, TK_CODEC_BOS);
 
     talker_cond_buffers out;
     out.n_prefill = nu + 9;
@@ -661,47 +656,84 @@ talker_cond_buffers talker_build_cond(talker_context * ctx, const talker_cond_bu
     return out;
 }
 
-int talker_generate(talker_context * ctx, const talker_cond & cond, std::vector<int32_t> & codes) {
-    const tk_hparams & hp = ctx->hp;
-    codes.clear();
+// resumable talker stream. holds the body kv cache and the current decode outputs so
+// the caller pulls one frame at a time and pipes it into code2wav as it lands. the cond
+// pointers must stay valid for the stream lifetime, the caller owns the buffers.
+struct talker_stream {
+    talker_context *   ctx;
+    talker_cond        cond;
+    int                pos0;
+    tk_kv              body_kv;
+    std::vector<float> hidden;
+    std::vector<float> cb0_logits;
+    int                step;
+    bool               done;
+};
+
+talker_stream * talker_stream_init(talker_context * ctx, const talker_cond & cond) {
+    talker_stream * s = new talker_stream();
+    s->ctx  = ctx;
+    s->cond = cond;
+    s->step = 0;
+    s->done = false;
 
     // scalar position start from the last prefill mrope column (rows are equal here)
-    int pos0 = cond.prefill_pos
+    s->pos0 = cond.prefill_pos
         ? cond.prefill_pos[(size_t) 2 * cond.n_prefill + (cond.n_prefill - 1)] - (cond.n_prefill - 1)
         : 0;
 
-    // the body runs on a growing kv cache, prefill then one token per frame
-    tk_kv body_kv;
-    body_kv.reset(hp.n_layer, hp.head_dim * hp.n_head_kv);
+    // prefill the body kv cache, leaving hidden and cb0_logits at the last position
+    s->body_kv.reset(ctx->hp.n_layer, ctx->hp.head_dim * ctx->hp.n_head_kv);
+    tk_body_kv_forward(ctx, s->body_kv, cond.input_embed, cond.n_prefill, s->pos0, s->hidden, s->cb0_logits);
+    return s;
+}
 
-    std::vector<float> hidden, cb0_logits;
-    tk_body_kv_forward(ctx, body_kv, cond.input_embed, cond.n_prefill, pos0, hidden, cb0_logits);
+// produce the next frame into out_frame [n_codebooks], cb0 first. returns false on the
+// codec eos or the max_frames cap, the stream is done at that point.
+bool talker_stream_next(talker_stream * s, int32_t * out_frame) {
+    if (s->done) return false;
+    talker_context * ctx = s->ctx;
+    const tk_hparams & hp = ctx->hp;
 
-    int step = 0;
-    while (step < ctx->params.max_frames) {
-        int cb0 = tk_argmax(cb0_logits.data(), (int) cb0_logits.size());
-        if (cb0 == hp.codec_eos) break;
+    if (s->step >= ctx->params.max_frames) { s->done = true; return false; }
 
-        int res[15];
-        tk_predict_residuals(ctx, hidden, cb0, res);
+    int cb0 = tk_argmax(s->cb0_logits.data(), (int) s->cb0_logits.size());
+    if (cb0 == hp.codec_eos) { s->done = true; return false; }
 
-        codes.push_back(cb0);
-        for (int k = 0; k < hp.n_codebooks - 1; k++) codes.push_back(res[k]);
+    int res[15];
+    tk_predict_residuals(ctx, s->hidden, cb0, res);
 
-        // rebuild the next conditioning embed : codec_embd(cb0) + sum of the 15
-        // residual embeds through their stacked tables, plus the text conditioning
-        std::vector<float> cond_e = tk_embed(ctx, ctx->codec_embd, 0, cb0);
-        for (int k = 1; k <= hp.n_codebooks - 1; k++) {
-            std::vector<float> e = tk_embed(ctx, ctx->mtp_embd, k - 1, res[k - 1]);
-            for (int i = 0; i < hp.n_embd; i++) cond_e[i] += e[i];
-        }
-        const float * txt = step < cond.n_trail ? cond.trailing_text + (size_t) step * hp.n_embd : cond.tts_pad;
-        for (int i = 0; i < hp.n_embd; i++) cond_e[i] += txt[i];
+    out_frame[0] = cb0;
+    for (int k = 0; k < hp.n_codebooks - 1; k++) out_frame[k + 1] = res[k];
 
-        // advance one frame on the kv cache
-        tk_body_kv_forward(ctx, body_kv, cond_e.data(), 1, pos0 + cond.n_prefill + step, hidden, cb0_logits);
-        step++;
+    // rebuild the next conditioning embed : codec_embd(cb0) + the 15 residual embeds
+    // through their stacked tables, plus the text conditioning for this step
+    std::vector<float> cond_e = tk_embed(ctx, ctx->codec_embd, 0, cb0);
+    for (int k = 1; k <= hp.n_codebooks - 1; k++) {
+        std::vector<float> e = tk_embed(ctx, ctx->mtp_embd, k - 1, res[k - 1]);
+        for (int i = 0; i < hp.n_embd; i++) cond_e[i] += e[i];
     }
+    const float * txt = s->step < s->cond.n_trail ? s->cond.trailing_text + (size_t) s->step * hp.n_embd : s->cond.tts_pad;
+    for (int i = 0; i < hp.n_embd; i++) cond_e[i] += txt[i];
 
-    return (int) (codes.size() / hp.n_codebooks);
+    // advance one frame on the kv cache
+    tk_body_kv_forward(ctx, s->body_kv, cond_e.data(), 1, s->pos0 + s->cond.n_prefill + s->step, s->hidden, s->cb0_logits);
+    s->step++;
+    return true;
+}
+
+void talker_stream_free(talker_stream * s) {
+    delete s;
+}
+
+// one shot wrapper over the stream loop, fills codes frame major and returns the count.
+int talker_generate(talker_context * ctx, const talker_cond & cond, std::vector<int32_t> & codes) {
+    codes.clear();
+    talker_stream * s = talker_stream_init(ctx, cond);
+    std::vector<int32_t> frame(ctx->hp.n_codebooks);
+    while (talker_stream_next(s, frame.data())) {
+        codes.insert(codes.end(), frame.begin(), frame.end());
+    }
+    talker_stream_free(s);
+    return (int) (codes.size() / ctx->hp.n_codebooks);
 }

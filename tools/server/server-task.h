@@ -26,6 +26,7 @@ enum server_task_type {
     SERVER_TASK_TYPE_SLOT_ERASE,
     SERVER_TASK_TYPE_GET_LORA,
     SERVER_TASK_TYPE_SET_LORA,
+    SERVER_TASK_TYPE_EMBED_WORDS,
 };
 
 // TODO: change this to more generic "response_format" to replace the "format_response_*" in server-common
@@ -144,6 +145,9 @@ struct server_task {
     // used by SERVER_TASK_TYPE_INFERENCE
     task_params   params;
     server_tokens tokens;
+
+    // used by SERVER_TASK_TYPE_EMBED_WORDS : raw token ids to look up in tok_embd
+    llama_tokens  embed_tokens;
 
     // only used by CLI, this allow tokenizing CLI inputs on server side
     // we need this because mtmd_context and vocab are not accessible outside of server_context
@@ -311,6 +315,15 @@ struct server_task_result {
 
 // using shared_ptr for polymorphism of server_task_result
 using server_task_result_ptr = std::unique_ptr<server_task_result>;
+
+// word embeds of a token id list, looked up through tok_embd on the main loop. used to
+// assemble the talker tts conditioning without racing the decode loop on the gpu.
+struct server_task_result_embed_words : server_task_result {
+    std::vector<float> embeds;     // [n_embd * n_tokens], n_embd contiguous per token
+    int n_embd   = 0;
+    int n_tokens = 0;
+    virtual json to_json() override { return json::object(); }
+};
 
 struct completion_token_output {
     llama_token tok;
