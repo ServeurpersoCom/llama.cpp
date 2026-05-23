@@ -16,6 +16,7 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 #include "code2wav.h"
+#include "talker.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -4293,48 +4294,81 @@ void server_routes::init_routes() {
         const std::string input = json_value(body, "input",           std::string());
         const std::string fmt   = json_value(body, "response_format", std::string("wav"));
 
-        // POC seam : the talker is not in server yet so the codes come from a cached file.
-        // when the in server talker lands, replace the cached load with talker_generate(input).
-        const char * codes_env = std::getenv("LLAMA_CODE2WAV_CODES");
-        if (!std::getenv("LLAMA_CODE2WAV_GGUF") || !codes_env) {
+        // POC seam : the thinker conditioning is not assembled in server yet, so the
+        // talker prefill comes from a cached conditioning file. when the thinker side
+        // lands, build the talker_cond from the live thinker hidden instead of loading.
+        const char * cond_env = std::getenv("LLAMA_TALKER_COND");
+        if (params.code2wav_model.empty() || params.talker_model.empty() || !cond_env) {
             res->error(format_error_response(
-                "code2wav POC needs LLAMA_CODE2WAV_GGUF and LLAMA_CODE2WAV_CODES", ERROR_TYPE_NOT_SUPPORTED));
+                "audio/speech needs --code2wav-model, --talker-model and the LLAMA_TALKER_COND seam", ERROR_TYPE_NOT_SUPPORTED));
             return res;
         }
 
-        // load the detokenizer once, the magic static keeps it shared and thread safe.
-        static code2wav_context * c2w = []() -> code2wav_context * {
-            const char * g = std::getenv("LLAMA_CODE2WAV_GGUF");
+        // load the detokenizer and the talker once, the magic statics keep them shared.
+        static code2wav_context * c2w = [this]() -> code2wav_context * {
             code2wav_params cp;
-            return g ? code2wav_init(g, cp) : nullptr;
+            return code2wav_init(params.code2wav_model.c_str(), cp);
         }();
         if (!c2w) {
             res->error(format_error_response("failed to load code2wav gguf", ERROR_TYPE_SERVER));
             return res;
         }
+        static talker_context * tk = [this]() -> talker_context * {
+            talker_params tp;
+            return talker_init(params.talker_model.c_str(), tp);
+        }();
+        if (!tk) {
+            res->error(format_error_response("failed to load talker gguf", ERROR_TYPE_SERVER));
+            return res;
+        }
 
-        // load the cached talker codes, frame major, num_quantizers per frame.
+        // load the cached talker conditioning : a small int32 header [n_prefill, n_trail]
+        // then f32 blocks prefill [n_prefill, n_embd], trailing [n_trail, n_embd],
+        // tts_pad [n_embd] and the i32 prefill positions [3, n_prefill].
         const int Q = code2wav_n_quantizers(c2w);
-        std::vector<int32_t> codes;
+        const int n_embd = talker_n_embd(tk);
+        std::vector<float> prefill, trailing, tts_pad;
+        std::vector<int32_t> cond_pos;
+        int n_prefill = 0, n_trail = 0;
         {
-            FILE * f = fopen(codes_env, "rb");
+            FILE * f = fopen(cond_env, "rb");
             if (!f) {
-                res->error(format_error_response("cannot open cached codes file", ERROR_TYPE_SERVER));
+                res->error(format_error_response("cannot open conditioning file", ERROR_TYPE_SERVER));
                 return res;
             }
-            fseek(f, 0, SEEK_END);
-            const long nb = ftell(f);
-            fseek(f, 0, SEEK_SET);
-            codes.resize(nb / (long) sizeof(int32_t));
-            if (fread(codes.data(), 1, nb, f) != (size_t) nb) {
-                fclose(f);
-                res->error(format_error_response("short read on codes file", ERROR_TYPE_SERVER));
-                return res;
+            int32_t hdr[2] = {0, 0};
+            bool ok = fread(hdr, sizeof(int32_t), 2, f) == 2;
+            n_prefill = hdr[0]; n_trail = hdr[1];
+            if (ok && (n_prefill <= 0 || n_trail < 0)) ok = false;
+            if (ok) {
+                prefill.resize((size_t) n_prefill * n_embd);
+                trailing.resize((size_t) n_trail * n_embd);
+                tts_pad.resize(n_embd);
+                cond_pos.resize((size_t) 3 * n_prefill);
+                ok = ok && fread(prefill.data(),  sizeof(float),   prefill.size(),  f) == prefill.size();
+                ok = ok && fread(trailing.data(), sizeof(float),   trailing.size(), f) == trailing.size();
+                ok = ok && fread(tts_pad.data(),  sizeof(float),   tts_pad.size(),  f) == tts_pad.size();
+                ok = ok && fread(cond_pos.data(),  sizeof(int32_t), cond_pos.size(),  f) == cond_pos.size();
             }
             fclose(f);
+            if (!ok) {
+                res->error(format_error_response("bad conditioning file", ERROR_TYPE_SERVER));
+                return res;
+            }
         }
-        const int T = (int) (codes.size() / Q);
+
+        // run the talker to produce the codes, frame major, num_quantizers per frame.
+        talker_cond cond;
+        cond.input_embed   = prefill.data();
+        cond.n_prefill     = n_prefill;
+        cond.trailing_text = trailing.data();
+        cond.n_trail       = n_trail;
+        cond.tts_pad       = tts_pad.data();
+        cond.prefill_pos   = cond_pos.data();
+        std::vector<int32_t> codes;
+        const int T = talker_generate(tk, cond, codes);
         SRV_INF("audio/speech: input=%zu chars, %d code frames, format=%s\n", input.size(), T, fmt.c_str());
+        (void) Q;
 
         // decode to pcm. one shot here since the cached codes are all available, the live
         // talker will drive code2wav_stream_push per generated frame instead.

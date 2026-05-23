@@ -570,6 +570,10 @@ struct common_params {
     bool mmproj_use_gpu = true;     // use GPU for multimodal model
     bool no_mmproj = false;         // explicitly disable multimodal model
     std::vector<std::string> image; // path to image file(s)
+
+    // qwen3-omni tts : talker code generator and code2wav detokenizer (see tools/mtmd)
+    std::string talker_model;       // path to the qwen3-omni talker gguf
+    std::string code2wav_model;     // path to the qwen3-omni code2wav gguf
     int image_min_tokens = -1;
     int image_max_tokens = -1;
 

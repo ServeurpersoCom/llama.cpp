@@ -2196,6 +2196,20 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples(mmproj_examples).set_env("LLAMA_ARG_MMPROJ"));
     add_opt(common_arg(
+        {"-tk", "--talker-model"}, "FILE",
+        "path to the qwen3-omni talker gguf, enables the /v1/audio/speech endpoint",
+        [](common_params & params, const std::string & value) {
+            params.talker_model = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_TALKER_MODEL"));
+    add_opt(common_arg(
+        {"-c2w", "--code2wav-model"}, "FILE",
+        "path to the qwen3-omni code2wav gguf, the talker code detokenizer",
+        [](common_params & params, const std::string & value) {
+            params.code2wav_model = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CODE2WAV_MODEL"));
+    add_opt(common_arg(
         {"-mmu", "--mmproj-url"}, "URL",
         "URL to a multimodal projector file. see tools/mtmd/README.md",
         [](common_params & params, const std::string & value) {
