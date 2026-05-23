@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include "mtmd-api.h"
+
 #include <cstdint>
 #include <vector>
 
@@ -40,16 +42,16 @@ struct talker_cond {
 // the gguf carries the body blocks blk.0..N, the mtp blocks blk.N.mtp.*, the
 // codec head output.weight, the codec embed codec_embd.weight and mtp.* tensors.
 // returns nullptr on failure.
-talker_context * talker_init(const char * gguf_path, talker_params params);
-void             talker_free(talker_context * ctx);
+MTMD_API talker_context * talker_init(const char * gguf_path, talker_params params);
+MTMD_API void             talker_free(talker_context * ctx);
 
 // model facts the caller needs.
-int talker_n_embd       (const talker_context * ctx);  // 1024
-int talker_n_codebooks  (const talker_context * ctx);  // 16, cb0 plus 15 residuals
-int talker_codec_eos    (const talker_context * ctx);  // 4198
+MTMD_API int talker_n_embd       (const talker_context * ctx);  // 1024
+MTMD_API int talker_n_codebooks  (const talker_context * ctx);  // 16, cb0 plus 15 residuals
+MTMD_API int talker_codec_eos    (const talker_context * ctx);  // 2150
 
 // one shot generation. runs the body and the predictor frame by frame with kv
 // cache until the eos code or max_frames, fills codes frame major (n_codebooks
 // per frame, cb0 first) and returns the frame count. codes is resized by the call.
 // this is the harness and endpoint path, both share the same loop.
-int talker_generate(talker_context * ctx, const talker_cond & cond, std::vector<int32_t> & codes);
+MTMD_API int talker_generate(talker_context * ctx, const talker_cond & cond, std::vector<int32_t> & codes);

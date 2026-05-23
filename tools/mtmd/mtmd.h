@@ -33,19 +33,7 @@
  * We encourage human contributors to ensure the quality and reliability of the codebase.
  */
 
-#ifdef LLAMA_SHARED
-#    if defined(_WIN32) && !defined(__MINGW32__)
-#        ifdef LLAMA_BUILD
-#            define MTMD_API __declspec(dllexport)
-#        else
-#            define MTMD_API __declspec(dllimport)
-#        endif
-#    else
-#        define MTMD_API __attribute__ ((visibility ("default")))
-#    endif
-#else
-#    define MTMD_API
-#endif
+#include "mtmd-api.h"
 
 #ifdef __cplusplus
 extern "C" {
