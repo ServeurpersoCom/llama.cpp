@@ -78,7 +78,6 @@ export type {
 	SettingsConfigValue,
 	SettingsFieldConfig,
 	SettingsChatServiceOptions,
-	StreamConnectionState,
 	SettingsConfigType,
 	SettingsExportType,
 	ParameterValue,

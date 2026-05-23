@@ -2,7 +2,12 @@ import type { SETTING_CONFIG_DEFAULT, SETTINGS_SECTION_TITLES } from '$lib/const
 import type { ChatMessagePromptProgress, ChatMessageTimings } from './chat';
 import type { OpenAIToolDefinition } from './mcp';
 import type { DatabaseMessageExtra } from './database';
-import type { ParameterSource, SyncableParameterType, SettingsFieldType } from '$lib/enums';
+import type {
+	ParameterSource,
+	SyncableParameterType,
+	SettingsFieldType,
+	StreamConnectionState
+} from '$lib/enums';
 import type { Icon } from '@lucide/svelte';
 import type { Component } from 'svelte';
 
@@ -111,12 +116,6 @@ export interface SettingsChatServiceOptions {
 	onError?: (error: Error) => void;
 	onConnectionState?: (state: StreamConnectionState) => void;
 }
-
-// Connection lifecycle for resumable streams
-// streaming: data is flowing from the initial POST or a successful resume GET
-// resuming : the server connection was lost and the client is attempting a resume
-// lost     : the stream is unrecoverable, the user must restart
-export type StreamConnectionState = 'streaming' | 'resuming' | 'lost';
 
 export type SettingsConfigType = typeof SETTING_CONFIG_DEFAULT & {
 	[key: string]: SettingsConfigValue;
