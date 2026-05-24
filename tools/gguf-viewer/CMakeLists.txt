@@ -27,7 +27,7 @@ foreach(asset ${PUBLIC_ASSETS})
     add_custom_command(
         DEPENDS "${input}"
         OUTPUT "${output}"
-        COMMAND "${CMAKE_COMMAND}" "-DINPUT=${input}" "-DOUTPUT=${output}" -P "${PROJECT_SOURCE_DIR}/scripts/xxd.cmake"
+        COMMAND "${CMAKE_COMMAND}" "-DINPUT=${input}" "-DOUTPUT=${output}" -P "${CMAKE_CURRENT_SOURCE_DIR}/xxd.cmake"
     )
     set_source_files_properties(${output} PROPERTIES GENERATED TRUE)
 endforeach()
