@@ -218,28 +218,28 @@ int llama_server(int argc, char ** argv) {
     // child wire different handlers under the same paths: a child binds the local g_stream_sessions
     // backed factories, the router binds proxies that route via the optional ::model suffix
     // (direct) or fall back to loopback probe and fan out (suffixless conv ids)
-    server_http_context::handler_t stream_get_h;
     server_http_context::handler_t streams_lookup_h;
     server_http_context::handler_t stream_delete_h;
     if (is_router_server) {
-        stream_get_h     = models_routes->router_stream_get;
         streams_lookup_h = models_routes->router_streams_lookup;
         stream_delete_h  = models_routes->router_stream_delete;
     } else {
-        stream_get_h     = make_stream_get_handler();
         streams_lookup_h = make_streams_lookup_handler();
         stream_delete_h  = make_stream_delete_handler();
     }
-    ctx_http.get ("/v1/stream/:conv_id",       ex_wrapper(stream_get_h));
     // POST /v1/streams/lookup with body {"conversation_ids": [...]}. you can only ask for ids
     // you already own (the WebUI passes the convs visible in its sidebar). the server never
     // lists ids it has not been asked about, so a random caller cannot enumerate live sessions
     ctx_http.post("/v1/streams/lookup",        ex_wrapper(streams_lookup_h));
     ctx_http.del_("/v1/stream/:conv_id",       ex_wrapper(stream_delete_h));
 
-    // websocket transport for the WebUI, drains the same sequenced ring buffer. wired to the
-    // local handler for now, the router tunnel lands in a later step
-    ctx_http.ws("/ws", make_stream_ws_handler());
+    // websocket transport for the WebUI, drains the same sequenced ring buffer. the router tunnels
+    // the connection to the owning child, a child or single model server serves it locally
+    if (is_router_server) {
+        ctx_http.ws("/ws", models_routes->router_stream_ws);
+    } else {
+        ctx_http.ws("/ws", make_stream_ws_handler());
+    }
 
     // Google Cloud Platform (Vertex AI) compat
     ctx_http.register_gcp_compat();

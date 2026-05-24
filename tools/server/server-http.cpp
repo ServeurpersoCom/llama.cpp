@@ -462,11 +462,6 @@ static void process_handler_response(server_http_req_ptr && request, server_http
             std::string chunk;
             bool has_next = response->next(chunk);
             if (!chunk.empty()) {
-                // mirror into the ring buffer first, the session must reflect every SSE chunk
-                // whether or not the wire write below succeeds
-                if (response->spipe) {
-                    response->spipe->write(chunk.data(), chunk.size());
-                }
                 if (!sink.write(chunk.data(), chunk.size())) {
                     // peer is gone, stop the wire path here. when a pipe is attached on_complete
                     // drains the rest of the generation into the ring buffer

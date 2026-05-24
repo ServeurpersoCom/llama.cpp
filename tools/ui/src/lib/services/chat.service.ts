@@ -332,6 +332,15 @@ export class ChatService {
 			}
 
 			if (stream) {
+				// the POST only starts the generation and creates the server side session. the
+				// server keeps generating into the ring even after this body closes, so drop the
+				// SSE body now: the websocket is the only drain. leaving it open would hold a second
+				// idle connection per message
+				if (conversationId) {
+					response.body?.cancel().catch(() => {
+						// already closed, nothing to do
+					});
+				}
 				await ChatService.handleStreamResponseWs(
 					onChunk,
 					onComplete,
@@ -712,14 +721,16 @@ export class ChatService {
 			const id = streamIdentity(conversationId, streamModel);
 			ChatService.saveStreamState(conversationId, from, streamModel);
 
-			// ./ relative ws url so the dev proxy and reverse proxies keep working, scheme follows the page
-			const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+			// ./ relative ws url so the dev proxy and reverse proxies keep working. resolve the path
+			// against the page as http(s) first, then swap the scheme on the string: assigning
+			// URL.protocol to switch http->ws is rejected by the setter and leaves an https url that
+			// new WebSocket() throws on, so the connection never opens
 			const base = new URL('./ws', location.href);
-			base.protocol = scheme;
 			base.searchParams.set('id', id);
 			base.searchParams.set('from', String(from));
+			const wsUrl = base.toString().replace(/^http/, 'ws');
 
-			const ws = new WebSocket(base.toString());
+			const ws = new WebSocket(wsUrl);
 			let settled = false;
 
 			const finish = (err?: Error) => {

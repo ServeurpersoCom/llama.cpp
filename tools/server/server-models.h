@@ -254,9 +254,13 @@ struct server_models_routes {
     // an optional ::model suffix to enable direct routing without probing every child. when
     // the suffix is absent the get/delete paths fall back to a loopback probe and a fan out
     // respectively, the list path always fans out and aggregates
-    server_http_context::handler_t router_stream_get;
     server_http_context::handler_t router_streams_lookup;
     server_http_context::handler_t router_stream_delete;
+
+    // websocket tunnel: the browser connects to the router /ws, the router resolves the owning
+    // child once and relays the connection both ways for its whole life. routing is stateful per
+    // connection, the conv id to child lookup happens once at open instead of on every call
+    server_http_context::ws_handler_t router_stream_ws;
 };
 
 /**

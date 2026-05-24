@@ -1361,42 +1361,68 @@ void server_models_routes::init_routes() {
         res_ok(res, {{"success", true}});
         return res;
     };
-
-    this->router_stream_get = [this](const server_http_req & req) {
-        // GET /v1/stream/<conv_id>?from=N. resolve the owning child from the conv_id -> model
-        // map (no polling), 404 when nothing maps. a stale map entry just forwards to a child
-        // that answers not found, the client recovers
-        auto res = std::make_unique<server_http_res>();
-        std::string conv_id = req.get_param("conv_id");
+    this->router_stream_ws = [this](const server_http_req & req, server_http_context::ws_channel & browser) {
+        // resolve the owning child once at connection open, the conv id to child map is the single
+        // source of truth. a missing entry closes the browser side with an error message
+        std::string conv_id = req.get_param("id");
         if (conv_id.empty()) {
-            res_err(res, format_error_response("Missing conversation id in path", ERROR_TYPE_INVALID_REQUEST));
-            return res;
+            browser.send(safe_json_to_str({{"type", "error"}, {"message", "missing id"}}));
+            return;
         }
         std::optional<server_model_meta> owner = resolve_child_for_conv(models, conv_id);
         if (!owner.has_value()) {
-            res_err(res, format_error_response("Stream not found or expired", ERROR_TYPE_NOT_FOUND));
-            return res;
+            browser.send(safe_json_to_str({{"type", "error"}, {"message", "stream not found or expired"}}));
+            return;
         }
+
+        // open a websocket straight to the child, carrying the same id and from query so the child
+        // replays from the right sequence. the router never parses the suffix, it forwards verbatim
         std::string from = req.get_param("from");
-        std::string child_path = "/v1/stream/" + encode_qs(conv_id);
+        std::string child_url = std::string("ws://") + CHILD_ADDR + ":" + std::to_string(owner->port)
+            + "/ws?id=" + encode_qs(conv_id);
         if (!from.empty()) {
-            child_path += "?from=" + from;
+            child_url += "&from=" + from;
         }
-        SRV_INF("proxying stream resume to model %s on port %d, path=%s\n",
-                owner->name.c_str(), owner->port, child_path.c_str());
-        auto proxy = std::make_unique<server_http_proxy>(
-                "GET",
-                "http",
-                CHILD_ADDR,
-                owner->port,
-                child_path,
-                req.headers,
-                req.body,
-                req.files,
-                req.should_stop,
-                params.timeout_read,
-                params.timeout_write);
-        return std::unique_ptr<server_http_res>(std::move(proxy));
+        SRV_INF("tunneling stream ws to model %s on port %d\n", owner->name.c_str(), owner->port);
+
+        httplib::ws::WebSocketClient child(child_url);
+        if (!child.connect()) {
+            browser.send(safe_json_to_str({{"type", "error"}, {"message", "child connect failed"}}));
+            return;
+        }
+
+        // relay both ways for the life of the connection. one pump carries child -> browser (the
+        // chunks), the main loop carries browser -> child (the cancel). when either side closes the
+        // other is closed so both pumps unwind
+        std::atomic<bool> stop{false};
+        std::thread down([&]() {
+            std::string msg;
+            while (!stop.load(std::memory_order_acquire)) {
+                if (child.read(msg) == httplib::ws::ReadResult::Fail) {
+                    break;
+                }
+                if (!browser.send(msg)) {
+                    break;
+                }
+            }
+            stop.store(true, std::memory_order_release);
+            browser.close();
+        });
+
+        std::string msg;
+        while (!stop.load(std::memory_order_acquire)) {
+            if (!browser.recv(msg)) {
+                break;
+            }
+            if (!child.send(msg)) {
+                break;
+            }
+        }
+        stop.store(true, std::memory_order_release);
+        child.close();
+        if (down.joinable()) {
+            down.join();
+        }
     };
 
     this->router_streams_lookup = [this](const server_http_req & req) {

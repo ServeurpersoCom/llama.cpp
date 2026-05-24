@@ -16,12 +16,7 @@
 #include <unordered_map>
 #include <vector>
 
-enum class stream_read_status {
-    OK,
-    OFFSET_LOST,
-};
-
-// status of a sequenced read, mirrors stream_read_status but for the message indexed path
+// status of a sequenced read
 enum class stream_seq_status {
     OK,
     SEQ_LOST,
@@ -59,10 +54,6 @@ struct stream_session {
     stream_session(const stream_session &)             = delete;
     stream_session & operator=(const stream_session &) = delete;
 
-    // append raw bytes, drops from the front if the cap is reached.
-    // returns false if the session is already finalized
-    bool append(const char * data, size_t len);
-
     // append one sequenced json chunk, assigning it the next seq. drops whole chunks from the
     // front when the byte cap is reached, never splitting a chunk. returns false if the session
     // is already finalized. the websocket path reads these, the SSE path is untouched
@@ -70,13 +61,6 @@ struct stream_session {
 
     // mark the session as complete, wakes all pending readers
     void finalize();
-
-    // drain bytes from offset, calling sink for each chunk. blocks until more
-    // bytes arrive or finalize is called. returns OK on clean exit, OFFSET_LOST
-    // if offset falls below the dropped prefix
-    stream_read_status read_from(size_t offset,
-        const std::function<bool(const char *, size_t)> & sink,
-        const std::function<bool()> & should_stop);
 
     // drain sequenced chunks from seq, calling sink for each one. blocks until more chunks arrive
     // or finalize is called. returns OK on clean exit, SEQ_LOST if seq fell below the oldest chunk
@@ -103,12 +87,10 @@ struct stream_session {
 private:
     mutable std::mutex      mu;
     std::condition_variable cv;
-    std::vector<char>       buffer;
-    size_t                  prefix_dropped;
     size_t                  cap_bytes;
-    // sequenced view, lives next to the byte buffer and shares mu/cv. seq_chunks holds the chunks
-    // still in the window, seq_base is the seq of the oldest one, seq_next is the seq the next
-    // append gets, seq_bytes tracks the json bytes held so the same cap_bytes evicts whole chunks
+    // sequenced ring, shares mu/cv. seq_chunks holds the chunks still in the window, seq_base is
+    // the seq of the oldest one, seq_next is the seq the next append gets, seq_bytes tracks the
+    // json bytes held so cap_bytes evicts whole chunks from the front
     std::deque<seq_chunk>   seq_chunks;
     uint64_t                seq_base;
     uint64_t                seq_next;
@@ -145,9 +127,6 @@ protected:
 struct stream_pipe_producer : stream_pipe {
     ~stream_pipe_producer() override;
 
-    // append raw bytes to the session's ring buffer, returns false if already finalized
-    bool write(const char * data, size_t len);
-
     // append one sequenced json chunk to the session, returns false if already finalized. fed
     // from the generation closure where the raw result json lives, so the websocket transport
     // sends json verbatim while the SSE path keeps framing its own bytes
@@ -177,21 +156,6 @@ private:
     bool                                done_ = false;
     std::shared_ptr<std::atomic<bool>>  alive_;
     server_http_res *                   res_ = nullptr;
-};
-
-// consumer end: read-only replay of the ring buffer, the destructor does not finalize the session
-struct stream_pipe_consumer : stream_pipe {
-    // drain bytes from offset, calling sink for each available chunk. blocks until more data
-    // arrives or the session finalizes. should_stop is polled, returns OFFSET_LOST if offset
-    // fell below the dropped prefix
-    stream_read_status read(size_t & offset,
-        const std::function<bool(const char *, size_t)> & sink,
-        const std::function<bool()> & should_stop);
-
-    static std::shared_ptr<stream_pipe_consumer> create(stream_session_ptr session);
-
-private:
-    explicit stream_pipe_consumer(stream_session_ptr session);
 };
 
 // owns all live sessions, runs a periodic GC to evict expired ones.
@@ -247,7 +211,6 @@ extern stream_session_manager g_stream_sessions;
 // directly on g_stream_sessions, server.cpp wires them under /v1/stream/* without going
 // through server-context's server_routes. keeps the resumable stream surface confined to
 // server-stream and server-http
-server_http_context::handler_t make_stream_get_handler();
 server_http_context::handler_t make_streams_lookup_handler();
 server_http_context::handler_t make_stream_delete_handler();
 

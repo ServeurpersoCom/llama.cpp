@@ -24,7 +24,6 @@ int64_t now_seconds() {
 stream_session::stream_session(std::string conversation_id_, size_t max_bytes_)
     : conversation_id(std::move(conversation_id_))
     , started_ts(now_seconds())
-    , prefix_dropped(0)
     , cap_bytes(max_bytes_)
     , seq_base(0)
     , seq_next(0)
@@ -32,36 +31,6 @@ stream_session::stream_session(std::string conversation_id_, size_t max_bytes_)
     , done(false)
     , cancelled(false)
     , completed_ts(0) {
-    buffer.reserve(64 * 1024);
-}
-
-bool stream_session::append(const char * data, size_t len) {
-    if (len == 0) {
-        return true;
-    }
-    {
-        std::lock_guard<std::mutex> lock(mu);
-        if (done.load(std::memory_order_relaxed)) {
-            return false;
-        }
-        if (len >= cap_bytes) {
-            // single chunk bigger than the cap, keep only the tail that fits
-            size_t skip = len - cap_bytes;
-            prefix_dropped += buffer.size() + skip;
-            buffer.clear();
-            buffer.insert(buffer.end(), data + skip, data + len);
-        } else {
-            size_t needed = buffer.size() + len;
-            if (needed > cap_bytes) {
-                size_t to_drop = needed - cap_bytes;
-                buffer.erase(buffer.begin(), buffer.begin() + to_drop);
-                prefix_dropped += to_drop;
-            }
-            buffer.insert(buffer.end(), data, data + len);
-        }
-    }
-    cv.notify_all();
-    return true;
 }
 
 bool stream_session::append_seq(chunk_kind kind, std::string json) {
@@ -94,40 +63,6 @@ void stream_session::finalize() {
     }
     completed_ts.store(now_seconds(), std::memory_order_release);
     cv.notify_all();
-}
-
-stream_read_status stream_session::read_from(size_t offset,
-        const std::function<bool(const char *, size_t)> & sink,
-        const std::function<bool()> & should_stop) {
-    std::unique_lock<std::mutex> lock(mu);
-    while (true) {
-        if (should_stop && should_stop()) {
-            return stream_read_status::OK;
-        }
-        if (offset < prefix_dropped) {
-            return stream_read_status::OFFSET_LOST;
-        }
-        size_t logical_end = prefix_dropped + buffer.size();
-        if (offset < logical_end) {
-            size_t local_off = offset - prefix_dropped;
-            size_t n         = buffer.size() - local_off;
-            // copy the available chunk under the lock, release before calling the sink
-            std::vector<char> chunk(buffer.begin() + local_off, buffer.begin() + local_off + n);
-            offset += n;
-            lock.unlock();
-            bool keep_going = sink(chunk.data(), chunk.size());
-            if (!keep_going) {
-                return stream_read_status::OK;
-            }
-            lock.lock();
-            continue;
-        }
-        if (done.load(std::memory_order_acquire)) {
-            return stream_read_status::OK;
-        }
-        // wait for new bytes, finalize, or a periodic wake to re check should_stop
-        cv.wait_for(lock, std::chrono::milliseconds(STREAM_READ_WAKE_INTERVAL_MS));
-    }
 }
 
 stream_seq_status stream_session::read_from_seq(uint64_t & seq,
@@ -168,12 +103,12 @@ bool stream_session::is_done() const {
 
 size_t stream_session::total_size() const {
     std::lock_guard<std::mutex> lock(mu);
-    return prefix_dropped + buffer.size();
+    return seq_bytes;
 }
 
 size_t stream_session::dropped_prefix() const {
     std::lock_guard<std::mutex> lock(mu);
-    return prefix_dropped;
+    return static_cast<size_t>(seq_base);
 }
 
 int64_t stream_session::completed_at() const {
@@ -385,10 +320,6 @@ void stream_pipe_producer::cleanup() {
     alive_.reset();
 }
 
-bool stream_pipe_producer::write(const char * data, size_t len) {
-    return session_->append(data, len);
-}
-
 bool stream_pipe_producer::write_seq(chunk_kind kind, std::string json) {
     return session_->append_seq(kind, std::move(json));
 }
@@ -409,20 +340,17 @@ void stream_pipe_producer::close() {
         return;
     }
     SRV_INF("stream_pipe close: draining conv=%s\n", session_->conversation_id.c_str());
-    size_t drained = 0;
     std::string chunk;
     while (true) {
         chunk.clear();
+        // next() mirrors the sequenced json into the ring on its own, the drain just keeps the
+        // generation running to completion after the peer dropped
         bool has_next = res_->next(chunk);
-        if (!chunk.empty()) {
-            write(chunk.data(), chunk.size());
-            drained += chunk.size();
-        }
         if (!has_next) {
             break;
         }
     }
-    SRV_INF("stream_pipe close: drain ended conv=%s bytes=%zu\n", session_->conversation_id.c_str(), drained);
+    SRV_INF("stream_pipe close: drain ended conv=%s\n", session_->conversation_id.c_str());
 }
 
 std::shared_ptr<stream_pipe_producer> stream_pipe_producer::create(stream_session_ptr session,
@@ -440,22 +368,6 @@ std::shared_ptr<stream_pipe_producer> stream_pipe_producer::create(stream_sessio
     return pipe;
 }
 
-// stream_pipe_consumer
-
-stream_pipe_consumer::stream_pipe_consumer(stream_session_ptr session)
-    : stream_pipe(std::move(session)) {
-}
-
-stream_read_status stream_pipe_consumer::read(size_t & offset,
-        const std::function<bool(const char *, size_t)> & sink,
-        const std::function<bool()> & should_stop) {
-    return session_->read_from(offset, sink, should_stop);
-}
-
-std::shared_ptr<stream_pipe_consumer> stream_pipe_consumer::create(stream_session_ptr session) {
-    return std::shared_ptr<stream_pipe_consumer>(new stream_pipe_consumer(std::move(session)));
-}
-
 // helper, builds the standard error response and assigns it to a brand new http_res
 static server_http_res_ptr make_error_response(int status, const std::string & message, error_type type) {
     auto res = std::make_unique<server_http_res>();
@@ -465,58 +377,6 @@ static server_http_res_ptr make_error_response(int status, const std::string & m
     res->data = safe_json_to_str({{"error", err}});
     return res;
 }
-
-server_http_context::handler_t make_stream_get_handler() {
-    return [](const server_http_req & req) -> server_http_res_ptr {
-        // GET /v1/stream/<conv_id>?from=N replays the SSE bytes already buffered for the
-        // session, blocks for more bytes when the session is still running, returns when
-        // the session is finalized. the body is streamed back as text/event-stream so the
-        // browser EventSource can attach to it like a fresh request
-        std::string conv_id = req.get_param("conv_id");
-        if (conv_id.empty()) {
-            return make_error_response(400, "Missing conversation id in path", ERROR_TYPE_INVALID_REQUEST);
-        }
-        auto session = g_stream_sessions.get(conv_id);
-        if (!session) {
-            return make_error_response(404, "Stream not found or expired", ERROR_TYPE_NOT_FOUND);
-        }
-        size_t from = 0;
-        std::string from_str = req.get_param("from");
-        if (!from_str.empty()) {
-            try {
-                from = static_cast<size_t>(std::stoull(from_str));
-            } catch (const std::exception &) {
-                return make_error_response(400, "Invalid 'from' offset", ERROR_TYPE_INVALID_REQUEST);
-            }
-        }
-        if (from < session->dropped_prefix()) {
-            return make_error_response(400, "Stream offset lost, please restart", ERROR_TYPE_INVALID_REQUEST);
-        }
-        auto res = std::make_unique<server_http_res>();
-        res->status = 200;
-        res->content_type = "text/event-stream";
-        // the next closure reads from the ring buffer at the requested offset, blocks until
-        // bytes arrive or the session finalizes. exit each call after draining the available
-        // chunk so set_chunked_content_provider gets a chance to flush to the socket
-        auto offset_ptr = std::make_shared<size_t>(from);
-        // consumer pipe: read-only, does not finalize the session on destruction
-        auto pipe = stream_pipe_consumer::create(session);
-        res->next = [pipe, offset_ptr, &req](std::string & output) -> bool {
-            bool got_any = false;
-            pipe->read(*offset_ptr,
-                [&](const char * d, size_t n) {
-                    output.append(d, n);
-                    *offset_ptr += n;
-                    got_any = true;
-                    return false;
-                },
-                req.should_stop);
-            return got_any;
-        };
-        return res;
-    };
-}
-
 server_http_context::handler_t make_streams_lookup_handler() {
     return [](const server_http_req & req) -> server_http_res_ptr {
         // POST /v1/streams/lookup with body {"conversation_ids": ["X", "Y", ...]} returns the
