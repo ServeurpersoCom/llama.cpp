@@ -1,0 +1,5 @@
+set(TARGET llama-gpu-meminfo)
+add_executable(${TARGET} gpu-meminfo.cpp)
+install(TARGETS ${TARGET} RUNTIME)
+target_link_libraries(${TARGET} PRIVATE ggml ${CMAKE_THREAD_LIBS_INIT} ${CMAKE_DL_LIBS})
+target_compile_features(${TARGET} PRIVATE cxx_std_17)
