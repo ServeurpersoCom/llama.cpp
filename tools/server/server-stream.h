@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -18,6 +19,31 @@
 enum class stream_read_status {
     OK,
     OFFSET_LOST,
+};
+
+// status of a sequenced read, mirrors stream_read_status but for the message indexed path
+enum class stream_seq_status {
+    OK,
+    SEQ_LOST,
+};
+
+// kind of a sequenced chunk. the websocket transport maps these onto typed messages, the SSE
+// replay path reframes them through format_oai_sse. DELTA carries a partial or final completion
+// json, DONE marks the natural end of stream, ERROR carries an error json
+enum class chunk_kind {
+    DELTA,
+    DONE,
+    ERROR,
+};
+
+// one transport neutral chunk in the sequenced buffer. seq is monotonic per session starting at
+// 0, a reader resumes by asking for everything at or after the seq it last saw. json is empty for
+// DONE. holding raw json instead of pre framed SSE bytes lets the websocket send it verbatim while
+// the SSE path reframes it, so neither transport inherits the other's framing
+struct seq_chunk {
+    uint64_t    seq;
+    chunk_kind  kind;
+    std::string json;
 };
 
 // streaming buffer for one generation, survives HTTP disconnect.
@@ -37,6 +63,11 @@ struct stream_session {
     // returns false if the session is already finalized
     bool append(const char * data, size_t len);
 
+    // append one sequenced json chunk, assigning it the next seq. drops whole chunks from the
+    // front when the byte cap is reached, never splitting a chunk. returns false if the session
+    // is already finalized. the websocket path reads these, the SSE path is untouched
+    bool append_seq(chunk_kind kind, std::string json);
+
     // mark the session as complete, wakes all pending readers
     void finalize();
 
@@ -45,6 +76,13 @@ struct stream_session {
     // if offset falls below the dropped prefix
     stream_read_status read_from(size_t offset,
         const std::function<bool(const char *, size_t)> & sink,
+        const std::function<bool()> & should_stop);
+
+    // drain sequenced chunks from seq, calling sink for each one. blocks until more chunks arrive
+    // or finalize is called. returns OK on clean exit, SEQ_LOST if seq fell below the oldest chunk
+    // still buffered. seq is advanced past every chunk handed to the sink
+    stream_seq_status read_from_seq(uint64_t & seq,
+        const std::function<bool(const seq_chunk &)> & sink,
         const std::function<bool()> & should_stop);
 
     bool    is_done() const;
@@ -68,6 +106,13 @@ private:
     std::vector<char>       buffer;
     size_t                  prefix_dropped;
     size_t                  cap_bytes;
+    // sequenced view, lives next to the byte buffer and shares mu/cv. seq_chunks holds the chunks
+    // still in the window, seq_base is the seq of the oldest one, seq_next is the seq the next
+    // append gets, seq_bytes tracks the json bytes held so the same cap_bytes evicts whole chunks
+    std::deque<seq_chunk>   seq_chunks;
+    uint64_t                seq_base;
+    uint64_t                seq_next;
+    size_t                  seq_bytes;
     std::atomic<bool>       done;
     std::atomic<bool>       cancelled;
     std::atomic<int64_t>    completed_ts;
@@ -102,6 +147,11 @@ struct stream_pipe_producer : stream_pipe {
 
     // append raw bytes to the session's ring buffer, returns false if already finalized
     bool write(const char * data, size_t len);
+
+    // append one sequenced json chunk to the session, returns false if already finalized. fed
+    // from the generation closure where the raw result json lives, so the websocket transport
+    // sends json verbatim while the SSE path keeps framing its own bytes
+    bool write_seq(chunk_kind kind, std::string json);
 
     // record that the producer reached its natural end on the wire, so a later close() turns into
     // a no-op. the http drain calls this right before it closes the stream cleanly
@@ -200,6 +250,12 @@ extern stream_session_manager g_stream_sessions;
 server_http_context::handler_t make_stream_get_handler();
 server_http_context::handler_t make_streams_lookup_handler();
 server_http_context::handler_t make_stream_delete_handler();
+
+// websocket replay handler. the client connects to /ws?id=<conv::model>&from=<seq> and the
+// server drains sequenced chunks at or after seq as json messages {seq: type: data}. a dropped
+// socket lets generation survive into the ring for a later resume, an explicit {"type":"cancel"}
+// message cancels the producer. this is the WebUI transport, the SSE surface stays for third parties
+server_http_context::ws_handler_t make_stream_ws_handler();
 
 // extract the X-Conversation-Id header value (case-insensitive), empty when absent. exposed
 // so the router can read the conv id off a forwarded POST to track which child serves it

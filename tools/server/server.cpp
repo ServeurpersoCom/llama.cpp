@@ -237,6 +237,10 @@ int llama_server(int argc, char ** argv) {
     ctx_http.post("/v1/streams/lookup",        ex_wrapper(streams_lookup_h));
     ctx_http.del_("/v1/stream/:conv_id",       ex_wrapper(stream_delete_h));
 
+    // websocket transport for the WebUI, drains the same sequenced ring buffer. wired to the
+    // local handler for now, the router tunnel lands in a later step
+    ctx_http.ws("/ws", make_stream_ws_handler());
+
     // Google Cloud Platform (Vertex AI) compat
     ctx_http.register_gcp_compat();
 

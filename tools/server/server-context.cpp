@@ -3598,7 +3598,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
         }
         res->status = 200;
         res->content_type = "text/event-stream";
-        res->next = [res_this = res.get(), res_type, &req](std::string & output) -> bool {
+        res->next = [res_this = res.get(), res_type, &req, first_json = std::move(first_result_json)](std::string & output) mutable -> bool {
             static auto format_error = [](task_response_type res_type, const json & res_json) {
                 if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                     return format_anthropic_sse({
@@ -3607,6 +3607,15 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     });
                 } else {
                     return format_oai_sse(json {{ "error", res_json }});
+                }
+            };
+
+            // mirror one sequenced json chunk into the ring buffer, no op without a pipe so third
+            // party SSE clients are untouched. only the oai chat path is mirrored, that is the
+            // surface the websocket WebUI consumes
+            auto mirror = [res_this](chunk_kind kind, json chunk_json) {
+                if (res_this->spipe) {
+                    res_this->spipe->write_seq(kind, kind == chunk_kind::DONE ? std::string() : safe_json_to_str(chunk_json));
                 }
             };
 
@@ -3622,6 +3631,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                     // flush the first chunk
                     output = std::move(res_this->data);
                     res_this->data.clear();
+                    mirror(chunk_kind::DELTA, std::move(first_json));
                     return true;
                 }
 
@@ -3640,6 +3650,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                             output = "data: [DONE]\n\n";
                             break;
                     }
+                    mirror(chunk_kind::DONE, json());
                     SRV_DBG("%s", "all results received, terminating stream\n");
                     return false; // no more data, terminate
                 }
@@ -3656,6 +3667,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                 if (result->is_error()) {
                     json res_json = result->to_json();
                     output = format_error(res_type, res_json);
+                    mirror(chunk_kind::ERROR, res_json);
                     SRV_DBG("%s", "error received during streaming, terminating stream\n");
                     return false; // terminate on error
                 } else {
@@ -3670,6 +3682,7 @@ std::unique_ptr<server_res_generator> server_routes::handle_completions_impl(
                         output = format_oai_resp_sse(res_json);
                     } else {
                         output = format_oai_sse(res_json);
+                        mirror(chunk_kind::DELTA, res_json);
                     }
                 }
 

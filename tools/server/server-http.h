@@ -105,6 +105,7 @@ struct server_http_context {
         std::function<bool(std::string &)>       recv;
         std::function<bool(const std::string &)> send;
         std::function<bool()>                    alive;
+        std::function<void()>                    close;
     };
 
     // a websocket handler runs for the whole life of the connection on one http worker thread.

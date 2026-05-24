@@ -608,6 +608,9 @@ void server_http_context::ws(const std::string & path, const server_http_context
         ch.alive = [&ws]() -> bool {
             return ws.is_open();
         };
+        ch.close = [&ws]() {
+            ws.close();
+        };
 
         handler(request, ch);
     });

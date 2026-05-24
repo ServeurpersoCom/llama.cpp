@@ -26,6 +26,9 @@ stream_session::stream_session(std::string conversation_id_, size_t max_bytes_)
     , started_ts(now_seconds())
     , prefix_dropped(0)
     , cap_bytes(max_bytes_)
+    , seq_base(0)
+    , seq_next(0)
+    , seq_bytes(0)
     , done(false)
     , cancelled(false)
     , completed_ts(0) {
@@ -55,6 +58,29 @@ bool stream_session::append(const char * data, size_t len) {
                 prefix_dropped += to_drop;
             }
             buffer.insert(buffer.end(), data, data + len);
+        }
+    }
+    cv.notify_all();
+    return true;
+}
+
+bool stream_session::append_seq(chunk_kind kind, std::string json) {
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        if (done.load(std::memory_order_relaxed)) {
+            return false;
+        }
+        size_t len = json.size();
+        seq_chunks.push_back(seq_chunk{seq_next, kind, std::move(json)});
+        seq_next += 1;
+        seq_bytes += len;
+        // evict whole chunks from the front until the json bytes fit the cap, a reader below
+        // seq_base then gets SEQ_LOST. never split a chunk, that is the whole point of the
+        // sequenced path versus the byte path
+        while (seq_bytes > cap_bytes && seq_chunks.size() > 1) {
+            seq_bytes -= seq_chunks.front().json.size();
+            seq_chunks.pop_front();
+            seq_base += 1;
         }
     }
     cv.notify_all();
@@ -100,6 +126,38 @@ stream_read_status stream_session::read_from(size_t offset,
             return stream_read_status::OK;
         }
         // wait for new bytes, finalize, or a periodic wake to re check should_stop
+        cv.wait_for(lock, std::chrono::milliseconds(STREAM_READ_WAKE_INTERVAL_MS));
+    }
+}
+
+stream_seq_status stream_session::read_from_seq(uint64_t & seq,
+        const std::function<bool(const seq_chunk &)> & sink,
+        const std::function<bool()> & should_stop) {
+    std::unique_lock<std::mutex> lock(mu);
+    while (true) {
+        if (should_stop && should_stop()) {
+            return stream_seq_status::OK;
+        }
+        if (seq < seq_base) {
+            return stream_seq_status::SEQ_LOST;
+        }
+        if (seq < seq_next) {
+            // index of the requested seq inside the deque, seq_base maps to front
+            size_t idx = static_cast<size_t>(seq - seq_base);
+            // copy the chunk under the lock, release before calling the sink
+            seq_chunk chunk = seq_chunks[idx];
+            seq += 1;
+            lock.unlock();
+            bool keep_going = sink(chunk);
+            if (!keep_going) {
+                return stream_seq_status::OK;
+            }
+            lock.lock();
+            continue;
+        }
+        if (done.load(std::memory_order_acquire)) {
+            return stream_seq_status::OK;
+        }
         cv.wait_for(lock, std::chrono::milliseconds(STREAM_READ_WAKE_INTERVAL_MS));
     }
 }
@@ -331,6 +389,10 @@ bool stream_pipe_producer::write(const char * data, size_t len) {
     return session_->append(data, len);
 }
 
+bool stream_pipe_producer::write_seq(chunk_kind kind, std::string json) {
+    return session_->append_seq(kind, std::move(json));
+}
+
 void stream_pipe_producer::done() {
     done_ = true;
 }
@@ -531,6 +593,80 @@ server_http_context::handler_t make_stream_delete_handler() {
         res->status = 204;
         res->content_type = "application/json";
         return res;
+    };
+}
+
+server_http_context::ws_handler_t make_stream_ws_handler() {
+    return [](const server_http_req & req, server_http_context::ws_channel & ch) {
+        // identity is conv::model, same key the SSE path uses, resume offset is a sequence number
+        std::string conv_id = req.get_param("id");
+        if (conv_id.empty()) {
+            ch.send(safe_json_to_str({{"type", "error"}, {"message", "missing id"}}));
+            return;
+        }
+        uint64_t from = 0;
+        std::string from_str = req.get_param("from");
+        if (!from_str.empty()) {
+            try {
+                from = static_cast<uint64_t>(std::stoull(from_str));
+            } catch (const std::exception &) {
+                ch.send(safe_json_to_str({{"type", "error"}, {"message", "invalid from"}}));
+                return;
+            }
+        }
+        auto session = g_stream_sessions.get(conv_id);
+        if (!session) {
+            ch.send(safe_json_to_str({{"type", "error"}, {"message", "stream not found or expired"}}));
+            return;
+        }
+
+        // a dropped socket must not cancel: page reload kills the socket yet generation has to
+        // survive into the ring for the resume. only an explicit cancel message stops the producer.
+        // the reader thread carries that one signal, the drain below stays send only
+        std::atomic<bool> cancelled{false};
+        std::thread reader([&]() {
+            std::string msg;
+            while (ch.recv(msg)) {
+                try {
+                    json j = json::parse(msg);
+                    if (j.value("type", std::string()) == "cancel") {
+                        cancelled.store(true, std::memory_order_release);
+                        g_stream_sessions.evict_and_cancel(conv_id);
+                        break;
+                    }
+                } catch (const std::exception &) {
+                    // ignore malformed control frames
+                }
+            }
+        });
+
+        uint64_t seq = from;
+        stream_seq_status st = session->read_from_seq(seq,
+            [&](const seq_chunk & c) -> bool {
+                json msg;
+                msg["seq"] = c.seq;
+                switch (c.kind) {
+                    case chunk_kind::DELTA: msg["type"] = "delta"; msg["data"] = json::parse(c.json); break;
+                    case chunk_kind::DONE:  msg["type"] = "done"; break;
+                    case chunk_kind::ERROR: msg["type"] = "error"; msg["data"] = json::parse(c.json); break;
+                }
+                return ch.send(msg.dump());
+            },
+            [&]() -> bool {
+                // stop draining when the peer is gone or an explicit cancel arrived
+                return !ch.alive() || cancelled.load(std::memory_order_acquire);
+            });
+
+        if (st == stream_seq_status::SEQ_LOST) {
+            // the requested seq fell out of the window, the client must restart from scratch
+            ch.send(safe_json_to_str({{"type", "lost"}}));
+        }
+
+        // close so the reader thread's recv returns and the thread can join
+        ch.close();
+        if (reader.joinable()) {
+            reader.join();
+        }
     };
 }
 
