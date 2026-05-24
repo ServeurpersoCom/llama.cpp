@@ -337,8 +337,7 @@ export class ChatService {
 			}
 
 			if (stream) {
-				await ChatService.handleStreamResponse(
-					response,
+				await ChatService.handleStreamResponseWs(
 					onChunk,
 					onComplete,
 					onError,
@@ -931,6 +930,233 @@ export class ChatService {
 				/* ignore */
 			}
 		}
+	}
+
+	/**
+	 * Drains a generation over the websocket transport. The POST already started the
+	 * generation and created the server side session keyed by conv::model, this opens
+	 * /ws and replays sequenced json chunks from the last seq we saw. resume is a single
+	 * sequence number, no byte offsets, no SSE parsing, no browser specific socket death
+	 * detection: the socket closing is the signal, an explicit cancel rides the same channel.
+	 */
+	static handleStreamResponseWs(
+		onChunk?: (chunk: string) => void,
+		onComplete?: (
+			response: string,
+			reasoningContent?: string,
+			timings?: ChatMessageTimings,
+			toolCalls?: string
+		) => void,
+		onError?: (error: Error) => void,
+		onReasoningChunk?: (chunk: string) => void,
+		onToolCallChunk?: (chunk: string) => void,
+		onModel?: (model: string) => void,
+		onTimings?: (timings?: ChatMessageTimings, promptProgress?: ChatMessagePromptProgress) => void,
+		conversationId?: string,
+		abortSignal?: AbortSignal,
+		onConnectionState?: (state: StreamConnectionState) => void,
+		streamModel?: string | null
+	): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			let aggregatedContent = '';
+			let fullReasoningContent = '';
+			let aggregatedToolCalls: ApiChatCompletionToolCall[] = [];
+			let lastTimings: ChatMessageTimings | undefined;
+			let modelEmitted = false;
+			let toolCallIndexOffset = 0;
+			let hasOpenToolCallBatch = false;
+			let lastSeq = -1;
+
+			const finalizeOpenToolCallBatch = () => {
+				if (!hasOpenToolCallBatch) {
+					return;
+				}
+				toolCallIndexOffset = aggregatedToolCalls.length;
+				hasOpenToolCallBatch = false;
+			};
+
+			const processToolCallDelta = (toolCalls?: ApiChatCompletionToolCallDelta[]) => {
+				if (!toolCalls || toolCalls.length === 0) {
+					return;
+				}
+				aggregatedToolCalls = ChatService.mergeToolCallDeltas(
+					aggregatedToolCalls,
+					toolCalls,
+					toolCallIndexOffset
+				);
+				if (aggregatedToolCalls.length === 0) {
+					return;
+				}
+				hasOpenToolCallBatch = true;
+				const serializedToolCalls = JSON.stringify(aggregatedToolCalls);
+				if (!serializedToolCalls) {
+					return;
+				}
+				if (!abortSignal?.aborted) {
+					onToolCallChunk?.(serializedToolCalls);
+				}
+			};
+
+			// dispatch one raw oai chat chunk, identical to the SSE path minus the framing
+			const dispatchChunk = (parsed: ApiChatCompletionStreamChunk) => {
+				const choice = parsed.choices?.[0];
+				const content = choice?.delta?.content;
+				const reasoningContent = choice?.delta?.reasoning_content;
+				const toolCalls = choice?.delta?.tool_calls;
+				const timings = parsed.timings;
+				const promptProgress = parsed.prompt_progress;
+
+				const chunkModel = ChatService.extractModelName(parsed);
+				if (chunkModel && !modelEmitted) {
+					modelEmitted = true;
+					onModel?.(chunkModel);
+				}
+				if (promptProgress) {
+					ChatService.notifyTimings(undefined, promptProgress, onTimings);
+				}
+				if (timings) {
+					ChatService.notifyTimings(timings, promptProgress, onTimings);
+					lastTimings = timings;
+				}
+				if (content) {
+					finalizeOpenToolCallBatch();
+					aggregatedContent += content;
+					if (!abortSignal?.aborted) {
+						onChunk?.(content);
+					}
+				}
+				if (reasoningContent) {
+					finalizeOpenToolCallBatch();
+					fullReasoningContent += reasoningContent;
+					if (!abortSignal?.aborted) {
+						onReasoningChunk?.(reasoningContent);
+					}
+				}
+				processToolCallDelta(toolCalls);
+			};
+
+			if (!conversationId) {
+				reject(new Error('websocket transport requires a conversation id'));
+				return;
+			}
+
+			const state = ChatService.getStreamState(conversationId);
+			const from = state ? state.bytesReceived : 0;
+			const id = streamIdentity(conversationId, streamModel);
+			ChatService.saveStreamState(conversationId, from, streamModel);
+
+			// ./ relative ws url so the dev proxy and reverse proxies keep working, scheme follows the page
+			const scheme = location.protocol === 'https:' ? 'wss:' : 'ws:';
+			const base = new URL('./ws', location.href);
+			base.protocol = scheme;
+			base.searchParams.set('id', id);
+			base.searchParams.set('from', String(from));
+
+			const ws = new WebSocket(base.toString());
+			let settled = false;
+
+			const finish = (err?: Error) => {
+				if (settled) return;
+				settled = true;
+				try {
+					ws.close();
+				} catch {
+					/* ignore */
+				}
+				if (err) {
+					onError?.(err);
+					reject(err);
+					return;
+				}
+				resolve();
+			};
+
+			// explicit user stop. close after asking the server to cancel the producer, a plain
+			// socket close without this message lets generation survive for a later resume
+			const onAbort = () => {
+				try {
+					ws.send(JSON.stringify({ type: 'cancel' }));
+				} catch {
+					/* ignore */
+				}
+				finish();
+			};
+			if (abortSignal) {
+				if (abortSignal.aborted) {
+					finish();
+					return;
+				}
+				abortSignal.addEventListener('abort', onAbort, { once: true });
+			}
+
+			ws.onopen = () => {
+				onConnectionState?.(StreamConnectionState.STREAMING);
+			};
+
+			ws.onmessage = (ev) => {
+				if (abortSignal?.aborted) return;
+				let msg: { seq?: number; type?: string; data?: ApiChatCompletionStreamChunk };
+				try {
+					msg = JSON.parse(ev.data as string);
+				} catch (e) {
+					console.error('Error parsing ws message:', e);
+					return;
+				}
+
+				if (typeof msg.seq === 'number') {
+					lastSeq = msg.seq;
+					ChatService.saveStreamState(conversationId, lastSeq + 1, streamModel);
+				}
+
+				switch (msg.type) {
+					case 'delta':
+						if (msg.data) {
+							dispatchChunk(msg.data);
+						}
+						break;
+					case 'done': {
+						finalizeOpenToolCallBatch();
+						ChatService.clearStreamState(conversationId);
+						const finalToolCalls =
+							aggregatedToolCalls.length > 0 ? JSON.stringify(aggregatedToolCalls) : undefined;
+						onComplete?.(
+							aggregatedContent,
+							fullReasoningContent || undefined,
+							lastTimings,
+							finalToolCalls
+						);
+						finish();
+						break;
+					}
+					case 'lost':
+						// the requested seq fell out of the server window, nothing to replay
+						onConnectionState?.(StreamConnectionState.LOST);
+						finish(new Error('Stream offset lost, please restart'));
+						break;
+					case 'error':
+						finish(new Error('Stream error from server'));
+						break;
+				}
+			};
+
+			// a socket drop mid generation is not an error: the server keeps generating into the
+			// ring, the next open resumes from lastSeq. only surface a problem if we never completed
+			ws.onclose = () => {
+				if (settled) return;
+				if (abortSignal?.aborted) {
+					finish();
+					return;
+				}
+				onConnectionState?.(StreamConnectionState.LOST);
+				finish(new Error('Stream connection closed before completion'));
+			};
+
+			ws.onerror = () => {
+				if (settled) return;
+				onConnectionState?.(StreamConnectionState.LOST);
+				finish(new Error('Stream websocket error'));
+			};
+		});
 	}
 
 	/**
