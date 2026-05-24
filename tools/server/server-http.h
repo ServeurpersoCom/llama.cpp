@@ -97,6 +97,22 @@ struct server_http_context {
     void post(const std::string & path, const handler_t & handler) const;
     void del_(const std::string & path, const handler_t & handler) const;
 
+    // bidirectional channel handed to a websocket handler, neutral to the transport so the
+    // handler never sees an httplib type. recv reads the next client message and returns false
+    // when the socket is gone, send pushes a message and returns false on write failure, alive
+    // reports whether the socket is still open. ping/pong is handled below by httplib
+    struct ws_channel {
+        std::function<bool(std::string &)>       recv;
+        std::function<bool(const std::string &)> send;
+        std::function<bool()>                    alive;
+    };
+
+    // a websocket handler runs for the whole life of the connection on one http worker thread.
+    // it owns the read/send loop through the channel and returns when the socket closes
+    using ws_handler_t = std::function<void(const server_http_req &, ws_channel &)>;
+
+    void ws(const std::string & path, const ws_handler_t & handler) const;
+
     // Register the Google Cloud Platform (Vertex AI) compat (AIP_PREDICT_ROUTE env var, or /predict)
     // Must be called AFTER all other API routes are registered
     void register_gcp_compat();

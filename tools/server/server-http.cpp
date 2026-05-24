@@ -584,6 +584,35 @@ void server_http_context::post(const std::string & path, const server_http_conte
     });
 }
 
+void server_http_context::ws(const std::string & path, const server_http_context::ws_handler_t & handler) const {
+    pimpl->srv->WebSocket(path_prefix + path, [handler](const httplib::Request & req, httplib::ws::WebSocket & ws) {
+        server_http_req request{
+            get_params(req),
+            get_headers(req),
+            req.path,
+            build_query_string(req),
+            req.body,
+            {},
+            req.is_connection_closed
+        };
+
+        // map the httplib socket onto the neutral channel, binary frames are treated as text since
+        // the stream protocol is json only. a Fail read means the peer is gone, recv returns false
+        ws_channel ch;
+        ch.recv = [&ws](std::string & msg) -> bool {
+            return ws.read(msg) != httplib::ws::ReadResult::Fail;
+        };
+        ch.send = [&ws](const std::string & data) -> bool {
+            return ws.send(data);
+        };
+        ch.alive = [&ws]() -> bool {
+            return ws.is_open();
+        };
+
+        handler(request, ch);
+    });
+}
+
 //
 // Vertex AI Prediction protocol (AIP_PREDICT_ROUTE)
 // https://cloud.google.com/vertex-ai/docs/predictions/custom-container-requirements
