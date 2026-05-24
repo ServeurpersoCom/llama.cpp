@@ -148,6 +148,21 @@ class ModelsStore {
 		return this.getModelModalities(modelId)?.audio ?? false;
 	}
 
+	// true when the server can synthesize speech for this model, the tts read aloud
+	// control is shown only then
+	modelSupportsOutputAudio(modelId: string): boolean {
+		return this.getModelModalities(modelId)?.outputAudio ?? false;
+	}
+
+	// returns false only when the server explicitly reports no output audio. when the
+	// modalities are unknown (router mode does not expose them on the root props) it returns
+	// true so the control stays available, the server still refuses if it cannot speak.
+	modelMaybeSupportsOutputAudio(modelId: string): boolean {
+		const m = this.getModelModalities(modelId);
+		if (!m) return true;
+		return m.outputAudio;
+	}
+
 	modelSupportsVideo(modelId: string): boolean {
 		return this.getModelModalities(modelId)?.video ?? false;
 	}
@@ -299,12 +314,26 @@ class ModelsStore {
 				details?.name && details.name.trim().length > 0 ? details.name : item.id;
 			const modelId = details?.model || item.id;
 
+			// the router reports modalities per model on the list itself, so vision, audio in
+			// and audio out resolve without loading the model. absent in model mode, then the
+			// props cache fills them once the single model is up
+			const arch = item.architecture;
+			const modalities = arch
+				? {
+						vision: arch.input_modalities?.includes('image') ?? false,
+						audio: arch.input_modalities?.includes('audio') ?? false,
+						video: arch.input_modalities?.includes('video') ?? false,
+						outputAudio: arch.output_modalities?.includes('audio') ?? false
+					}
+				: undefined;
+
 			return {
 				id: item.id,
 				name: this.toDisplayName(displayNameSource),
 				model: modelId,
 				description: details?.description,
 				capabilities: rawCapabilities.filter((value: unknown): value is string => Boolean(value)),
+				modalities,
 				details: details?.details,
 				meta: item.meta ?? null,
 				parsedId: ModelsService.parseModelId(modelId),
@@ -712,7 +741,8 @@ class ModelsStore {
 		return {
 			vision: modalities.vision ?? false,
 			audio: modalities.audio ?? false,
-			video: modalities.video ?? false
+			video: modalities.video ?? false,
+			outputAudio: modalities.output_audio ?? false
 		};
 	}
 

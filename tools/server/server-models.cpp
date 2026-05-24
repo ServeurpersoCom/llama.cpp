@@ -188,9 +188,13 @@ void server_model_meta::update_caps() {
         } else {
             multimodal = mtmd_get_cap_from_file(params.mmproj.path.c_str());
         }
+
+        // tts speech output needs both the talker and the code2wav vocoder wired
+        out_audio = !params.talker_model.empty() && !params.code2wav_model.empty();
     } catch (const std::exception & e) {
         LOG_WRN("failed to initialize common_params for multimodal capability detection: %s\n", e.what());
         multimodal = { false, false };
+        out_audio = false;
     }
 }
 
@@ -1260,9 +1264,14 @@ void server_models_routes::init_routes() {
             if (meta.multimodal.inp_audio) {
                 input_modalities.push_back("audio");
             }
+
+            json output_modalities = json::array({"text"});
+            if (meta.out_audio) {
+                output_modalities.push_back("audio");
+            }
             json architecture {
                 {"input_modalities",  input_modalities},
-                {"output_modalities", json::array({"text"})},
+                {"output_modalities", output_modalities},
             };
 
             json model_info = json {

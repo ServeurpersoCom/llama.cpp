@@ -122,14 +122,22 @@ struct code2wav_weights {
 // SnakeBeta naive, y = x + sin(a * x)^2 * inv_b, x is [T, C], a and inv_b are [1, C].
 // the CUDA fusion pass recollapses these ops plus the following add into one kernel.
 static ggml_tensor * c2w_snake(ggml_context * ctx0, ggml_tensor * x, const code2wav_snake & s) {
-    // a and inv_b are per channel [C], reshape to [1, C] to broadcast over time.
-    ggml_tensor * a     = ggml_reshape_2d(ctx0, s.a,     1, s.a->ne[0]);
-    ggml_tensor * inv_b = ggml_reshape_2d(ctx0, s.inv_b, 1, s.inv_b->ne[0]);
-    ggml_tensor * ax = ggml_mul(ctx0, x, a);
+    // a and inv_b are pre shaped to [1, C] at load so no reshape node lands between the
+    // five ops. that keeps MUL SIN SQR MUL ADD strictly consecutive in the graph, which
+    // is what the cuda snake fusion pass matches on.
+    ggml_tensor * ax = ggml_mul(ctx0, x, s.a);
     ggml_tensor * sn = ggml_sin(ctx0, ax);
     ggml_tensor * s2 = ggml_sqr(ctx0, sn);
-    ggml_tensor * t  = ggml_mul(ctx0, s2, inv_b);
+    ggml_tensor * t  = ggml_mul(ctx0, s2, s.inv_b);
     return ggml_add(ctx0, x, t);
+}
+
+// reshape a loaded [C] snake weight to [1, C] in place, same memory layout, no graph node.
+static void c2w_snake_reshape(code2wav_snake & s) {
+    s.a->ne[1] = s.a->ne[0];     s.a->ne[0] = 1;
+    s.a->nb[1] = s.a->nb[0] * 1; // nb stays element size based, ne0 = 1
+    s.inv_b->ne[1] = s.inv_b->ne[0]; s.inv_b->ne[0] = 1;
+    s.inv_b->nb[1] = s.inv_b->nb[0] * 1;
 }
 
 // causal Conv1d, left pad eff_k minus stride then conv at p0 zero.
@@ -457,6 +465,16 @@ static code2wav_weights c2w_load_weights(ggml_context * ctx, const code2wav_hpar
 
     w.snake_out.a     = c2w_get(ctx, "decoder.5.snake_a");
     w.snake_out.inv_b = c2w_get(ctx, "decoder.5.snake_inv_b");
+
+    // pre shape every snake weight to [1, C] so the cuda fusion sees consecutive ops
+    c2w_snake_reshape(w.snake_out);
+    for (auto & d : w.dec) {
+        c2w_snake_reshape(d.snake_in);
+        for (auto & r : d.res) {
+            c2w_snake_reshape(r.act1);
+            c2w_snake_reshape(r.act2);
+        }
+    }
     w.conv_post_w     = c2w_get(ctx, "decoder.6.conv.weight");
     w.conv_post_b     = c2w_get(ctx, "decoder.6.conv.bias");
 

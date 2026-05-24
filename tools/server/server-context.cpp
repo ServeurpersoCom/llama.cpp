@@ -47,7 +47,7 @@ constexpr llama_token QWEN_TTS_PAD_ID        = 151671;
 constexpr int         TTS_SPEAKER_CHELSIE    = 2301;
 constexpr int         TTS_SPEAKER_ETHAN      = 2302;  // default voice
 constexpr int         TTS_SPEAKER_AIDEN      = 2303;
-constexpr int         TTS_MAX_TOKENS_DEFAULT = 512;
+constexpr int         TTS_MAX_TOKENS_DEFAULT = -1;    // no cap, thinker stops on its own eos
 constexpr int         TTS_CODE2WAV_WINDOW    = 300;   // detok window frames, fidelity over latency
 constexpr int         TTS_CODE2WAV_LOOKBACK  = 25;    // left context frames for seamless windows
 constexpr uint32_t    WAV_STREAM_SIZE        = 0xFFFFFFFFu; // streaming wav, total length unknown up front
@@ -4114,8 +4114,11 @@ void server_routes::init_routes() {
             { "model_alias",                 meta->model_name },
             { "model_path",                  meta->model_path },
             { "modalities",                  json {
-                {"vision", meta->has_inp_image},
-                {"audio",  meta->has_inp_audio},
+                {"vision",       meta->has_inp_image},
+                {"audio",        meta->has_inp_audio},
+                // output_audio is true when the talker tts pipeline is wired, so the
+                // webui can show a read aloud control only when the server can speak
+                {"output_audio", !params.talker_model.empty() && !params.code2wav_model.empty()},
             } },
             { "media_marker",                get_media_marker() },
             { "endpoint_slots",              params.endpoint_slots },
@@ -4479,6 +4482,8 @@ void server_routes::init_routes() {
             bool                                 header_done = false;
             bool                                 talker_done = false;
             bool                                 finished    = false;
+            size_t                               emitted_samples = 0;
+            bool                                 header_done_prev = false;
             uint32_t                             sr;
             ~tts_stream() { if (ts) talker_stream_free(ts); }
         };
@@ -4530,7 +4535,12 @@ void server_routes::init_routes() {
                 chunk.append((const char *) &s16, 2);
             }
 
-            if (st->talker_done) st->finished = true;
+            st->emitted_samples += (chunk.size() - (st->header_done_prev ? 0 : 0)) / 2;
+            if (st->talker_done) {
+                st->finished = true;
+                SRV_INF("audio/speech done: emitted %zu pcm samples (%.2f s)\n",
+                        st->emitted_samples, (double) st->emitted_samples / st->sr);
+            }
             return !st->finished;
         };
         return res;

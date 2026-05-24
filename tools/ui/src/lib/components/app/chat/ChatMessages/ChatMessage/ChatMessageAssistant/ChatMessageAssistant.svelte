@@ -11,6 +11,7 @@
 	import { useProcessingState } from '$lib/hooks/use-processing-state.svelte';
 	import { isLoading, isChatStreaming } from '$lib/stores/chat.svelte';
 	import { copyToClipboard, deriveAgenticSections } from '$lib/utils';
+	import { TtsStreamPlayer } from '$lib/utils/tts-stream';
 	import { AgenticSectionType } from '$lib/enums';
 	import { REASONING_TAGS } from '$lib/constants/agentic';
 	import { tick } from 'svelte';
@@ -180,6 +181,15 @@
 
 	let displayedModel = $derived(message.model ?? null);
 
+	// the read aloud control shows only when the server can synthesize speech for the
+	// model that produced this message
+	let canSpeak = $derived.by(() => {
+		const id = displayedModel ?? modelsStore.selectedModelName;
+		// lenient, the button shows unless the server explicitly reports no output audio,
+		// so router mode where modalities are not exposed still gets the control
+		return id ? modelsStore.modelMaybeSupportsOutputAudio(id) : true;
+	});
+
 	let isCurrentlyLoading = $derived(isLoading());
 	let isStreaming = $derived(isChatStreaming());
 	let hasNoContent = $derived(!message?.content?.trim());
@@ -199,6 +209,36 @@
 			(!hasNoContent || isAgentic) &&
 			isLastAssistantMessage
 	);
+
+	let ttsPlayer: TtsStreamPlayer | null = $state(null);
+	let isSpeaking = $state(false);
+
+	async function handleSpeak() {
+		if (isSpeaking) {
+			ttsPlayer?.stop();
+			ttsPlayer = null;
+			isSpeaking = false;
+			return;
+		}
+		const text = messageContent?.trim();
+		if (!text) return;
+
+		isSpeaking = true;
+		ttsPlayer = new TtsStreamPlayer();
+		try {
+			// in router mode the proxy needs a model name, prefer the model that wrote this
+			// message, fall back to the selected one
+			const model = isRouterMode()
+				? (displayedModel ?? modelsStore.selectedModelName ?? undefined)
+				: undefined;
+			await ttsPlayer.speak(text, { model: model ?? undefined });
+		} catch {
+			// network or abort, fall through to reset the speaking state
+		} finally {
+			isSpeaking = false;
+			ttsPlayer = null;
+		}
+	}
 
 	function handleCopyModel() {
 		void copyToClipboard(displayedModel ?? '');
@@ -328,6 +368,8 @@
 			{onCopy}
 			{onEdit}
 			{onRegenerate}
+			onSpeak={canSpeak ? handleSpeak : undefined}
+			{isSpeaking}
 			onContinue={currentConfig.enableContinueGeneration ? onContinue : undefined}
 			{onForkConversation}
 			{onDelete}

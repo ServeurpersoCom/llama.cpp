@@ -4,6 +4,7 @@ export interface ModelModalities {
 	vision: boolean;
 	audio: boolean;
 	video: boolean;
+	outputAudio: boolean;
 }
 
 export interface ModelOption {

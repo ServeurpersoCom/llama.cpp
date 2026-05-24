@@ -1,5 +1,14 @@
 <script lang="ts">
-	import { Edit, Copy, RefreshCw, Trash2, ArrowRight, GitBranch } from '@lucide/svelte';
+	import {
+		Edit,
+		Copy,
+		RefreshCw,
+		Trash2,
+		ArrowRight,
+		GitBranch,
+		Volume2,
+		Square
+	} from '@lucide/svelte';
 	import {
 		ActionIcon,
 		ChatMessageActionIconsBranchingControls,
@@ -27,6 +36,8 @@
 		onCopy: () => void;
 		onEdit?: () => void;
 		onRegenerate?: () => void;
+		onSpeak?: () => void;
+		isSpeaking?: boolean;
 		onContinue?: () => void;
 		onForkConversation?: (options: { name: string; includeAttachments: boolean }) => void;
 		onDelete: () => void;
@@ -51,6 +62,8 @@
 		onNavigateToSibling,
 		onShowDeleteDialogChange,
 		onRegenerate,
+		onSpeak,
+		isSpeaking = false,
 		role,
 		siblingInfo = null,
 		showDeleteDialog,
@@ -103,6 +116,14 @@
 
 			{#if role === MessageRole.ASSISTANT && onRegenerate}
 				<ActionIcon icon={RefreshCw} tooltip="Regenerate" onclick={() => onRegenerate()} />
+			{/if}
+
+			{#if role === MessageRole.ASSISTANT && onSpeak}
+				<ActionIcon
+					icon={isSpeaking ? Square : Volume2}
+					tooltip={isSpeaking ? 'Stop' : 'Read aloud'}
+					onclick={() => onSpeak()}
+				/>
 			{/if}
 
 			{#if role === MessageRole.ASSISTANT && onContinue}

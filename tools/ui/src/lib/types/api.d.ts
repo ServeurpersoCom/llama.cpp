@@ -94,6 +94,11 @@ export interface ApiModelDataEntry {
 	tags?: string[];
 	/** Legacy meta field (may be present in older responses) */
 	meta?: Record<string, unknown> | null;
+	/** Per model modalities reported by the router, available without loading the model */
+	architecture?: {
+		input_modalities?: string[];
+		output_modalities?: string[];
+	};
 }
 
 export interface ApiModelDetails {
@@ -197,6 +202,7 @@ export interface ApiLlamaCppServerProps {
 		vision: boolean;
 		audio: boolean;
 		video: boolean;
+		output_audio?: boolean;
 	};
 	chat_template: string;
 	bos_token: string;
