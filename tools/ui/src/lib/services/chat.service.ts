@@ -8,10 +8,6 @@ import {
 	ATTACHMENT_LABEL_MCP_RESOURCE,
 	LEGACY_AGENTIC_REGEX,
 	SETTINGS_KEYS,
-	STREAM_VISIBILITY_KICK_MS,
-	SSE_DONE_MARKER,
-	SSE_DATA_PREFIX,
-	NEWLINE,
 	API_STREAM
 } from '$lib/constants';
 import {
@@ -21,8 +17,7 @@ import {
 	MessageRole,
 	MimeTypeAudio,
 	ReasoningFormat,
-	StreamConnectionState,
-	UrlProtocol
+	StreamConnectionState
 } from '$lib/enums';
 import type {
 	ApiChatMessageContentPart,
@@ -528,24 +523,6 @@ export class ChatService {
 		return streamIdentity(conversationId, model);
 	}
 
-	/**
-	 * Reconnect to an interrupted stream for this conversation. Returns the fetch Response so the
-	 * existing SSE parser drains it like a fresh stream. The server returns 200 on success, 404 if
-	 * no session exists for the conv_id, and 400 if the offset is below the dropped prefix.
-	 */
-	static async resumeStream(
-		conversationId: string,
-		signal?: AbortSignal,
-		model?: string | null
-	): Promise<Response | null> {
-		if (!conversationId) return null;
-		const state = ChatService.getStreamState(conversationId);
-		const from = state?.bytesReceived ?? 0;
-		const id = streamIdentity(conversationId, model);
-		const url = `${API_STREAM.BASE}/${encodeURIComponent(id)}?from=${from}`;
-		return await fetch(url, { method: 'GET', signal, headers: getAuthHeaders() });
-	}
-
 	static async preEncode(
 		messages: ApiChatMessageData[] | (DatabaseMessage & { extra?: DatabaseMessageExtra[] })[],
 		model?: string | null,
@@ -620,319 +597,6 @@ export class ChatService {
 	 */
 
 	/**
-	 * Handles streaming response from the chat completion API
-	 * @param response - The Response object from the fetch request
-	 * @param onChunk - Optional callback invoked for each content chunk received
-	 * @param onComplete - Optional callback invoked when the stream is complete with full response
-	 * @param onError - Optional callback invoked if an error occurs during streaming
-	 * @param onReasoningChunk - Optional callback invoked for each reasoning content chunk
-	 * @param conversationId - Optional conversation ID for per-conversation state tracking
-	 * @returns {Promise<void>} Promise that resolves when streaming is complete
-	 * @throws {Error} if the stream cannot be read or parsed
-	 */
-	static async handleStreamResponse(
-		response: Response,
-		onChunk?: (chunk: string) => void,
-		onComplete?: (
-			response: string,
-			reasoningContent?: string,
-			timings?: ChatMessageTimings,
-			toolCalls?: string
-		) => void,
-		onError?: (error: Error) => void,
-		onReasoningChunk?: (chunk: string) => void,
-		onToolCallChunk?: (chunk: string) => void,
-		onModel?: (model: string) => void,
-		onTimings?: (timings?: ChatMessageTimings, promptProgress?: ChatMessagePromptProgress) => void,
-		conversationId?: string,
-		abortSignal?: AbortSignal,
-		onConnectionState?: (state: StreamConnectionState) => void,
-		streamModel?: string | null
-	): Promise<void> {
-		let reader = response.body?.getReader();
-
-		if (!reader) {
-			throw new Error('No response body');
-		}
-
-		// bytesParsed is the absolute server side buffer offset of the next byte to parse
-		// segmentStartOffset is the absolute offset where the current reader started, reset on resume
-		// segmentBytesRead is wire bytes read by the current reader
-		let bytesParsed = 0;
-		let segmentStartOffset = 0;
-		let segmentBytesRead = 0;
-		let lastByteAt = Date.now();
-		// each resume must produce at least one byte to be retried again
-		// if a resume returns 200 but yields nothing, we abandon
-		// since the session has a bounded size, the total number of retries is bounded by construction
-		let madeProgress = true;
-		const encoder = new TextEncoder();
-		if (conversationId) {
-			ChatService.saveStreamState(conversationId, 0, streamModel);
-		}
-		onConnectionState?.(StreamConnectionState.STREAMING);
-
-		let decoder = new TextDecoder();
-		let aggregatedContent = '';
-		let fullReasoningContent = '';
-		let aggregatedToolCalls: ApiChatCompletionToolCall[] = [];
-		let lastTimings: ChatMessageTimings | undefined;
-		let streamFinished = false;
-		let modelEmitted = false;
-		let toolCallIndexOffset = 0;
-		let hasOpenToolCallBatch = false;
-
-		const finalizeOpenToolCallBatch = () => {
-			if (!hasOpenToolCallBatch) {
-				return;
-			}
-
-			toolCallIndexOffset = aggregatedToolCalls.length;
-			hasOpenToolCallBatch = false;
-		};
-
-		const processToolCallDelta = (toolCalls?: ApiChatCompletionToolCallDelta[]) => {
-			if (!toolCalls || toolCalls.length === 0) {
-				return;
-			}
-
-			aggregatedToolCalls = ChatService.mergeToolCallDeltas(
-				aggregatedToolCalls,
-				toolCalls,
-				toolCallIndexOffset
-			);
-
-			if (aggregatedToolCalls.length === 0) {
-				return;
-			}
-
-			hasOpenToolCallBatch = true;
-
-			const serializedToolCalls = JSON.stringify(aggregatedToolCalls);
-
-			if (import.meta.env.DEV && import.meta.env.VITE_DEBUG) {
-				console.log('[ChatService] Aggregated tool calls:', serializedToolCalls);
-			}
-
-			if (!serializedToolCalls) {
-				return;
-			}
-
-			if (!abortSignal?.aborted) {
-				onToolCallChunk?.(serializedToolCalls);
-			}
-		};
-
-		const onVisibilityChange = () => {
-			if (typeof document === 'undefined') return;
-			if (document.visibilityState !== 'visible') return;
-			if (streamFinished) return;
-			if (!conversationId) return;
-			// the bytes have been quiet for too long, the OS likely killed the socket
-			// kicking the reader unblocks reader.read with done=true so the outer loop can resume
-			if (Date.now() - lastByteAt > STREAM_VISIBILITY_KICK_MS) {
-				reader!.cancel().catch(() => {});
-			}
-		};
-		if (typeof document !== 'undefined') {
-			document.addEventListener('visibilitychange', onVisibilityChange);
-		}
-
-		try {
-			let chunk = '';
-			// outer loop drives the resume cycle, swaps reader on premature end of stream
-			while (true) {
-				while (true) {
-					if (abortSignal?.aborted) break;
-
-					let done: boolean;
-					let value: Uint8Array | undefined;
-					try {
-						const r = await reader.read();
-						done = r.done;
-						value = r.value;
-					} catch (readErr) {
-						// reader.read() rejects with TypeError when the underlying connection drops
-						// instead of just resolving with done=true. treat it like done so the outer
-						// loop swaps reader via the resume path
-						if (isAbortError(readErr)) {
-							throw readErr;
-						}
-						console.warn('reader.read() rejected, treating as premature end:', readErr);
-						done = true;
-						value = undefined;
-					}
-					if (done) break;
-
-					if (abortSignal?.aborted) break;
-
-					if (value && value.byteLength > 0) {
-						segmentBytesRead += value.byteLength;
-						lastByteAt = Date.now();
-						if (!madeProgress) {
-							madeProgress = true;
-							onConnectionState?.(StreamConnectionState.STREAMING);
-						}
-					}
-
-					chunk += decoder.decode(value, { stream: true });
-					const lines = chunk.split(NEWLINE);
-					chunk = lines.pop() || '';
-
-					// the persisted offset must point right after the last fully parsed line,
-					// the trailing `chunk` is partial bytes still waiting for a newline
-					if (conversationId) {
-						const tailBytes = encoder.encode(chunk).byteLength;
-						bytesParsed = segmentStartOffset + segmentBytesRead - tailBytes;
-						ChatService.saveStreamState(conversationId, bytesParsed, streamModel);
-					}
-
-					for (const line of lines) {
-						if (abortSignal?.aborted) break;
-
-						if (line.startsWith(UrlProtocol.DATA)) {
-							const data = line.slice(SSE_DATA_PREFIX.length);
-							if (data === SSE_DONE_MARKER) {
-								streamFinished = true;
-
-								continue;
-							}
-
-							try {
-								const parsed: ApiChatCompletionStreamChunk = JSON.parse(data);
-								const choice = parsed.choices?.[0];
-								const content = choice?.delta?.content;
-								const reasoningContent = choice?.delta?.reasoning_content;
-								const toolCalls = choice?.delta?.tool_calls;
-								const timings = parsed.timings;
-								const promptProgress = parsed.prompt_progress;
-
-								const chunkModel = ChatService.extractModelName(parsed);
-								if (chunkModel && !modelEmitted) {
-									modelEmitted = true;
-									onModel?.(chunkModel);
-								}
-
-								if (promptProgress) {
-									ChatService.notifyTimings(undefined, promptProgress, onTimings);
-								}
-
-								if (timings) {
-									ChatService.notifyTimings(timings, promptProgress, onTimings);
-									lastTimings = timings;
-								}
-
-								if (content) {
-									finalizeOpenToolCallBatch();
-									aggregatedContent += content;
-									if (!abortSignal?.aborted) {
-										onChunk?.(content);
-									}
-								}
-
-								if (reasoningContent) {
-									finalizeOpenToolCallBatch();
-									fullReasoningContent += reasoningContent;
-									if (!abortSignal?.aborted) {
-										onReasoningChunk?.(reasoningContent);
-									}
-								}
-
-								processToolCallDelta(toolCalls);
-							} catch (e) {
-								console.error('Error parsing JSON chunk:', e);
-							}
-						}
-					}
-
-					if (abortSignal?.aborted) break;
-					if (streamFinished) break;
-				}
-
-				// inner reader done, decide whether to try a resume
-				if (abortSignal?.aborted) break;
-				if (streamFinished) break;
-				if (!conversationId) break;
-
-				if (!madeProgress) {
-					onConnectionState?.(StreamConnectionState.LOST);
-					onError?.(new Error('Stream resume produced no new bytes, giving up'));
-					break;
-				}
-
-				onConnectionState?.(StreamConnectionState.RESUMING);
-				madeProgress = false;
-
-				// the server resends starting at bytesParsed, discard any partial line we held
-				// it will be retransmitted from a clean line boundary. reuse the model the POST was
-				// originally tagged with, the dropdown may have changed since but the server side
-				// identity is frozen at POST time
-				const resumeResp = await ChatService.resumeStream(
-					conversationId,
-					abortSignal,
-					streamModel
-				).catch(() => null);
-				// an abort landing during the resume request is intentional, not a lost connection
-				if (abortSignal?.aborted) break;
-				if (!resumeResp || resumeResp.status !== 200) {
-					onConnectionState?.(StreamConnectionState.LOST);
-					onError?.(new Error('Stream connection lost and could not be resumed'));
-					break;
-				}
-				const newReader = resumeResp.body?.getReader();
-				if (!newReader) break;
-
-				try {
-					reader.releaseLock();
-				} catch {
-					/* ignore */
-				}
-				reader = newReader;
-				decoder = new TextDecoder();
-				chunk = '';
-				segmentStartOffset = bytesParsed;
-				segmentBytesRead = 0;
-				lastByteAt = Date.now();
-			}
-
-			if (abortSignal?.aborted) return;
-
-			if (streamFinished) {
-				finalizeOpenToolCallBatch();
-
-				if (conversationId) {
-					ChatService.clearStreamState(conversationId);
-				}
-
-				const finalToolCalls =
-					aggregatedToolCalls.length > 0 ? JSON.stringify(aggregatedToolCalls) : undefined;
-
-				onComplete?.(
-					aggregatedContent,
-					fullReasoningContent || undefined,
-					lastTimings,
-					finalToolCalls
-				);
-			}
-		} catch (error) {
-			const err = error instanceof Error ? error : new Error('Stream error');
-
-			onError?.(err);
-
-			throw err;
-		} finally {
-			if (typeof document !== 'undefined') {
-				document.removeEventListener('visibilitychange', onVisibilityChange);
-			}
-			try {
-				reader.releaseLock();
-			} catch {
-				/* ignore */
-			}
-		}
-	}
-
-	/**
 	 * Drains a generation over the websocket transport. The POST already started the
 	 * generation and created the server side session keyed by conv::model, this opens
 	 * /ws and replays sequenced json chunks from the last seq we saw. resume is a single
@@ -955,7 +619,8 @@ export class ChatService {
 		conversationId?: string,
 		abortSignal?: AbortSignal,
 		onConnectionState?: (state: StreamConnectionState) => void,
-		streamModel?: string | null
+		streamModel?: string | null,
+		fromOverride?: number
 	): Promise<void> {
 		return new Promise<void>((resolve, reject) => {
 			let aggregatedContent = '';
@@ -1041,7 +706,9 @@ export class ChatService {
 			}
 
 			const state = ChatService.getStreamState(conversationId);
-			const from = state ? state.bytesReceived : 0;
+			// fromOverride drives a full rebuild (attach on remount passes 0), otherwise resume
+			// from the persisted sequence number of the last chunk we saw
+			const from = fromOverride !== undefined ? fromOverride : state ? state.bytesReceived : 0;
 			const id = streamIdentity(conversationId, streamModel);
 			ChatService.saveStreamState(conversationId, from, streamModel);
 

@@ -229,25 +229,10 @@ class ChatStore {
 			this.clearChatStreaming(convId);
 		};
 
-		// fetch the replay stream from byte 0, rebuild the assistant message from scratch.
+		// rebuild the assistant message from scratch over the websocket, replaying from seq 0.
 		// resolve the server side identity, fall back to streamIdentity when the caller does not
-		// pass a streamId. probeServerStream returns the full id (with ::model suffix when present)
+		// pass a streamId. the ::model suffix is preserved when present
 		const id = streamId || streamIdentity(convId, selectedModelName());
-		let response: Response;
-		try {
-			response = await fetch(`./v1/stream/${encodeURIComponent(id)}?from=0`, {
-				headers: getAuthHeaders()
-			});
-		} catch (e) {
-			console.error('attachServerStream replay fetch failed:', e);
-			unlock();
-			return;
-		}
-		if (!response.ok) {
-			console.warn(`attachServerStream replay got HTTP ${response.status} for conv ${convId}`);
-			unlock();
-			return;
-		}
 
 		// load the target conversation messages by id, not via the active store. when multiple
 		// attaches run in parallel the active store may reflect another conv and writing through
@@ -308,9 +293,10 @@ class ChatStore {
 		const targetMessage = messages[targetIdx];
 		const targetMessageId = targetMessage.id;
 		// when the assistant slot already has content, the running session is a continue or
-		// another append flow and its buffer holds only the appended deltas. preserve the prefix
-		// and let the replay add to it. when the slot is empty the session buffer holds the whole
-		// message so we wipe and rebuild from byte 0
+		// another append flow and its ring holds only the continuation deltas, never the prefix:
+		// the server feeds the existing message as a prompt prefix and generates the rest. preserve
+		// the prefix and let the replay add to it. when the slot is empty the ring holds the whole
+		// message so we wipe and rebuild from seq 0
 		const existingContent = targetMessage.content ?? '';
 		const existingReasoning = targetMessage.reasoningContent ?? '';
 		const isAppendMode = existingContent.length > 0;
@@ -348,8 +334,7 @@ class ChatStore {
 		};
 
 		try {
-			await ChatService.handleStreamResponse(
-				response,
+			await ChatService.handleStreamResponseWs(
 				(chunk: string) => {
 					streamedContent += chunk;
 					const displayed = isAppendMode ? existingContent + streamedContent : streamedContent;
@@ -402,7 +387,8 @@ class ChatStore {
 						this.streamConnectionState = connState;
 					}
 				},
-				attachedModel
+				attachedModel,
+				0
 			);
 		} catch (e) {
 			console.error('attachServerStream pipe crashed:', e);
