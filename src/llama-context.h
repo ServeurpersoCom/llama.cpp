@@ -52,7 +52,7 @@ struct llama_context {
     //   - changing samplers
     //   - changing attention type
     //   - etc.
-    void sched_reserve();
+    void sched_reserve(uint32_t n_tokens_override = 0);
 
     void synchronize();
 

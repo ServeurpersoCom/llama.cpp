@@ -411,7 +411,7 @@ llama_context::~llama_context() {
     ggml_opt_free(opt_ctx);
 }
 
-void llama_context::sched_reserve() {
+void llama_context::sched_reserve(uint32_t n_tokens_override) {
     if (!sched_need_reserve) {
         return;
     }
@@ -425,7 +425,12 @@ void llama_context::sched_reserve() {
     const int64_t t_start_us = ggml_time_us();
 
     const uint32_t n_seqs = cparams.n_seq_max;
-    const uint32_t n_tokens = std::min(cparams.n_ctx, cparams.n_ubatch);
+
+    // during warmup only a tiny batch is decoded, so the reserve covers exactly that batch
+    // instead of sizing the all expert moe graph for the full ubatch, which spikes the compute buffer
+    const uint32_t n_tokens = n_tokens_override
+        ? std::min(n_tokens_override, cparams.n_ubatch)
+        : std::min(cparams.n_ctx, cparams.n_ubatch);
 
     const size_t max_nodes = this->graph_max_nodes(n_tokens);
 
@@ -1133,8 +1138,9 @@ void llama_context::set_warmup(bool value) {
 
     cparams.warmup = value;
 
-    // warmups are usually with small batches, so no need to reserve
-    //sched_need_reserve = true;
+    // warmup activates every expert in the moe graph, not only the routed ones,
+    // so the schedule must be reserved again to cover this wider layout
+    sched_need_reserve = true;
 }
 
 bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
@@ -1709,7 +1715,7 @@ int llama_context::decode(const llama_batch & batch_inp) {
     embd_seq.clear();
     output_swaps.clear();
 
-    sched_reserve();
+    sched_reserve(cparams.warmup ? n_tokens_all : 0);
 
     bool did_optimize = false;
 
