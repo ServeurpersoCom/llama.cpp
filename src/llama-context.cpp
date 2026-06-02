@@ -1133,8 +1133,9 @@ void llama_context::set_warmup(bool value) {
 
     cparams.warmup = value;
 
-    // warmups are usually with small batches, so no need to reserve
-    //sched_need_reserve = true;
+    // warmup activates every expert in the moe graph, not only the routed ones,
+    // so the schedule must be reserved again to cover this wider layout
+    sched_need_reserve = true;
 }
 
 bool llama_context::set_sampler(llama_seq_id seq_id, llama_sampler * sampler) {
