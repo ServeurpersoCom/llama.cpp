@@ -1,4 +1,5 @@
 #include "server-context.h"
+#include "server-scope.h"
 #include "server-chat.h"
 #include "server-common.h"
 #include "server-http.h"
@@ -1020,6 +1021,8 @@ private:
                 }
             }
         }
+
+        server_scope_install(params_base);
 
         // attach a progress callback
         {
@@ -3371,6 +3374,8 @@ private:
 
             const int ret = llama_decode(ctx_tgt, batch_view);
 
+            server_scope_on_decode_done();
+
             metrics.on_decoded(slots);
 
             if (ret != 0) {
@@ -4136,6 +4141,55 @@ void server_routes::init_routes() {
 
         res->ok({{"status", "ok"}});
         return res;
+    };
+
+    this->get_scope_stream = [this](const server_http_req & req) -> server_http_res_ptr {
+        auto res = create_response();
+        if (!params.endpoint_scope) {
+            res->error(format_error_response("This server does not support the scope endpoint. Start it with `--scope`", ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        // query parameters keep the endpoint visitable in a browser, a refresh reopens the stream
+        const std::string filter = req.get_param("filter");
+        json refusal = server_scope_open(filter);
+        if (!refusal.is_null()) {
+            const error_type type = refusal.value("error_type", "") == "invalid_request"
+                ? ERROR_TYPE_INVALID_REQUEST
+                : ERROR_TYPE_UNAVAILABLE;
+            res->error(format_error_response(refusal.at("error").get<std::string>(), type));
+            return res;
+        }
+
+        // the destructor closes the stream slot whatever way the connection ends,
+        // including an abrupt client disconnect
+        struct server_res_scope_stream : server_http_res {
+            ~server_res_scope_stream() override { server_scope_close(); }
+        };
+        auto stream = std::make_unique<server_res_scope_stream>();
+        stream->status = 200;
+        stream->content_type = "text/event-stream";
+        stream->headers["Cache-Control"] = "no-store";
+        stream->data = ": scope stream open\n\n";
+        stream->next = [res_this = stream.get(), &req](std::string & output) -> bool {
+            if (req.should_stop()) {
+                return false;
+            }
+            if (!res_this->data.empty()) {
+                output = std::move(res_this->data);
+                res_this->data.clear();
+                return true;
+            }
+            std::string frame;
+            if (server_scope_next_frame(frame, 500)) {
+                output = "data: " + frame + "\n\n";
+            } else {
+                // an SSE comment keeps the connection observable while idle
+                output = ": keepalive\n\n";
+            }
+            return true;
+        };
+        return stream;
     };
 
     this->get_metrics = [this](const server_http_req & req) {
