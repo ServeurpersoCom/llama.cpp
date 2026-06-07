@@ -1066,6 +1066,46 @@ In *router mode* the query param `?model={model_id}` has to be set. This endpoin
 | `llamacpp:n_decode_total` | Counter | Total Number of llama_decode() calls. |
 | `llamacpp:n_busy_slots_per_decode` | Gauge | Average number of busy slots per llama_decode() call. |
 
+### GET `/scope/capture`: Capture the activations of the next graph execution
+
+This endpoint is only accessible if `--scope` is set.
+
+The filter is passed as a query parameter, so the capture can be triggered and inspected directly from a browser: open the URL during an inference, refresh to rearm. The capture observes the inference currently in progress and returns an error within about a second when the instance is idle.
+
+In *router mode* the query param `?model={model_id}` has to be set to reach the instance to observe.
+
+Arms a one shot capture on the GGML backend scheduler eval callback. The request blocks until a graph execution is observed (send a completion request in parallel) or until the timeout expires. The captured decode runs node by node with per tensor statistics, expect it to be much slower than a normal decode. All other decodes run at full speed, the disarmed callback overhead is below 1%.
+
+*Options:*
+
+`filter`: regex matched against node names, only matching nodes are captured. Empty or absent captures every node.
+
+*Response:*
+
+The `nodes` array uses a single id space: each `src` entry is a position in `nodes`. Tensors never observed as compute nodes appear as leaf entries with a `leaf` kind among `weight`, `kv`, `input` and `uncaptured` (filtered out intermediates). Trivial data movement ops (views, reshapes, copies) carry `"plumbing": true` so a frontend can contract them into edges. Statistics cover the finite values of one tensor: `n`, `n_nan`, `n_inf`, `n_zero`, `min`, `max`, `mean`, `rms`.
+
+Example:
+
+```shell
+curl -s "http://localhost:8080/scope/capture?filter=ffn_out" &
+curl -s http://localhost:8080/completion -d '{"prompt": "Hello", "n_predict": 4}'
+```
+
+```json
+{
+  "filter": "ffn_out",
+  "n_nodes": 192,
+  "n_leafs": 128,
+  "t_capture_ms": 412.6,
+  "nodes": [
+    {"name": "blk.0.ffn_down.weight", "op": "NONE", "type": "q8_0", "shape": [13824, 5120, 1, 1], "buffer": "CUDA0", "leaf": "weight"},
+    {"name": "ffn_swiglu-0", "op": "SWIGLU", "type": "f32", "shape": [13824, 1, 1, 1], "buffer": "CUDA0", "leaf": "uncaptured"},
+    {"name": "ffn_out-0", "op": "MUL_MAT", "type": "f32", "shape": [5120, 1, 1, 1], "buffer": "CUDA0", "src": [0, 1],
+     "stats": {"n": 5120, "n_nan": 0, "n_inf": 0, "n_zero": 0, "min": -0.225, "max": 5.112, "mean": 0.0007, "rms": 0.078}}
+  ]
+}
+```
+
 ### POST `/slots/{id_slot}?action=save`: Save the prompt cache of the specified slot to a file.
 
 *Options:*
