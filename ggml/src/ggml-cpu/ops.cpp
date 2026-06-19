@@ -7006,6 +7006,59 @@ static inline int64_t ggml_wrap_around(int64_t coord, int64_t size) {
     return (coord  + size) % size; // adding size avoids negative number weirdness
 }
 
+// ggml_compute_forward_snake_fused
+// Fused snake activation: y = x + sin^2(a * x) * inv_b.
+// x is [T, C] (T contiguous), a / inv_b collapse to [1, C].
+// Operands are extracted by the fusion path from the naive
+// mul -> sin -> sqr -> mul -> add chain. x and dst share one of
+// {f32, f16, bf16}; a and inv_b are F32, compute is F32.
+
+template <typename elem_t>
+static void ggml_compute_forward_snake_fused_impl(
+        const struct ggml_compute_params * params,
+        const struct ggml_tensor * x,
+        const struct ggml_tensor * a,
+        const struct ggml_tensor * inv_b,
+        struct ggml_tensor * dst) {
+    const int64_t T = x->ne[0];
+    const int64_t C = x->ne[1];
+
+    const elem_t * xd = (const elem_t *) x->data;
+    const float  * ad = (const float  *) a->data;
+    const float  * bd = (const float  *) inv_b->data;
+    elem_t       * yd = (elem_t       *) dst->data;
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    // Split over channels: each thread owns disjoint [c * T, (c + 1) * T) bands
+    for (int64_t c = ith; c < C; c += nth) {
+        const float ac = ad[c];
+        const float bc = bd[c];
+        const elem_t * xc = xd + c * T;
+        elem_t       * yc = yd + c * T;
+        for (int64_t t = 0; t < T; t++) {
+            const float xi = type_conversion_table<elem_t>::to_f32(xc[t]);
+            const float si = sinf(ac * xi);
+            yc[t] = type_conversion_table<elem_t>::from_f32(xi + si * si * bc);
+        }
+    }
+}
+
+void ggml_compute_forward_snake_fused(
+        const struct ggml_compute_params * params,
+        const struct ggml_tensor * x,
+        const struct ggml_tensor * a,
+        const struct ggml_tensor * inv_b,
+        struct ggml_tensor * dst) {
+    switch (x->type) {
+        case GGML_TYPE_F32:  ggml_compute_forward_snake_fused_impl<float>      (params, x, a, inv_b, dst); break;
+        case GGML_TYPE_F16:  ggml_compute_forward_snake_fused_impl<ggml_fp16_t>(params, x, a, inv_b, dst); break;
+        case GGML_TYPE_BF16: ggml_compute_forward_snake_fused_impl<ggml_bf16_t>(params, x, a, inv_b, dst); break;
+        default: GGML_ABORT("snake: unsupported type %d", x->type);
+    }
+}
+
 // ggml_compute_forward_col2im_1d
 //
 // Scatter-add columns [K*OC, T_in] -> signal [T_out, OC]
