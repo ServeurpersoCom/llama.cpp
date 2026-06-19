@@ -3095,6 +3095,53 @@ static int ggml_cpu_try_fuse_ops(
         }
     }
 
+    if (node->op == GGML_OP_MUL) {
+        // Snake activation autofuse: mul -> sin -> sqr -> mul -> add
+        const enum ggml_op snake_ops[] = { GGML_OP_MUL, GGML_OP_SIN, GGML_OP_SQR, GGML_OP_MUL, GGML_OP_ADD };
+        if (ggml_can_fuse(cgraph, node_n, snake_ops, 5)) {
+            const struct ggml_tensor * mul0     = cgraph->nodes[node_n + 0];
+            const struct ggml_tensor * sin_node = cgraph->nodes[node_n + 1];
+            const struct ggml_tensor * sqr      = cgraph->nodes[node_n + 2];
+            const struct ggml_tensor * mul1     = cgraph->nodes[node_n + 3];
+            struct ggml_tensor *       add      = cgraph->nodes[node_n + 4];
+
+            // x carries the full activation shape, a is the broadcast operand
+            const struct ggml_tensor * x = ggml_are_same_shape(mul0, mul0->src[0]) ? mul0->src[0] : mul0->src[1];
+            const struct ggml_tensor * a = (x == mul0->src[0]) ? mul0->src[1] : mul0->src[0];
+
+            // mul1 reads sqr and inv_b in either operand order
+            const struct ggml_tensor * inv_b    = (mul1->src[0] == sqr) ? mul1->src[1] : mul1->src[0];
+
+            // closure check: the trailing add reads the same x as the leading mul
+            const struct ggml_tensor * x_in_add = (add->src[0] == mul1) ? add->src[1] : add->src[0];
+
+            // x is in the supported whitelist and every chain intermediate shares x's type.
+            // The impl reads a and inv_b as const float *, so they stay F32.
+            const bool types_ok =
+                (x->type == GGML_TYPE_F32 || x->type == GGML_TYPE_F16 || x->type == GGML_TYPE_BF16) &&
+                a->type == GGML_TYPE_F32 && inv_b->type == GGML_TYPE_F32 &&
+                mul0->type == x->type && sin_node->type == x->type &&
+                sqr->type  == x->type && mul1->type     == x->type &&
+                add->type  == x->type;
+            const bool shape_ok = ggml_are_same_shape(a, inv_b) && a->ne[0] == 1 && a->ne[1] == x->ne[1];
+            // inner loop walks t over T at fixed c, so x and add stay 2D and a / inv_b collapse to [1, C, 1, 1]
+            const bool dim_ok =
+                x->ne[2] == 1 && x->ne[3] == 1 &&
+                add->ne[2] == 1 && add->ne[3] == 1 &&
+                a->ne[2] == 1 && a->ne[3] == 1 &&
+                inv_b->ne[2] == 1 && inv_b->ne[3] == 1;
+            // impl indexes xd + c * T and ad[c] / bd[c] without strides, so every operand is contiguous
+            const bool contig_ok =
+                ggml_is_contiguous(x) && ggml_is_contiguous(add) &&
+                ggml_is_contiguous(a) && ggml_is_contiguous(inv_b);
+
+            if (types_ok && shape_ok && dim_ok && contig_ok && x_in_add == x) {
+                ggml_compute_forward_snake_fused(params, x, a, inv_b, add);
+                return 4;
+            }
+        }
+    }
+
     return 0;
 }
 
