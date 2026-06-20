@@ -1,6 +1,7 @@
 import { activeProcessingState } from '$lib/stores/chat.svelte';
 import { config } from '$lib/stores/settings.svelte';
 import { STATS_UNITS } from '$lib/constants';
+import { getETASecs } from '$lib/utils';
 import type { ApiProcessingState, LiveProcessingStats, LiveGenerationStats } from '$lib/types';
 
 export interface UseProcessingStateReturn {
@@ -71,15 +72,6 @@ export function useProcessingState(): UseProcessingStateReturn {
 			}
 		}
 	});
-
-	function getETASecs(done: number, total: number, elapsedMs: number): number | undefined {
-		const elapsedSecs = elapsedMs / 1000;
-		const progressETASecs =
-			done === 0 || elapsedSecs < 0.5
-				? undefined // can be the case for the 0% progress report
-				: elapsedSecs * (total / done - 1);
-		return progressETASecs;
-	}
 
 	function startMonitoring(): void {
 		if (isMonitoring) return;

@@ -96,6 +96,56 @@ export interface ApiModelDataEntry {
 	meta?: Record<string, unknown> | null;
 }
 
+/**
+ * Load stage reported by the /models/sse feed.
+ * Stages without a value are indeterminate (no fractional progress).
+ */
+export type ApiModelLoadStage = 'fit_params' | 'text_model' | 'spec_model' | 'mmproj_model';
+
+/**
+ * Fractional load progress for a single stage.
+ * value runs 0.0 -> 1.0 and is absent for indeterminate stages.
+ */
+export interface ApiModelsSseProgress {
+	stage: ApiModelLoadStage;
+	value?: number;
+}
+
+/**
+ * Status payload carried by a /models/sse envelope.
+ * exit_code appears on unload.
+ */
+export interface ApiModelsSseData {
+	status: ServerModelStatus;
+	progress?: ApiModelsSseProgress;
+	exit_code?: number;
+}
+
+/**
+ * Event kind multiplexed on the /models/sse feed.
+ * Only the status_* events carry a status payload, models_reload signals a
+ * full list refresh, model_remove drops a row, download_* drive download UI.
+ */
+export type ApiModelsSseEventType =
+	| 'status_change'
+	| 'model_status'
+	| 'status_update'
+	| 'models_reload'
+	| 'model_remove'
+	| 'download_progress'
+	| 'download_finished'
+	| 'download_failed';
+
+/**
+ * One /models/sse record. event discriminates the kind, model names the
+ * target instance, data carries the status payload when present.
+ */
+export interface ApiModelsSseEvent {
+	model: string;
+	event: ApiModelsSseEventType;
+	data: ApiModelsSseData;
+}
+
 export interface ApiModelDetails {
 	name: string;
 	model: string;
