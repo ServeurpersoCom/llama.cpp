@@ -3614,6 +3614,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_ENDPOINT_METRICS"));
     add_opt(common_arg(
+        {"--scope"},
+        string_format("enable activation capture endpoint POST /scope/capture (default: %s)", params.endpoint_scope ? "enabled" : "disabled"),
+        [](common_params & params) {
+            params.endpoint_scope = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_ENDPOINT_SCOPE"));
+    add_opt(common_arg(
         {"--props"},
         string_format("enable changing global properties via POST /props (default: %s)", params.endpoint_props ? "enabled" : "disabled"),
         [](common_params & params) {

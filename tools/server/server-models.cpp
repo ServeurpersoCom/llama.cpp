@@ -2407,9 +2407,13 @@ server_http_proxy::server_http_proxy(
     cli->set_write_timeout(timeout_read, 0); // reversed for cli (client) vs srv (server)
     cli->set_read_timeout(timeout_write, 0);
     this->status = 500; // to be overwritten upon response
-    this->cleanup_pipes = [pipe]() {
+    this->cleanup_pipes = [pipe, cli]() {
         pipe->close_read();
         pipe->close_write();
+
+        // aborts the in flight upstream request so the child observes the disconnection,
+        // otherwise an endpoint blocked waiting on the child outlives the downstream client
+        cli->stop();
     };
 
     // wire up the receive end of the pipe
