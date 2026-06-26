@@ -2936,6 +2936,9 @@ server_http_proxy::server_http_proxy(
     this->cleanup_pipes = [pipe, cli]() {
         pipe->close_read();
         pipe->close_write();
+
+        // aborts the in flight upstream request so the child observes the disconnection,
+        // otherwise an endpoint blocked waiting on the child outlives the downstream client
         cli->stop();
     };
 
