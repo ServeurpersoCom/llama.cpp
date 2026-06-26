@@ -154,6 +154,7 @@ struct server_routes {
     server_http_context::handler_t post_rerank;
     server_http_context::handler_t get_lora_adapters;
     server_http_context::handler_t post_lora_adapters;
+    server_http_context::handler_t get_scope_stream;
 
     // to be used in router mode
     json get_model_info() const;
