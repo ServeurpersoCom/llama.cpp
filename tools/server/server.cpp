@@ -246,6 +246,7 @@ int llama_server(common_params & params, int argc, char ** argv, server_child & 
         routes.post_responses_tok_oai      = models_routes->proxy_post;
         routes.get_lora_adapters           = models_routes->proxy_get;
         routes.post_lora_adapters          = models_routes->proxy_post;
+        routes.get_scope_stream            = models_routes->proxy_get;
         routes.get_slots                   = models_routes->proxy_get;
         routes.post_slots                  = models_routes->proxy_post;
 
@@ -297,6 +298,7 @@ int llama_server(common_params & params, int argc, char ** argv, server_child & 
     ctx_http.post("/v1/responses/input_tokens",        ex_wrapper(routes.post_responses_tok_oai));
     ctx_http.post("/v1/messages/count_tokens",         ex_wrapper(routes.post_anthropic_count_tokens)); // anthropic token counting
     // LoRA adapters hotswap
+    ctx_http.get ("/scope/stream",             ex_wrapper(routes.get_scope_stream));
     ctx_http.get ("/lora-adapters",            ex_wrapper(routes.get_lora_adapters));
     ctx_http.post("/lora-adapters",            ex_wrapper(routes.post_lora_adapters));
     // Save & load slots
