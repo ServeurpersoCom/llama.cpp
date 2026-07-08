@@ -898,6 +898,16 @@ extern "C" {
                     llama_seq_id   seq_id,
            llama_state_seq_flags   flags);
 
+    // hint that the sequence state for positions [p0, p1) will be read soon
+    // (e.g. by llama_state_seq_get_data_ext); remote backends (RPC) start
+    // transferring the data ahead of time so the later read is mostly local.
+    // does not synchronize; safe to call between decodes.
+    LLAMA_API void llama_state_seq_prefetch_ext(
+            struct llama_context * ctx,
+                    llama_seq_id   seq_id,
+                       llama_pos   p0,
+                       llama_pos   p1);
+
     LLAMA_API size_t llama_state_seq_set_data_ext(
             struct llama_context * ctx,
                    const uint8_t * src,

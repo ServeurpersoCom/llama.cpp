@@ -2020,6 +2020,100 @@ void llama_kv_cache::state_write(llama_io_write_i & io, llama_seq_id seq_id, lla
     }
 }
 
+void llama_kv_cache::state_prefetch(llama_seq_id seq_id, llama_pos p0, llama_pos p1) const {
+    // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
+    if (other) {
+        return;
+    }
+    // the transposed V layout produces per-row slivers - not worth prefetching
+    if (v_trans) {
+        return;
+    }
+    if (seq_id < 0 || (size_t) seq_id >= seq_to_stream.size()) {
+        return;
+    }
+
+    const uint32_t strm = seq_to_stream[seq_id];
+    const auto & cells = v_cells[strm];
+
+    // collect the cell ranges of this sequence restricted to positions [p0, p1),
+    // mirroring the collection in state_write
+    std::vector<std::pair<uint32_t, uint32_t>> ranges;
+    uint32_t range_begin = cells.size();
+    for (uint32_t i = 0; i < cells.size(); ++i) {
+        bool add_cell = !cells.is_empty(i) && cells.seq_has(i, seq_id);
+        if (add_cell) {
+            const llama_pos pos = cells.pos_get(i);
+            add_cell = pos >= p0 && pos < p1;
+        }
+        if (add_cell) {
+            add_cell = !llama_hparams::is_masked_swa(n_swa, swa_type, cells.pos_get(i), cells.seq_pos_max(seq_id));
+        }
+        if (add_cell) {
+            if (range_begin == cells.size()) {
+                range_begin = i;
+            }
+        } else if (range_begin != cells.size()) {
+            ranges.emplace_back(range_begin, i);
+            range_begin = cells.size();
+        }
+    }
+    if (range_begin != cells.size()) {
+        ranges.emplace_back(range_begin, cells.size());
+    }
+    if (ranges.empty() || layers.empty()) {
+        return;
+    }
+
+    // resolve the batched prefetch op from the device that holds the KV tensors
+    typedef bool (*prefetch_fn_t)(ggml_backend_buffer_t, size_t,
+            const ggml_tensor **, const size_t *, const size_t *);
+    prefetch_fn_t fn = nullptr;
+    ggml_backend_buffer_t anchor = nullptr;
+    {
+        ggml_tensor * k0 = layers[0].k_stream[strm];
+        anchor = k0 ? k0->buffer : nullptr;
+        ggml_backend_buffer_type_t buft = anchor ? ggml_backend_buffer_get_type(anchor) : nullptr;
+        ggml_backend_dev_t dev = buft ? ggml_backend_buft_get_device(buft) : nullptr;
+        ggml_backend_reg_t reg = dev ? ggml_backend_dev_backend_reg(dev) : nullptr;
+        if (reg) {
+            fn = (prefetch_fn_t) ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_prefetch_tensor_batch");
+        }
+    }
+    if (!fn) {
+        return;
+    }
+
+    // same region math as state_write_data, one region per layer tensor per range
+    std::vector<const ggml_tensor *> tensors;
+    std::vector<size_t> offsets;
+    std::vector<size_t> sizes;
+    for (const auto & layer : layers) {
+        const uint32_t il = layer.il;
+
+        auto * k = layer.k_stream[strm];
+        const uint64_t k_size_row = ggml_row_size(k->type, hparams.n_embd_k_gqa(il));
+        for (const auto & range : ranges) {
+            tensors.push_back(k);
+            offsets.push_back(range.first * k_size_row);
+            sizes.push_back((range.second - range.first) * k_size_row);
+        }
+
+        auto * v = layer.v_stream[strm];
+        if (!v) {
+            continue;
+        }
+        const uint64_t v_size_row = ggml_row_size(v->type, hparams.n_embd_v_gqa(il));
+        for (const auto & range : ranges) {
+            tensors.push_back(v);
+            offsets.push_back(range.first * v_size_row);
+            sizes.push_back((range.second - range.first) * v_size_row);
+        }
+    }
+
+    fn(anchor, tensors.size(), tensors.data(), offsets.data(), sizes.data());
+}
+
 void llama_kv_cache::state_read(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) {
     // TODO: refactor [TAG_KV_CACHE_SHARE_CELLS]
     if (other) {

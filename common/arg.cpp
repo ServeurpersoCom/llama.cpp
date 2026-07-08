@@ -2303,7 +2303,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "comma-separated list of devices for the disaggregated prefill context\n"
         "use --list-devices to see a list of available devices",
         [](common_params & params, const std::string & value) {
-            params.devices_prefill = parse_device_list(value);
+            // defer resolution to load time: with preset/router configs this argument
+            // may be parsed before --rpc has registered the RPC devices
+            params.prefill_device_raw = value;
         }
     ).set_env("LLAMA_ARG_PREFILL_DEVICE").set_examples({LLAMA_EXAMPLE_SERVER}));
     add_opt(common_arg(

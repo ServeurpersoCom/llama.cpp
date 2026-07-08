@@ -458,6 +458,10 @@ struct common_params {
 
     std::vector<ggml_backend_dev_t> devices_prefill; // devices for the disaggregated prefill context
 
+    // raw --prefill-device value; resolved at load time so argument order relative
+    // to --rpc (which registers the RPC devices) does not matter
+    std::string prefill_device_raw;
+
     int32_t n_prefill = 0; // sequences in the disaggregated prefill context (0 = auto -> 1)
 
     int32_t n_prefill_chunk = 256; // prefill chunk size in tokens for the disaggregated prefill context

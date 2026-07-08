@@ -1189,6 +1189,21 @@ private:
 
         add_bos_token = llama_vocab_get_add_bos(vocab);
 
+        // resolve --prefill-device now that every backend (incl. RPC) is registered;
+        // parse-time resolution breaks when a preset emits it before --rpc
+        if (!params_base.prefill_device_raw.empty()) {
+            ggml_backend_load_all();
+            for (const auto & name : string_split<std::string>(params_base.prefill_device_raw, ',')) {
+                auto * dev = ggml_backend_dev_by_name(name.c_str());
+                if (!dev || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+                    SRV_ERR("invalid prefill device: %s\n", name.c_str());
+                    return false;
+                }
+                params_base.devices_prefill.push_back(dev);
+            }
+            params_base.devices_prefill.push_back(nullptr);
+        }
+
         // disaggregated prefill: load a model replica on the prefill devices and build a
         // dedicated prefill context, driven from update_slots on the main thread only
         if (!params_base.devices_prefill.empty()) {
@@ -2887,8 +2902,9 @@ private:
             return;
         }
 
+        // note: no llama_synchronize here - the RPC command queue keeps ordering, and
+        // skipping the fence lets the next steps overlap the remote chunk compute
         const int ret = llama_decode(ctx_pfx.get(), bpfx);
-        llama_synchronize(ctx_pfx.get());
 
         llama_batch_free(bpfx);
 
@@ -2905,7 +2921,13 @@ private:
                 continue;
             }
 
+            const int chunk_beg = slot->disagg_pos;
             slot->disagg_pos += n_cur[s];
+
+            // stream this chunk's KV to the local side while the next chunk computes
+            // remotely: the request is queued behind the chunk's compute, its response
+            // fills the client-side cache and the final handoff reads mostly from it
+            llama_state_seq_prefetch_ext(ctx_pfx.get(), slot->disagg_seq, chunk_beg, slot->disagg_pos);
 
             if (slot->disagg_pos >= slot->disagg_n) {
                 disagg_prefill_finish(*slot);
@@ -3386,7 +3408,13 @@ private:
                             // completion only: embedding and rerank need ctx_tgt outputs past the last token
                             // no lora: ctx_pfx never sets adapters, a lora prefix KV would be computed wrong
                             // skipped with speculative decoding: the draft context KV is not handed off
-                            if (ctx_pfx && !ctx_dft && !input_tokens.has_mtmd &&
+                            // skipped when this slot already has a cached prefix in common with the new
+                            // prompt: a growing/repeated conversation is cheaper to extend locally from the
+                            // existing KV than to re-prefill the whole thing remotely on every turn
+                            const size_t n_reuse_check = slot.task->params.cache_prompt
+                                ? slot.prompt.tokens.get_common_prefix(input_tokens)
+                                : 0;
+                            if (ctx_pfx && !ctx_dft && !input_tokens.has_mtmd && n_reuse_check == 0 &&
                                 slot.task->type == SERVER_TASK_TYPE_COMPLETION && slot.lora.empty() &&
                                 slot.task->n_tokens() >= 2 && !slot.disagg_attempted) {
                                 const int seq = disagg_acquire_seq();

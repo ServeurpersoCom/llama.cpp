@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <stdexcept>
 
 //
@@ -2509,9 +2510,47 @@ public:
             uint8_t * p, size_t len) : ptr(p), buf_size(len) {}
 
     ~llama_io_write_host() {
-        // TODO: add backend support to batch tensor_get? or some other way to speed this up
+        // group the pending reads by backend buffer and use a batched getter when the
+        // backend provides one (e.g. RPC fetches all regions in a single round trip)
+        typedef bool (*batch_get_fn)(ggml_backend_buffer_t, size_t,
+                const ggml_tensor **, const size_t *, const size_t *, void **);
+
+        // group by device rather than buffer so all regions served by one connection
+        // (e.g. a KV cache split over several RPC buffers) go out as a single batch
+        std::map<ggml_backend_dev_t, std::vector<const write_info *>> groups;
         for (const auto & winfo : winfos) {
-            ggml_backend_tensor_get(winfo.tensor, winfo.ptr, winfo.offset, winfo.size);
+            ggml_backend_buffer_t buf = winfo.tensor->buffer;
+            ggml_backend_buffer_type_t buft = buf ? ggml_backend_buffer_get_type(buf) : nullptr;
+            ggml_backend_dev_t dev = buft ? ggml_backend_buft_get_device(buft) : nullptr;
+            groups[dev].push_back(&winfo);
+        }
+        for (const auto & [dev, infos] : groups) {
+            batch_get_fn fn = nullptr;
+            if (dev && infos.size() > 1) {
+                ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+                if (reg) {
+                    fn = (batch_get_fn) ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_get_tensor_batch");
+                }
+            }
+            ggml_backend_buffer_t buf = infos[0]->tensor->buffer;
+            if (fn) {
+                std::vector<const ggml_tensor *> tensors(infos.size());
+                std::vector<size_t> offsets(infos.size());
+                std::vector<size_t> sizes(infos.size());
+                std::vector<void *> dsts(infos.size());
+                for (size_t i = 0; i < infos.size(); i++) {
+                    tensors[i] = infos[i]->tensor;
+                    offsets[i] = infos[i]->offset;
+                    sizes[i]   = infos[i]->size;
+                    dsts[i]    = infos[i]->ptr;
+                }
+                if (fn(buf, infos.size(), tensors.data(), offsets.data(), sizes.data(), dsts.data())) {
+                    continue;
+                }
+            }
+            for (const auto * winfo : infos) {
+                ggml_backend_tensor_get(winfo->tensor, winfo->ptr, winfo->offset, winfo->size);
+            }
         }
     }
 
@@ -2940,6 +2979,12 @@ size_t llama_context::state_seq_get_data(llama_seq_id seq_id, uint8_t * dst, siz
     } catch (const std::exception & err) {
         LLAMA_LOG_ERROR("%s: error saving state: %s\n", __func__, err.what());
         return 0;
+    }
+}
+
+void llama_context::state_seq_prefetch(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+    if (memory) {
+        memory->state_prefetch(seq_id, p0, p1);
     }
 }
 
@@ -4009,6 +4054,12 @@ size_t llama_state_seq_get_data_ext(llama_context * ctx, uint8_t * dst, size_t s
     ctx->synchronize();
 
     return ctx->state_seq_get_data(seq_id, dst, size, flags);
+}
+
+void llama_state_seq_prefetch_ext(llama_context * ctx, llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+    // intentionally no synchronize: the prefetch request rides the ordered command
+    // queue behind any in-flight compute, so the data it returns is up to date
+    ctx->state_seq_prefetch(seq_id, p0, p1);
 }
 size_t llama_state_seq_set_data_ext(llama_context * ctx, const uint8_t * src, size_t size, llama_seq_id seq_id, llama_state_seq_flags flags) {
     ctx->synchronize();

@@ -711,7 +711,7 @@ server_tokens process_mtmd_prompt(mtmd_context * mctx, const std::string & promp
     if (tokenized != 0) {
         throw std::runtime_error("Failed to tokenize prompt");
     }
-    auto result = server_tokens(chunks, true);
+    auto result = server_tokens(chunks, !files.empty());
     return result;
 }
 
