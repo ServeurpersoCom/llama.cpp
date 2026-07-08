@@ -194,6 +194,11 @@ void llama_memory_hybrid::state_write(llama_io_write_i & io, llama_seq_id seq_id
     mem_recr->state_write(io, seq_id, flags);
 }
 
+void llama_memory_hybrid::state_prefetch(llama_seq_id seq_id, llama_pos p0, llama_pos p1) const {
+    // only the attention KV is worth streaming ahead; the recurrent state is small
+    mem_attn->state_prefetch(seq_id, p0, p1);
+}
+
 void llama_memory_hybrid::state_read(llama_io_read_i & io, llama_seq_id seq_id, llama_state_seq_flags flags) {
     if ((flags & LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY) == 0) {
         mem_attn->state_read(io, seq_id, flags);
