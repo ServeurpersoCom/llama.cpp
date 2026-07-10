@@ -155,9 +155,13 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_MXFP4_MOE     = 38, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
+        LLAMA_FTYPE_MOSTLY_Q2_0          = 41, // except 1d tensors
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };
+
+    // Get the model file type (quantization) as a string, e.g. "Q8_0" or "Q4_K - Medium"
+    LLAMA_API const char * llama_ftype_name(enum llama_ftype ftype);
 
     enum llama_rope_scaling_type {
         LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED = -1,
@@ -606,6 +610,9 @@ extern "C" {
     // Get a string describing the model type
     LLAMA_API int32_t llama_model_desc(const struct llama_model * model, char * buf, size_t buf_size);
 
+    // Get the model file type (quantization), e.g. LLAMA_FTYPE_MOSTLY_Q8_0
+    LLAMA_API enum llama_ftype llama_model_ftype(const struct llama_model * model);
+
     // Returns the total size of all the tensors in the model in bytes
     LLAMA_API uint64_t llama_model_size(const struct llama_model * model);
 
@@ -897,6 +904,16 @@ extern "C" {
                           size_t   size,
                     llama_seq_id   seq_id,
            llama_state_seq_flags   flags);
+
+    // hint that the sequence state for positions [p0, p1) will be read soon
+    // (e.g. by llama_state_seq_get_data_ext); remote backends (RPC) start
+    // transferring the data ahead of time so the later read is mostly local.
+    // does not synchronize; safe to call between decodes.
+    LLAMA_API void llama_state_seq_prefetch_ext(
+            struct llama_context * ctx,
+                    llama_seq_id   seq_id,
+                       llama_pos   p0,
+                       llama_pos   p1);
 
     LLAMA_API size_t llama_state_seq_set_data_ext(
             struct llama_context * ctx,

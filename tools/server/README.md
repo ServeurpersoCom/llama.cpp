@@ -231,7 +231,7 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `-sps, --slot-prompt-similarity SIMILARITY` | how much the prompt of a request must match the prompt of a slot in order to use that slot (default: 0.10, 0.0 = disabled) |
 | `--lora-init-without-apply` | load LoRA adapters without applying them (apply later via POST /lora-adapters) (default: disabled) |
 | `--sleep-idle-seconds SECONDS` | number of seconds of idleness after which the server will sleep (default: -1; -1 = disabled) |
-| `--log-prompts-dir PATH` | Log prompts to directory (only used for debugging, default: disabled) |
+| `--log-prompts-dir PATH` | Log prompts to directory (auto-created if not present; only used for debugging, default: disabled) |
 | `--spec-draft-hf, -hfd, -hfrd, --hf-repo-draft <user>/<model>[:quant]` | Same as --hf-repo, but for the draft model (default: unused)<br/>(env: LLAMA_ARG_SPEC_DRAFT_HF_REPO) |
 | `--spec-draft-threads, -td, --threads-draft N` | number of threads to use during generation (default: same as --threads) |
 | `--spec-draft-threads-batch, -tbd, --threads-batch-draft N` | number of threads to use during batch and prompt processing (default: same as --threads-draft) |
@@ -541,6 +541,8 @@ These words will not be included in the completion, so make sure to add them to 
 `timings_per_token`: Include prompt processing and text generation speed information in each response.  Default: `false`
 
 `return_progress`: Include prompt processing progress in `stream` mode. The progress will be contained inside `prompt_progress` with 4 values: `total`, `cache`, `processed`, and `time_ms`. The overall progress is `processed/total`, while the actual timed progress is `(processed-cache)/(total-cache)`. The `time_ms` field contains the elapsed time in milliseconds since prompt processing started. Default: `false`
+
+`sse_ping_interval`: Interval in seconds between SSE comment pings emitted while the stream stays silent, keeping the connection observable during long prompt processing. Overrides the server `--sse-ping-interval` setting for this request, `-1` disables pings. Default: server setting
 
 `post_sampling_probs`: Returns the probabilities of top `n_probs` tokens after applying sampling chain.
 
@@ -1251,8 +1253,6 @@ print(completion.choices[0].text)
 
 Given a ChatML-formatted json description in `messages`, it returns the predicted completion. Both synchronous and streaming mode are supported, so scripted and interactive applications work fine. While no strong claims of compatibility with OpenAI API spec is being made, in our experience it suffices to support many apps. Only models with a [supported chat template](https://github.com/ggml-org/llama.cpp/wiki/Templates-supported-by-llama_chat_apply_template) can be used optimally with this endpoint. By default, the ChatML template will be used.
 
-If model supports multimodal, you can input the media file via `image_url` content part. We support both base64 and remote URL as input. See OAI documentation for more.
-
 *Options:*
 
 See [OpenAI Chat Completions API documentation](https://platform.openai.com/docs/api-reference/chat). llama.cpp `/completion`-specific features such as `mirostat` are also supported.
@@ -1271,9 +1271,18 @@ The `response_format` parameter supports both plain JSON output (e.g. `{"type": 
 
 `parallel_tool_calls` : Whether to enable parallel/multiple tool calls (only supported on some models, verification is based on jinja template).
 
-For multimodal input:
-- Content type `image_url` and `input_audio` are the same as OAI schema
-- Content type `input_video` is an extension from OAI schema. For now, it only accepts base64 input
+For multimodal input (typed content, `messages[i].content[j]`):
+- If `type == "image_url"`:
+    - `image_url.url` can be a remote URL, base64 (raw or URI-encoded via `data:image/...;base64`) or path to local file
+    - Accepts formats supported by `stb_image` (jpeg, png, tga, bmp, gif, ...)
+- If `type == "input_audio"`:
+    - Either `input_audio.data` or `input_audio.url` can be specified, can be a remote URL, raw base64 or path to local file
+    - Accepts formats supported by `miniaudio` (mp3, wav, flac)
+    - `input_audio.format` will be ignored, the file format will be determined automatically
+- If `type == "input_video"`:
+    - Either `input_video.data` or `input_video.url` can be specified, can be a remote URL, raw base64 or path to local file
+    - Accepts formats supported by `ffmpeg`
+- Note: for local file, make sure to set `--media-path`. File path must be prefixed by `file://`
 
 *Examples:*
 

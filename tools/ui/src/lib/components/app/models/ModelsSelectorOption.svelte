@@ -7,12 +7,17 @@
 		Loader2,
 		Power,
 		PowerOff,
-		RotateCw
+		RotateCw,
+		Settings
 	} from '@lucide/svelte';
-	import { ActionIcon, ModelId } from '$lib/components/app';
+	import { ActionIcon, ModelId, DialogModelConfig } from '$lib/components/app';
+	import ModelLoadHighlight from './ModelLoadHighlight.svelte';
 	import type { ModelOption } from '$lib/types/models';
 	import { ServerModelStatus } from '$lib/enums';
 	import { modelsStore, routerModels } from '$lib/stores/models.svelte';
+	import { modelLoadFraction, modelLoadProgressText } from '$lib/utils';
+
+	let configDialogOpen = $state(false);
 
 	interface Props {
 		option: ModelOption;
@@ -39,29 +44,47 @@
 	}: Props = $props();
 
 	let currentRouterModels = $derived(routerModels());
+	let matchingRouterModel = $derived(currentRouterModels.find((m) => m.id === option.model));
 	let serverStatus = $derived.by(() => {
-		const model = currentRouterModels.find((m) => m.id === option.model);
-		return (model?.status?.value as ServerModelStatus) ?? null;
+		return (matchingRouterModel?.status?.value as ServerModelStatus) ?? null;
 	});
 	let isOperationInProgress = $derived(modelsStore.isModelOperationInProgress(option.model));
-	let isFailed = $derived(serverStatus === ServerModelStatus.FAILED);
+	// The backend only ever reports status.value as unloaded/loading/loaded/sleeping - a
+	// failed load attempt stays "unloaded" but adds status.failed=true + status.exit_code
+	// (see server-models.cpp meta.is_failed()). That's the signal for whether this preset
+	// will actually run on our cluster config, so the row tint below keys off it too.
+	let hasFailed = $derived(
+		serverStatus === ServerModelStatus.FAILED || Boolean(matchingRouterModel?.status?.failed)
+	);
+	let isFailed = $derived(hasFailed);
 	let isSleeping = $derived(serverStatus === ServerModelStatus.SLEEPING);
 	let isLoaded = $derived(
 		(serverStatus === ServerModelStatus.LOADED || isSleeping) && !isOperationInProgress
 	);
 	let isLoading = $derived(serverStatus === ServerModelStatus.LOADING || isOperationInProgress);
+
+	let loadProgress = $derived(isLoading ? modelsStore.getLoadProgress(option.model) : null);
+	let loadPercent = $derived(Math.round(modelLoadFraction(loadProgress) * 100));
+	let loadTitle = $derived(modelLoadProgressText(loadProgress));
 </script>
 
 <div
 	class={[
-		'group flex w-full items-center gap-2 rounded-sm p-2 text-left text-sm transition focus:outline-none',
+		'group relative flex w-full items-center gap-2 rounded-sm p-2 text-left text-sm transition focus:outline-none',
 		'cursor-pointer hover:bg-muted focus:bg-muted',
 		(isSelected || isHighlighted) && 'bg-accent text-accent-foreground',
 		!(isSelected || isHighlighted) && 'hover:bg-accent hover:text-accent-foreground',
+		// Translucent cluster-fit tint: green = this preset is expected to load fine on
+		// our config, red = it already failed to load (incompatible/OOM/etc). Kept subtle
+		// (low opacity) so it doesn't fight the selection/hover highlight or text contrast.
+		// Resting-state only (no hover: variant) - it'd compete on specificity with the
+		// hover-bg classes above at equal Tailwind-utility specificity.
+		!(isSelected || isHighlighted) && (hasFailed ? 'bg-red-500/10' : 'bg-green-500/5'),
 		isLoaded ? 'text-popover-foreground' : 'text-muted-foreground'
 	]}
 	role="option"
 	aria-selected={isSelected || isHighlighted}
+	title={loadTitle}
 	tabindex="0"
 	onclick={() => onSelect(option.id)}
 	onmouseenter={onMouseEnter}
@@ -110,14 +133,25 @@
 					onclick={() => onInfoClick(option.model)}
 				/>
 			{/if}
+
+			<ActionIcon
+				iconSize="h-2.5 w-2.5"
+				icon={Settings}
+				tooltip="Model config (context size)"
+				class="h-3 w-3 hover:text-foreground"
+				onclick={(e) => {
+					e?.stopPropagation();
+					configDialogOpen = true;
+				}}
+			/>
 		</div>
 
 		{#if isLoading}
-			<div class="flex w-4 [@media(pointer:coarse)]:w-5 items-center justify-center">
+			<div class="flex w-4 items-center justify-center [@media(pointer:coarse)]:w-5">
 				<Loader2 class="h-4 w-4 animate-spin text-muted-foreground" />
 			</div>
 		{:else if isFailed}
-			<div class="flex w-4 [@media(pointer:coarse)]:w-auto items-center justify-center">
+			<div class="flex w-4 items-center justify-center [@media(pointer:coarse)]:w-auto">
 				<CircleAlert
 					class="h-3.5 w-3.5 text-red-500 group-hover:hidden [@media(pointer:coarse)]:hidden"
 				/>
@@ -134,7 +168,7 @@
 				</div>
 			</div>
 		{:else if isSleeping}
-			<div class="flex w-4 [@media(pointer:coarse)]:w-auto items-center justify-center">
+			<div class="flex w-4 items-center justify-center [@media(pointer:coarse)]:w-auto">
 				<span
 					class="h-2 w-2 rounded-full bg-orange-400 group-hover:hidden [@media(pointer:coarse)]:hidden"
 				></span>
@@ -153,7 +187,7 @@
 				</div>
 			</div>
 		{:else if isLoaded}
-			<div class="flex w-4 [@media(pointer:coarse)]:w-auto items-center justify-center">
+			<div class="flex w-4 items-center justify-center [@media(pointer:coarse)]:w-auto">
 				<span
 					class="h-2 w-2 rounded-full bg-green-500 group-hover:hidden [@media(pointer:coarse)]:hidden"
 				></span>
@@ -170,7 +204,7 @@
 				</div>
 			</div>
 		{:else}
-			<div class="flex w-4 [@media(pointer:coarse)]:w-auto items-center justify-center">
+			<div class="flex w-4 items-center justify-center [@media(pointer:coarse)]:w-auto">
 				<span
 					class="h-2 w-2 rounded-full bg-muted-foreground/50 group-hover:hidden [@media(pointer:coarse)]:hidden"
 				></span>
@@ -188,4 +222,14 @@
 			</div>
 		{/if}
 	</div>
+
+	{#if isLoading}
+		<ModelLoadHighlight percent={loadPercent} />
+	{/if}
 </div>
+
+<DialogModelConfig
+	bind:open={configDialogOpen}
+	modelId={option.model}
+	onOpenChange={(v) => (configDialogOpen = v)}
+/>

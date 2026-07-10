@@ -149,6 +149,8 @@ public:
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
 
+    void state_prefetch(llama_seq_id seq_id, llama_pos p0, llama_pos p1) const override;
+
     //
     // llama_kv_cache specific API
     //
@@ -160,6 +162,9 @@ public:
 
     ggml_type type_k() const;
     ggml_type type_v() const;
+
+    std::vector<uint32_t> get_layer_ids() const;
+    ggml_tensor * get_k_storage(int32_t il) const;
 
     //
     // graph_build API

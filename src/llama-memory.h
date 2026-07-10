@@ -124,6 +124,13 @@ struct llama_memory_i {
 
     virtual void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const = 0;
     virtual void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) = 0;
+
+    // hint that the state of the given position range will be read soon: backends
+    // that keep the data remotely (RPC) can start transferring it ahead of time;
+    // default is a no-op
+    virtual void state_prefetch(llama_seq_id seq_id, llama_pos p0, llama_pos p1) const {
+        (void) seq_id; (void) p0; (void) p1;
+    }
 };
 
 using llama_memory_ptr = std::unique_ptr<llama_memory_i>;

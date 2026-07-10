@@ -18,6 +18,8 @@
 #  include <unistd.h>
 #endif
 #include <cstdlib>
+#include <cerrno>
+#include <cstring>
 #include <mutex>
 #include <optional>
 
@@ -585,6 +587,38 @@ static bool set_reuse_addr(sockfd_t sockfd) {
     return ret == 0;
 }
 
+// reap dead peers: without keepalive a client killed without a clean FIN leaves
+// the serve loop blocked in recv() forever, and new clients queue in the backlog
+static void set_keepalive(sockfd_t sockfd) {
+    int flag = 1;
+    setsockopt(sockfd, SOL_SOCKET, SO_KEEPALIVE, (char *)&flag, sizeof(flag));
+#ifdef TCP_KEEPIDLE
+    int idle = 15, intvl = 5, cnt = 3;
+    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPIDLE,  &idle,  sizeof(idle));
+    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl, sizeof(intvl));
+    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPCNT,   &cnt,   sizeof(cnt));
+#elif defined(TCP_KEEPALIVE) && !defined(_WIN32)
+    int idle = 15;
+    setsockopt(sockfd, IPPROTO_TCP, TCP_KEEPALIVE, &idle, sizeof(idle)); // macOS
+#endif
+}
+
+// large fixed socket buffers so bulk tensor transfers do not wait for the OS
+// receive-window autotuning to ramp up on short-lived bursts; try descending
+// sizes since the OS caps the maximum (e.g. kern.ipc.maxsockbuf on macOS)
+static void set_bulk_buffers(sockfd_t sockfd) {
+    for (int size = 32*1024*1024; size >= 1024*1024; size /= 2) {
+        if (setsockopt(sockfd, SOL_SOCKET, SO_RCVBUF, (char *)&size, sizeof(size)) == 0) {
+            break;
+        }
+    }
+    for (int size = 32*1024*1024; size >= 1024*1024; size /= 2) {
+        if (setsockopt(sockfd, SOL_SOCKET, SO_SNDBUF, (char *)&size, sizeof(size)) == 0) {
+            break;
+        }
+    }
+}
+
 socket_ptr socket_t::accept() {
     auto client_socket_fd = ::accept(pimpl->fd, NULL, NULL);
     if (!is_valid_fd(client_socket_fd)) {
@@ -594,6 +628,8 @@ socket_ptr socket_t::accept() {
         GGML_LOG_ERROR("Failed to set TCP_NODELAY\n");
         return nullptr;
     }
+    set_bulk_buffers(client_socket_fd);
+    set_keepalive(client_socket_fd);
     return socket_ptr(new socket_t(std::make_unique<impl>(client_socket_fd)));
 }
 
@@ -618,7 +654,7 @@ socket_ptr socket_t::create_server(const char * host, int port) {
     if (bind(sockfd, (struct sockaddr *) &serv_addr, sizeof(serv_addr)) < 0) {
         return nullptr;
     }
-    if (listen(sockfd, 1) < 0) {
+    if (listen(sockfd, 8) < 0) {
         return nullptr;
     }
     return socket_ptr(new socket_t(std::make_unique<impl>(sockfd)));
@@ -633,6 +669,8 @@ socket_ptr socket_t::connect(const char * host, int port) {
         GGML_LOG_ERROR("Failed to set TCP_NODELAY\n");
         return nullptr;
     }
+    set_bulk_buffers(sockfd);
+    set_keepalive(sockfd);
     struct sockaddr_in addr;
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
@@ -643,6 +681,7 @@ socket_ptr socket_t::connect(const char * host, int port) {
     }
     memcpy(&addr.sin_addr.s_addr, server->h_addr, server->h_length);
     if (::connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        GGML_LOG_ERROR("DBG connect(%s:%d) failed: errno=%d (%s)\n", host, port, errno, strerror(errno));
         return nullptr;
     }
     return socket_ptr(new socket_t(std::make_unique<impl>(sockfd)));

@@ -1,5 +1,5 @@
 import { ServerModelStatus } from '$lib/enums';
-import { apiFetch, apiPost } from '$lib/utils';
+import { apiFetch, apiFetchWithParams, apiPost, normalizeModelName } from '$lib/utils';
 import type { ParsedModelId } from '$lib/types/models';
 import {
 	MODEL_QUANTIZATION_SEGMENT_RE,
@@ -7,6 +7,7 @@ import {
 	MODEL_PARAMS_RE,
 	MODEL_ACTIVATED_PARAMS_RE,
 	MODEL_IGNORED_SEGMENTS,
+	MODEL_WEIGHT_EXTENSION_RE,
 	MODEL_ID_NOT_FOUND,
 	MODEL_ID_ORG_SEPARATOR,
 	MODEL_ID_SEGMENT_SEPARATOR,
@@ -83,6 +84,35 @@ export class ModelsService {
 	}
 
 	/**
+	 * Persist a per-model config override (ROUTER mode only, requires the
+	 * server to be started with --models-user-overrides). Currently supports
+	 * ctx_size; takes effect on the model's next load, not the running
+	 * instance. The model must be unloaded first.
+	 *
+	 * @param modelId - Model identifier to configure
+	 * @param config - Override fields to persist
+	 */
+	static async setConfig(modelId: string, config: { ctxSize?: number }): Promise<{ success: boolean }> {
+		const payload: { model: string; ctx_size?: number } = { model: modelId };
+		if (config.ctxSize !== undefined) payload.ctx_size = config.ctxSize;
+		return apiPost<{ success: boolean }>(API_MODELS.CONFIG, payload);
+	}
+
+	/**
+	 * Read a model's trained max context length straight from its GGUF header
+	 * (ROUTER mode only). Used to bound the context-size slider per model -
+	 * doesn't require the model to be loaded.
+	 *
+	 * @param modelId - Model identifier to inspect
+	 */
+	static async getMaxContext(modelId: string): Promise<{ max_context: number; architecture: string }> {
+		return apiFetchWithParams<{ max_context: number; architecture: string }>(
+			'/models/max-context',
+			{ model: modelId }
+		);
+	}
+
+	/**
 	 *
 	 *
 	 * Status
@@ -139,15 +169,19 @@ export class ModelsService {
 			tags: []
 		};
 
+		// strip directory path and weight extension so a bare `-m /path/file.gguf`
+		// parses like a clean repo id; the HF `org/model` form is preserved
+		const source = normalizeModelName(modelId).replace(MODEL_WEIGHT_EXTENSION_RE, '');
+
 		// 1. Extract colon-separated quantization (e.g. `model:Q4_K_M`)
-		const colonIdx = modelId.indexOf(MODEL_ID_QUANTIZATION_SEPARATOR);
+		const colonIdx = source.indexOf(MODEL_ID_QUANTIZATION_SEPARATOR);
 		let modelPath: string;
 
 		if (colonIdx !== MODEL_ID_NOT_FOUND) {
-			result.quantization = modelId.slice(colonIdx + 1) || null;
-			modelPath = modelId.slice(0, colonIdx);
+			result.quantization = source.slice(colonIdx + 1) || null;
+			modelPath = source.slice(0, colonIdx);
 		} else {
-			modelPath = modelId;
+			modelPath = source;
 		}
 
 		// 2. Extract org name (e.g. `org/model` -> org = "org")
