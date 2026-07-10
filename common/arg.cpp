@@ -3119,6 +3119,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MODELS_PRESET"));
     add_opt(common_arg(
+        {"--models-user-overrides"}, "PATH",
+        "path to INI file for per-model runtime-editable overrides written via POST /models/:name/config, "
+        "e.g. context size changed from the web UI (default: disabled)",
+        [](common_params & params, const std::string & value) {
+            params.models_user_overrides = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MODELS_USER_OVERRIDES"));
+    add_opt(common_arg(
         {"--models-max"}, "N",
         string_format("for router server, maximum number of models to load simultaneously (default: %d, 0 = unlimited)", params.models_max),
         [](common_params & params, int value) {

@@ -1,5 +1,5 @@
 import { ServerModelStatus } from '$lib/enums';
-import { apiFetch, apiPost } from '$lib/utils';
+import { apiFetch, apiFetchWithParams, apiPost } from '$lib/utils';
 import type { ParsedModelId } from '$lib/types/models';
 import {
 	MODEL_QUANTIZATION_SEGMENT_RE,
@@ -80,6 +80,35 @@ export class ModelsService {
 	 */
 	static async unload(modelId: string): Promise<ApiRouterModelsUnloadResponse> {
 		return apiPost<ApiRouterModelsUnloadResponse>(API_MODELS.UNLOAD, { model: modelId });
+	}
+
+	/**
+	 * Persist a per-model config override (ROUTER mode only, requires the
+	 * server to be started with --models-user-overrides). Currently supports
+	 * ctx_size; takes effect on the model's next load, not the running
+	 * instance. The model must be unloaded first.
+	 *
+	 * @param modelId - Model identifier to configure
+	 * @param config - Override fields to persist
+	 */
+	static async setConfig(modelId: string, config: { ctxSize?: number }): Promise<{ success: boolean }> {
+		const payload: { model: string; ctx_size?: number } = { model: modelId };
+		if (config.ctxSize !== undefined) payload.ctx_size = config.ctxSize;
+		return apiPost<{ success: boolean }>(API_MODELS.CONFIG, payload);
+	}
+
+	/**
+	 * Read a model's trained max context length straight from its GGUF header
+	 * (ROUTER mode only). Used to bound the context-size slider per model -
+	 * doesn't require the model to be loaded.
+	 *
+	 * @param modelId - Model identifier to inspect
+	 */
+	static async getMaxContext(modelId: string): Promise<{ max_context: number; architecture: string }> {
+		return apiFetchWithParams<{ max_context: number; architecture: string }>(
+			'/models/max-context',
+			{ model: modelId }
+		);
 	}
 
 	/**

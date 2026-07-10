@@ -61,10 +61,16 @@ export interface ApiChatMessageData {
  * Model status object from /models endpoint
  */
 export interface ApiModelStatus {
-	/** Status value: loaded, unloaded, loading, sleeping, failed */
+	/** Status value: loaded, unloaded, loading, sleeping (never "failed" on the wire) */
 	value: ServerModelStatus;
 	/** Command line arguments used when loading (only for loaded models) */
 	args?: string[];
+	/** Set alongside exit_code when the last load attempt failed (value stays "unloaded") */
+	failed?: boolean;
+	/** Process exit code from the last failed load attempt */
+	exit_code?: number;
+	/** The model's resolved preset, INI-formatted (only when the preset has a name) - used to read the current ctx-size for the config dialog */
+	preset?: string;
 }
 
 /**

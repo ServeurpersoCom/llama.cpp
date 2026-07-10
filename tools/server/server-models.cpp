@@ -5,6 +5,7 @@
 #include "build-info.h"
 #include "preset.h"
 #include "download.h"
+#include "gguf.h"
 
 #include <cpp-httplib/httplib.h> // TODO: remove this once we use HTTP client from download.h
 #include <sheredom/subprocess.h>
@@ -21,6 +22,7 @@
 #include <chrono>
 #include <queue>
 #include <filesystem>
+#include <fstream>
 #include <random>
 #include <sstream>
 #include <cstring>
@@ -340,6 +342,15 @@ void server_models::load_models() {
         custom_presets = ctx_preset.load_from_ini(base_params.models_preset, global);
         SRV_INF("Loaded %zu custom model presets from %s\n", custom_presets.size(), base_params.models_preset.c_str());
     }
+    // 4. per-model runtime overrides (e.g. context size from the web UI) -
+    // own file, own global block ignored (each override section only ever
+    // carries the handful of keys POST /models/:name/config writes).
+    common_presets user_overrides;
+    if (!base_params.models_user_overrides.empty() && std::filesystem::exists(base_params.models_user_overrides)) {
+        common_preset unused_global = {};
+        user_overrides = ctx_preset.load_from_ini(base_params.models_user_overrides, unused_global);
+        SRV_INF("Loaded %zu user override presets from %s\n", user_overrides.size(), base_params.models_user_overrides.c_str());
+    }
 
     // cascade, apply global preset first
     cached_models  = ctx_preset.cascade(global, cached_models);
@@ -364,6 +375,15 @@ void server_models::load_models() {
             final_presets[name] = custom;
         }
         source_map[name] = SERVER_MODEL_SOURCE_PRESET;
+    }
+    // user overrides win over everything else for that model name - they're
+    // an explicit per-model choice made through the UI, not a bulk source.
+    for (const auto & [name, override_preset] : user_overrides) {
+        if (final_presets.find(name) != final_presets.end()) {
+            final_presets[name].merge(override_preset);
+        }
+        // silently ignored if the model no longer exists (e.g. weights deleted) -
+        // the override file is small and self-healing on the next successful write
     }
 
     // overlay router's own CLI args on top of every model preset so that
@@ -1725,6 +1745,131 @@ void server_models_routes::init_routes() {
         }
 
         res_ok(res, {{"success", true}});
+        return res;
+    };
+
+    // Persists a per-model runtime override (currently just context size) to
+    // base_params.models_user_overrides and reloads the registry so it takes
+    // effect on the model's NEXT load - ctx-size is a llama-server startup
+    // flag, so a currently-running instance is unaffected until reloaded.
+    this->post_router_model_config = [this](const server_http_req & req) {
+        auto res = std::make_unique<server_http_res>();
+        json body = json::parse(req.body);
+        std::string name = json_value(body, "model", std::string());
+        if (name.empty()) {
+            throw std::invalid_argument("model must be a non-empty string");
+        }
+        if (params.models_user_overrides.empty()) {
+            throw std::runtime_error(
+                "server was not started with --models-user-overrides, per-model config edits are disabled");
+        }
+        auto meta = models.get_meta(name);
+        if (!meta.has_value()) {
+            res_err(res, format_error_response("model is not found", ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+        if (meta->is_running()) {
+            throw std::invalid_argument("unload the model before changing its config");
+        }
+
+        common_preset overridden;
+        overridden.name = name;
+        bool changed = false;
+        if (body.contains("ctx_size")) {
+            int ctx_size = json_value(body, "ctx_size", 0);
+            if (ctx_size <= 0) {
+                throw std::invalid_argument("ctx_size must be a positive integer");
+            }
+            overridden.set_option(models.ctx_preset, "LLAMA_ARG_CTX_SIZE", std::to_string(ctx_size));
+            changed = true;
+        }
+        if (!changed) {
+            throw std::invalid_argument("no recognized override fields in request body (expected: ctx_size)");
+        }
+
+        common_preset unused_global = {};
+        common_presets existing;
+        if (std::filesystem::exists(params.models_user_overrides)) {
+            existing = models.ctx_preset.load_from_ini(params.models_user_overrides, unused_global);
+        }
+        if (existing.find(name) != existing.end()) {
+            existing[name].merge(overridden);
+        } else {
+            existing[name] = overridden;
+        }
+
+        std::ostringstream out;
+        out << "; Per-model runtime overrides - written by POST /models/config from the web UI.\n";
+        out << "; Safe to edit by hand; regenerated in full on every write (one section per model).\n\n";
+        for (const auto & [override_name, preset] : existing) {
+            out << preset.to_ini();
+        }
+        {
+            std::ofstream file(params.models_user_overrides, std::ios::trunc);
+            if (!file.is_open()) {
+                throw std::runtime_error("failed to write " + params.models_user_overrides);
+            }
+            file << out.str();
+        }
+
+        models.load_models();
+        res_ok(res, {{"success", true}});
+        return res;
+    };
+
+    // Reads the model's trained max context length straight from the GGUF
+    // header (no_alloc - metadata only, doesn't touch tensor data or VRAM) so
+    // the config dialog can bound its context-size slider per model without
+    // having to load the model first.
+    this->get_router_model_max_context = [this](const server_http_req & req) {
+        auto res = std::make_unique<server_http_res>();
+        std::string name = req.get_param("model");
+        if (name.empty()) {
+            throw std::invalid_argument("model must be a non-empty string");
+        }
+        auto meta = models.get_meta(name);
+        if (!meta.has_value()) {
+            res_err(res, format_error_response("model is not found", ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+        std::string model_path;
+        if (!meta->preset.get_option("LLAMA_ARG_MODEL", model_path) || model_path.empty()) {
+            res_err(res, format_error_response("model has no local path (not yet downloaded?)", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        struct gguf_init_params gguf_params = { /*no_alloc =*/ true, /*ctx =*/ nullptr };
+        struct gguf_context * gguf_ctx = gguf_init_from_file(model_path.c_str(), gguf_params);
+        if (!gguf_ctx) {
+            res_err(res, format_error_response("failed to read GGUF header from " + model_path, ERROR_TYPE_SERVER));
+            return res;
+        }
+
+        int64_t arch_key = gguf_find_key(gguf_ctx, "general.architecture");
+        std::string arch = arch_key >= 0 ? gguf_get_val_str(gguf_ctx, arch_key) : "";
+
+        int64_t max_context = 0;
+        if (!arch.empty()) {
+            std::string ctx_key_name = arch + ".context_length";
+            int64_t ctx_key = gguf_find_key(gguf_ctx, ctx_key_name.c_str());
+            if (ctx_key >= 0) {
+                switch (gguf_get_kv_type(gguf_ctx, ctx_key)) {
+                    case GGUF_TYPE_UINT32:  max_context = gguf_get_val_u32(gguf_ctx, ctx_key); break;
+                    case GGUF_TYPE_INT32:   max_context = gguf_get_val_i32(gguf_ctx, ctx_key); break;
+                    case GGUF_TYPE_UINT64:  max_context = (int64_t) gguf_get_val_u64(gguf_ctx, ctx_key); break;
+                    case GGUF_TYPE_INT64:   max_context = gguf_get_val_i64(gguf_ctx, ctx_key); break;
+                    default: break;
+                }
+            }
+        }
+        gguf_free(gguf_ctx);
+
+        if (max_context <= 0) {
+            res_err(res, format_error_response("could not find context_length in GGUF metadata", ERROR_TYPE_SERVER));
+            return res;
+        }
+
+        res_ok(res, {{"max_context", max_context}, {"architecture", arch}});
         return res;
     };
 }

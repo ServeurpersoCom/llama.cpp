@@ -109,3 +109,12 @@ export { default as ModelBadge } from './ModelBadge.svelte';
  * Respects the user's `showRawModelNames` setting.
  */
 export { default as ModelId } from './ModelId.svelte';
+
+/**
+ * **DialogModelConfig** - Per-model runtime config editor
+ *
+ * Lets the user change and persist a model's context size (router mode).
+ * Writes to the server's --models-user-overrides file via POST /models/config
+ * and takes effect the next time that model loads.
+ */
+export { default as DialogModelConfig } from './DialogModelConfig.svelte';

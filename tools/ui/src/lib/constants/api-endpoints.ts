@@ -1,7 +1,8 @@
 export const API_MODELS = {
 	LIST: '/v1/models',
 	LOAD: '/models/load',
-	UNLOAD: '/models/unload'
+	UNLOAD: '/models/unload',
+	CONFIG: '/models/config'
 };
 
 // chat completion routes, the control route drives realtime inference (e.g. end reasoning)

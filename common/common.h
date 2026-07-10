@@ -660,6 +660,7 @@ struct common_params {
     int models_max = 4;                 // maximum number of models to load simultaneously
     bool models_autoload = true;        // automatically load models when requested via the router server
     std::string models_preset_hf = "";  // show a warning about remote presets on router loaded (if not empty)
+    std::string models_user_overrides = ""; // path to ini file for per-model runtime-editable overrides (e.g. ctx-size), written by POST /models/:name/config
 
     bool log_json = false;
 

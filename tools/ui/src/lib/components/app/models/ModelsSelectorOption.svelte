@@ -7,12 +7,15 @@
 		Loader2,
 		Power,
 		PowerOff,
-		RotateCw
+		RotateCw,
+		Settings
 	} from '@lucide/svelte';
-	import { ActionIcon, ModelId } from '$lib/components/app';
+	import { ActionIcon, ModelId, DialogModelConfig } from '$lib/components/app';
 	import type { ModelOption } from '$lib/types/models';
 	import { ServerModelStatus } from '$lib/enums';
 	import { modelsStore, routerModels } from '$lib/stores/models.svelte';
+
+	let configDialogOpen = $state(false);
 
 	interface Props {
 		option: ModelOption;
@@ -39,12 +42,19 @@
 	}: Props = $props();
 
 	let currentRouterModels = $derived(routerModels());
+	let matchingRouterModel = $derived(currentRouterModels.find((m) => m.id === option.model));
 	let serverStatus = $derived.by(() => {
-		const model = currentRouterModels.find((m) => m.id === option.model);
-		return (model?.status?.value as ServerModelStatus) ?? null;
+		return (matchingRouterModel?.status?.value as ServerModelStatus) ?? null;
 	});
 	let isOperationInProgress = $derived(modelsStore.isModelOperationInProgress(option.model));
-	let isFailed = $derived(serverStatus === ServerModelStatus.FAILED);
+	// The backend only ever reports status.value as unloaded/loading/loaded/sleeping - a
+	// failed load attempt stays "unloaded" but adds status.failed=true + status.exit_code
+	// (see server-models.cpp meta.is_failed()). That's the signal for whether this preset
+	// will actually run on our cluster config, so the row tint below keys off it too.
+	let hasFailed = $derived(
+		serverStatus === ServerModelStatus.FAILED || Boolean(matchingRouterModel?.status?.failed)
+	);
+	let isFailed = $derived(hasFailed);
 	let isSleeping = $derived(serverStatus === ServerModelStatus.SLEEPING);
 	let isLoaded = $derived(
 		(serverStatus === ServerModelStatus.LOADED || isSleeping) && !isOperationInProgress
@@ -58,6 +68,12 @@
 		'cursor-pointer hover:bg-muted focus:bg-muted',
 		(isSelected || isHighlighted) && 'bg-accent text-accent-foreground',
 		!(isSelected || isHighlighted) && 'hover:bg-accent hover:text-accent-foreground',
+		// Translucent cluster-fit tint: green = this preset is expected to load fine on
+		// our config, red = it already failed to load (incompatible/OOM/etc). Kept subtle
+		// (low opacity) so it doesn't fight the selection/hover highlight or text contrast.
+		// Resting-state only (no hover: variant) - it'd compete on specificity with the
+		// hover-bg classes above at equal Tailwind-utility specificity.
+		!(isSelected || isHighlighted) && (hasFailed ? 'bg-red-500/10' : 'bg-green-500/5'),
 		isLoaded ? 'text-popover-foreground' : 'text-muted-foreground'
 	]}
 	role="option"
@@ -110,6 +126,17 @@
 					onclick={() => onInfoClick(option.model)}
 				/>
 			{/if}
+
+			<ActionIcon
+				iconSize="h-2.5 w-2.5"
+				icon={Settings}
+				tooltip="Model config (context size)"
+				class="h-3 w-3 hover:text-foreground"
+				onclick={(e) => {
+					e?.stopPropagation();
+					configDialogOpen = true;
+				}}
+			/>
 		</div>
 
 		{#if isLoading}
@@ -189,3 +216,9 @@
 		{/if}
 	</div>
 </div>
+
+<DialogModelConfig
+	bind:open={configDialogOpen}
+	modelId={option.model}
+	onOpenChange={(v) => (configDialogOpen = v)}
+/>
