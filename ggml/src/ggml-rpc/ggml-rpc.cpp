@@ -14,6 +14,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
@@ -287,6 +288,51 @@ static bool parse_endpoint(const std::string & endpoint, std::string & host, int
     return true;
 }
 
+// async tensor reads: requests are sent without reading the response and the
+// responses, which arrive in command order, are drained into the caller provided
+// destinations before any other response is read from the same socket
+struct rpc_async_pending {
+    void   * dst;
+    size_t   size;
+};
+
+struct rpc_async_state {
+    std::deque<rpc_async_pending> pending;
+    size_t bytes = 0; // response bytes currently in flight
+};
+
+static std::mutex rpc_async_mutex;
+static std::unordered_map<socket_t *, rpc_async_state> rpc_async_states;
+
+// bound the unread response data so the server never blocks writing responses
+// while the client blocks writing a request on a full socket buffer
+static constexpr size_t RPC_ASYNC_MAX_INFLIGHT = 8u * 1024 * 1024;
+
+// receive every in-flight async read response into its destination; a socket must
+// be drained before its last reference is dropped
+static bool rpc_async_drain(const socket_ptr & sock) {
+    std::lock_guard<std::mutex> lock(rpc_async_mutex);
+    auto it = rpc_async_states.find(sock.get());
+    if (it == rpc_async_states.end()) {
+        return true;
+    }
+    auto & st = it->second;
+    while (!st.pending.empty()) {
+        const auto & e = st.pending.front();
+        uint64_t out_size = 0;
+        if (!sock->recv_data(&out_size, sizeof(out_size)) || out_size != e.size) {
+            return false;
+        }
+        if (!sock->recv_data(e.dst, e.size)) {
+            return false;
+        }
+        st.bytes -= e.size;
+        st.pending.pop_front();
+    }
+    rpc_async_states.erase(it);
+    return true;
+}
+
 // RPC request : | rpc_cmd (1 byte) | request_size (8 bytes) | request_data (request_size bytes) |
 // No response
 static bool send_rpc_cmd(socket_ptr sock, enum rpc_cmd cmd, const void * input, size_t input_size) {
@@ -306,6 +352,10 @@ static bool send_rpc_cmd(socket_ptr sock, enum rpc_cmd cmd, const void * input, 
 // RPC request : | rpc_cmd (1 byte) | request_size (8 bytes) | request_data (request_size bytes) |
 // RPC response: | response_size (8 bytes) | response_data (response_size bytes) |
 static bool send_rpc_cmd(socket_ptr sock, enum rpc_cmd cmd, const void * input, size_t input_size, void * output, size_t output_size) {
+    // async read responses precede this command response on the wire
+    if (!rpc_async_drain(sock)) {
+        return false;
+    }
     if (!send_rpc_cmd(sock, cmd, input, input_size)) {
         return false;
     }
@@ -649,9 +699,47 @@ static void ggml_backend_rpc_free(ggml_backend_t backend) {
     delete backend;
 }
 
-static void ggml_backend_rpc_synchronize(ggml_backend_t backend) {
+static void ggml_backend_rpc_get_tensor_async(ggml_backend_t backend, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
+    GGML_ASSERT(tensor->buffer != nullptr && ggml_backend_buffer_is_rpc(tensor->buffer));
+    ggml_backend_rpc_buffer_context * ctx = (ggml_backend_rpc_buffer_context *)tensor->buffer->context;
+
+    bool over_cap = false;
+    {
+        std::lock_guard<std::mutex> lock(rpc_async_mutex);
+        auto it = rpc_async_states.find(ctx->sock.get());
+        over_cap = it != rpc_async_states.end() && it->second.bytes + size > RPC_ASYNC_MAX_INFLIGHT;
+    }
+    if (over_cap) {
+        bool status = rpc_async_drain(ctx->sock);
+        RPC_STATUS_ASSERT(status);
+    }
+
+    // the server processes commands in order, so the response reflects every
+    // write and graph submitted on this socket before this call
+    rpc_msg_get_tensor_req request;
+    request.tensor = serialize_tensor(tensor);
+    request.offset = offset;
+    request.size   = size;
+
+    std::lock_guard<std::mutex> lock(rpc_async_mutex);
+    bool status = send_rpc_cmd(ctx->sock, RPC_CMD_GET_TENSOR, &request, sizeof(request));
+    RPC_STATUS_ASSERT(status);
+    auto & st = rpc_async_states[ctx->sock.get()];
+    st.pending.push_back({data, size});
+    st.bytes += size;
+
     GGML_UNUSED(backend);
-    // this is no-op because we don't have any async operations
+}
+
+static void ggml_backend_rpc_synchronize(ggml_backend_t backend) {
+    // graph_compute is sent without a response, so remote work may still be queued
+    // or running; a cheap round trip acts as a fence because the server processes
+    // commands in order, and the response path drains pending async reads first
+    ggml_backend_rpc_context * rpc_ctx = (ggml_backend_rpc_context *)backend->context;
+    auto sock = get_socket(rpc_ctx->endpoint);
+    rpc_msg_device_count_rsp response;
+    bool status = send_rpc_cmd(sock, RPC_CMD_DEVICE_COUNT, nullptr, 0, &response, sizeof(response));
+    RPC_STATUS_ASSERT(status);
 }
 
 static void add_tensor(ggml_tensor * tensor, std::vector<rpc_tensor> & tensors, std::unordered_set<ggml_tensor*> & visited) {
@@ -724,7 +812,7 @@ static ggml_backend_i ggml_backend_rpc_interface = {
     /* .get_name                = */ ggml_backend_rpc_name,
     /* .free                    = */ ggml_backend_rpc_free,
     /* .set_tensor_async        = */ NULL,
-    /* .get_tensor_async        = */ NULL,
+    /* .get_tensor_async        = */ ggml_backend_rpc_get_tensor_async,
     /* .set_tensor_2d_async     = */ NULL,
     /* .get_tensor_2d_async     = */ NULL,
     /* .cpy_tensor_async        = */ NULL,

@@ -912,6 +912,36 @@ extern "C" {
                     llama_seq_id   dest_seq_id,
            llama_state_seq_flags   flags);
 
+    // Copy the state of a single sequence restricted to positions [p0, p1) into the specified buffer.
+    // Successive chunks can be applied to another context with llama_state_seq_set_data_range in
+    // increasing position order, enabling incremental sequence transfers. For hybrid models the
+    // non-attention state is a whole snapshot and is included only when p1 < 0, so the final chunk
+    // of a transfer is taken with p1 = -1.
+    LLAMA_API size_t llama_state_seq_get_size_range(
+            struct llama_context * ctx,
+                    llama_seq_id   seq_id,
+           llama_state_seq_flags   flags,
+                       llama_pos   p0,
+                       llama_pos   p1);
+
+    LLAMA_API size_t llama_state_seq_get_data_range(
+            struct llama_context * ctx,
+                         uint8_t * dst,
+                          size_t   size,
+                    llama_seq_id   seq_id,
+           llama_state_seq_flags   flags,
+                       llama_pos   p0,
+                       llama_pos   p1);
+
+    LLAMA_API size_t llama_state_seq_set_data_range(
+            struct llama_context * ctx,
+                   const uint8_t * src,
+                          size_t   size,
+                    llama_seq_id   dest_seq_id,
+           llama_state_seq_flags   flags,
+                       llama_pos   p0,
+                       llama_pos   p1);
+
     //
     // Decoding
     //

@@ -221,6 +221,11 @@ struct server_slot {
     bool disagg_attempted = false;
     bool disagg_prefilled = false;
 
+    // per request transfer accounting for the streamed chunks
+    int64_t disagg_t_get_us = 0;
+    int64_t disagg_t_set_us = 0;
+    size_t  disagg_bytes    = 0;
+
     server_prompt prompt;
 
     bool prompt_save(server_prompt_cache & prompt_cache) const {
@@ -316,6 +321,9 @@ struct server_slot {
         disagg_seq = -1;
         disagg_attempted = false;
         disagg_prefilled = false;
+        disagg_t_get_us = 0;
+        disagg_t_set_us = 0;
+        disagg_bytes = 0;
 
         last_nl_pos    = 0;
         generated_text = "";
@@ -2896,73 +2904,97 @@ private:
 
             if (ret != 0) {
                 SLT_ERR(*slot, "%s", "disagg prefill: llama_decode on ctx_pfx failed, falling back to local\n");
-                disagg_prefill_finish(*slot);
+                disagg_prefill_abort(*slot);
                 slot->state = SLOT_STATE_STARTED;
                 continue;
             }
 
+            const llama_pos p0 = slot->disagg_pos;
+
             slot->disagg_pos += n_cur[s];
 
-            if (slot->disagg_pos >= slot->disagg_n) {
+            const bool last = slot->disagg_pos >= slot->disagg_n;
+
+            // stream the freshly decoded chunk into ctx_tgt instead of one terminal
+            // handoff; the final open ended chunk also carries the non attention
+            // state of hybrid models
+            const llama_pos p1 = last ? -1 : slot->disagg_pos;
+
+            if (!disagg_stream_chunk(*slot, p0, p1)) {
+                disagg_prefill_abort(*slot);
+                slot->state = SLOT_STATE_STARTED;
+                continue;
+            }
+
+            if (last) {
                 disagg_prefill_finish(*slot);
                 slot->state = SLOT_STATE_STARTED;
             }
         }
     }
 
-    // disaggregated prefill: hand the prefilled prefix KV from ctx_pfx to ctx_tgt
-    void disagg_prefill_finish(server_slot & slot) {
-        const auto & input_tokens = slot.task->tokens;
+    // disaggregated prefill: copy the KV of positions [p0, p1) from ctx_pfx to ctx_tgt
+    bool disagg_stream_chunk(server_slot & slot, llama_pos p0, llama_pos p1) {
+        const llama_seq_id seq_pfx = slot.disagg_seq;
 
-        const llama_seq_id seq_pfx = slot.disagg_seq; // acquired prefill sequence in ctx_pfx
+        const size_t sz = llama_state_seq_get_size_range(ctx_pfx.get(), seq_pfx, LLAMA_STATE_SEQ_FLAGS_NONE, p0, p1);
 
-        // release the prefill sequence back to the pool
-        disagg_release_seq(slot.disagg_seq);
-        slot.disagg_seq = -1;
-
-        // prefill failed mid way, fall back to processing the whole prompt on ctx_tgt
-        if (slot.disagg_pos < slot.disagg_n) {
-            common_context_seq_rm(ctx_pfx.get(), seq_pfx, -1, -1);
-            return;
-        }
-
-        const size_t sz = llama_state_seq_get_size_ext(ctx_pfx.get(), seq_pfx, LLAMA_STATE_SEQ_FLAGS_NONE);
         std::vector<uint8_t> buf(sz);
 
         const int64_t t_get0 = ggml_time_us();
-        const size_t n_get = llama_state_seq_get_data_ext(ctx_pfx.get(), buf.data(), sz, seq_pfx, LLAMA_STATE_SEQ_FLAGS_NONE);
+        const size_t n_get = llama_state_seq_get_data_range(ctx_pfx.get(), buf.data(), sz, seq_pfx, LLAMA_STATE_SEQ_FLAGS_NONE, p0, p1);
         const int64_t t_get1 = ggml_time_us();
 
         if (n_get != sz) {
-            SLT_ERR(slot, "disagg prefill: state get failed (%zu / %zu), falling back to local\n", n_get, sz);
-            common_context_seq_rm(ctx_pfx.get(), seq_pfx, -1, -1);
-            return;
+            SLT_ERR(slot, "disagg prefill: chunk get failed (%zu / %zu), falling back to local\n", n_get, sz);
+            return false;
         }
 
-        const size_t n_set = llama_state_seq_set_data_ext(ctx_tgt, buf.data(), sz, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE);
+        const size_t n_set = llama_state_seq_set_data_range(ctx_tgt, buf.data(), sz, slot.id, LLAMA_STATE_SEQ_FLAGS_NONE, p0, p1);
         const int64_t t_set1 = ggml_time_us();
 
         if (n_set != sz) {
-            SLT_ERR(slot, "disagg prefill: state set failed (%zu / %zu), falling back to local\n", n_set, sz);
-            common_context_seq_rm(ctx_pfx.get(), seq_pfx, -1, -1);
-            common_context_seq_rm(ctx_tgt, slot.id, -1, -1);
-            return;
+            SLT_ERR(slot, "disagg prefill: chunk set failed (%zu / %zu), falling back to local\n", n_set, sz);
+            return false;
         }
 
-        common_context_seq_rm(ctx_pfx.get(), seq_pfx, -1, -1);
+        slot.disagg_t_get_us += t_get1 - t_get0;
+        slot.disagg_t_set_us += t_set1 - t_get1;
+        slot.disagg_bytes    += sz;
+
+        return true;
+    }
+
+    // disaggregated prefill: undo a failed prefill on both contexts and release the sequence
+    void disagg_prefill_abort(server_slot & slot) {
+        common_context_seq_rm(ctx_pfx.get(), slot.disagg_seq, -1, -1);
+        common_context_seq_rm(ctx_tgt, slot.id, -1, -1);
+
+        disagg_release_seq(slot.disagg_seq);
+        slot.disagg_seq = -1;
+    }
+
+    // disaggregated prefill: every chunk is already streamed, finalize the bookkeeping
+    void disagg_prefill_finish(server_slot & slot) {
+        const auto & input_tokens = slot.task->tokens;
+
+        common_context_seq_rm(ctx_pfx.get(), slot.disagg_seq, -1, -1);
+
+        disagg_release_seq(slot.disagg_seq);
+        slot.disagg_seq = -1;
 
         // record the prefilled tokens so the prompt path only processes the last token
         for (int i = 0; i < slot.disagg_n; i++) {
             slot.prompt.tokens.push_back(input_tokens[i]);
         }
 
-        // the handoff succeeded, the prefix KV is valid in ctx_tgt
+        // the streamed prefix KV is valid in ctx_tgt
         slot.disagg_prefilled = true;
 
-        SLT_INF(slot, "disagg prefill: %d tokens, %.2f MiB | get(net) %.1f ms | set(local) %.1f ms\n",
-                slot.disagg_n, (float) sz / 1024 / 1024,
-                (t_get1 - t_get0) / 1000.0,
-                (t_set1 - t_get1) / 1000.0);
+        SLT_INF(slot, "disagg prefill: %d tokens, %.2f MiB streamed | get(net) %.1f ms | set(local) %.1f ms\n",
+                slot.disagg_n, (float) slot.disagg_bytes / 1024 / 1024,
+                slot.disagg_t_get_us / 1000.0,
+                slot.disagg_t_set_us / 1000.0);
     }
 
     void update_slots() {
