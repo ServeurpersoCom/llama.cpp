@@ -8,11 +8,12 @@
 
 	import { Check, Loader2, XCircle, AlertTriangle } from '@lucide/svelte';
 	import { CollapsibleTerminalBlock } from '$lib/components/app';
-	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { SETTINGS_KEYS } from '$lib/constants';
 	import { config } from '$lib/stores/settings.svelte';
 	import { TOOL_RUNTIME_SCROLL_AT_BOTTOM_THRESHOLD_PX } from '$lib/constants/auto-scroll';
 	import {
+		ApiError,
+		abbreviateWorkingDir,
 		highlightCode,
 		isExitCodeSummaryLine,
 		parseExecShellCommandError,
@@ -22,9 +23,9 @@
 		type ExecShellExitStatus,
 		type ToolResultLine
 	} from '$lib/utils';
+	import { FilesystemService } from '$lib/services';
 	import { parseExecShellCommandMeta } from './parsers/exec-shell-command';
-	import { lastPathSegment } from './parsers/_shared';
-	import type { DatabaseMessageExtra } from '$lib/types';
+	import type { ApiFilesystemRoot, DatabaseMessageExtra } from '$lib/types';
 	import ToolCallBlock from './ToolCallBlock.svelte';
 
 	interface Props {
@@ -77,9 +78,44 @@
 		execShellMeta ? highlightCode(execShellMeta.command, 'bash') : ''
 	);
 
-	// Show only the last path segment in the prefix; the full path stays
-	// in `title` so a hover surfaces it as a tooltip.
-	const execShellWdBasename = $derived(lastPathSegment(execShellMeta?.workingDirectory ?? ''));
+	// Fetch browse roots so we can abbreviate the working directory to
+	// `~`/`~/...` via the shared utility. Settles to `[]` on failure -
+	// chrome 501 / network errors - so `abbreviateWorkingDir` cleanly
+	// falls back to the basename.
+	let browseRoots = $state<ApiFilesystemRoot[] | null>(null);
+
+	async function loadBrowseRoots() {
+		if (browseRoots !== null) return;
+		try {
+			const res = await FilesystemService.getRoots();
+			browseRoots = res.roots;
+		} catch (err) {
+			if (!(err instanceof ApiError && err.status === 501)) {
+				console.error('[ExecShell] getRoots failed:', err);
+			}
+			browseRoots = [];
+		}
+	}
+
+	$effect(() => {
+		if (execShellMeta?.workingDirectory) void loadBrowseRoots();
+	});
+
+	// Default browse root mirrors the picker logic: prefer the entry
+	// flagged `default`, otherwise the first. `null` while loading.
+	const execShellDefaultRoot = $derived.by(() => {
+		if (!browseRoots || browseRoots.length === 0) return null;
+		const def = browseRoots.find((r) => r.default);
+		return def?.path ?? browseRoots[0].path;
+	});
+
+	// Display string for the prefix chip. Delegates to the shared
+	// utility so the picker chip and this title prefix render HOME
+	// identically (matches `~/...` against the default browse root,
+	// falls back to the basename otherwise).
+	const execShellWdDisplay = $derived(
+		abbreviateWorkingDir(execShellMeta?.workingDirectory, browseRoots)
+	);
 
 	const exitBadgeClass = $derived(
 		execShellExitStatus?.timedOut
@@ -88,9 +124,6 @@
 				? 'exit-badge success'
 				: 'exit-badge failure'
 	);
-
-	// Last non-empty path segment with trailing slashes stripped. Falls
-	// back to the untrimmed input if the path has no `/`.
 
 	const useFullHeightCodeBlocks = $derived(
 		Boolean(config()[SETTINGS_KEYS.FULL_HEIGHT_CODE_BLOCKS])
@@ -168,7 +201,11 @@
 </script>
 
 {#snippet execShellTitle()}
-	<span class="font-mono text-[12px]">$</span>
+	{#if execShellDefaultRoot && execShellMeta?.workingDirectory === execShellDefaultRoot}
+		<span class="font-mono text-[12px] mr-1">~</span>
+	{/if}
+
+	<span class="font-mono text-[12px] mr-1">$</span>
 
 	{#if highlightedCommandHtml}
 		<span class="font-mono text-[12px]">{@html highlightedCommandHtml}</span>
@@ -179,15 +216,12 @@
 
 {#snippet execShellPrefix()}
 	{#if execShellMeta?.workingDirectory}
-		<Tooltip.Root>
-			<Tooltip.Trigger class="text-[12px]! tracking-6! min-h-0! h-5.5! p-0! wd-prefix font-mono items-center flex" data-testid="exec-shell-working-directory">
-				{execShellWdBasename}
-			</Tooltip.Trigger>
-
-			<Tooltip.Content class="z-9999 max-w-xl break-all">
-				<p class="font-mono">{execShellMeta.workingDirectory}</p>
-			</Tooltip.Content>
-		</Tooltip.Root>
+		<span
+			class="text-[12px]! tracking-6! min-h-0! h-5.5! p-0! wd-prefix font-mono items-center flex"
+			data-testid="exec-shell-working-directory"
+		>
+			{execShellWdDisplay}
+		</span>
 	{/if}
 {/snippet}
 

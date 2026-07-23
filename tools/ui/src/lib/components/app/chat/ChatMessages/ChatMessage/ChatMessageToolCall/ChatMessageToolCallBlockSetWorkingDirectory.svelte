@@ -1,7 +1,9 @@
 <script lang="ts">
 	import { Folder, FolderX, Loader2 } from '@lucide/svelte';
 	import { AgenticSectionType } from '$lib/enums';
-	import type { AgenticSection } from '$lib/utils';
+	import { FilesystemService } from '$lib/services';
+	import { abbreviateWorkingDir, ApiError, type AgenticSection } from '$lib/utils';
+	import type { ApiFilesystemRoot } from '$lib/types';
 	import { parseSetWorkingDirectoryMeta } from './parsers/set-working-directory';
 
 	interface Props {
@@ -16,6 +18,30 @@
 	const showSpinner = $derived(isPending || (isStreamingCall && isStreaming));
 
 	const meta = $derived(parseSetWorkingDirectoryMeta(section));
+
+	// Fetch browse roots so the working-directory display can be
+	// abbreviated to `~` / `~/...` against the default root. Mirrors
+	// the exec shell prefix and the picker chip - same shared utility.
+	let browseRoots = $state<ApiFilesystemRoot[] | null>(null);
+
+	async function loadBrowseRoots() {
+		if (browseRoots !== null) return;
+		try {
+			const res = await FilesystemService.getRoots();
+			browseRoots = res.roots;
+		} catch (err) {
+			if (!(err instanceof ApiError && err.status === 501)) {
+				console.error('[SetWorkingDirectory] getRoots failed:', err);
+			}
+			browseRoots = [];
+		}
+	}
+
+	$effect(() => {
+		if (meta?.path) void loadBrowseRoots();
+	});
+
+	const setWorkingDirDisplay = $derived(abbreviateWorkingDir(meta?.path, browseRoots));
 </script>
 
 <div class="text-muted-foreground flex items-center gap-2 py-1.5">
@@ -35,7 +61,9 @@
 		<span class="text-red-600 text-xs italic dark:text-red-400">-&nbsp;{meta.errorMessage}</span>
 	{:else if meta && meta.path !== null}
 		<span class="text-foreground/80 text-sm font-medium">Set working directory to&nbsp;</span>
-		<span class="font-mono text-foreground/90 text-sm break-all">{meta.path}</span>
+		<span class="font-mono text-foreground/90 text-sm break-all" title={meta.path}>
+			{setWorkingDirDisplay}
+		</span>
 	{:else}
 		<span class="text-foreground/80 text-sm font-medium">Working directory cleared</span>
 	{/if}

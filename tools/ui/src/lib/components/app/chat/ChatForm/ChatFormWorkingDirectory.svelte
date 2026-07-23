@@ -3,11 +3,12 @@
 	import { Folder, FolderOpen, GitBranch, X } from '@lucide/svelte';
 	import { fly } from 'svelte/transition';
 	import { FilesystemService } from '$lib/services';
-	import { ApiError } from '$lib/utils';
+	import { abbreviateWorkingDir, ApiError } from '$lib/utils';
 	import { debounce } from '$lib/utils/debounce';
 	import * as Popover from '$lib/components/ui/popover';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import SearchInput from '$lib/components/app/forms/SearchInput.svelte';
-	import { Checkbox } from '$lib/components/ui/checkbox';
+	import { ActionIcon } from '$lib/components/app/actions';
 	import { cn } from '$lib/components/ui/utils';
 	import type { ApiFilesystemRoot, ApiFilesystemSearchEntry } from '$lib/types';
 
@@ -43,8 +44,6 @@
 	let searchError = $state<string | null>(null);
 	let endpointDisabled = $state(false);
 	let hoveredIndex = $state(-1);
-	let showHidden = $state(false);
-
 	// Browse roots loaded once per session; default root anchors the search.
 	let roots = $state<ApiFilesystemRoot[] | null>(null);
 	let loadingRoots = $state(false);
@@ -56,8 +55,17 @@
 		return def ? def.path : roots[0].path;
 	});
 
-	// Label on the trigger button: full path when set, ghost prompt otherwise.
-	let displayLabel = $derived(directory ?? 'Select working directory');
+	// Label on the trigger button: abbreviated active path, or the ghost
+	// prompt. The default browse root is intentionally NOT previewed on
+	// the chip - the user picks explicitly via the popover.
+	let displayLabel = $derived.by(() => {
+		if (!directory) return 'Select working directory';
+		return abbreviateWorkingDir(directory, roots);
+	});
+
+	// Full path surface for the chip - lets the user hover the abbreviated
+	// label to recall exactly which directory is set.
+	let displayLabelTitle = $derived(directory ?? '');
 
 	// Git metadata for the picked directory. Probed by the server walking up
 	// from `directory` looking for `.git/`. Updated whenever the active
@@ -131,6 +139,14 @@
 		}
 	}
 
+	// Load browse roots eagerly on mount so the trigger can advertise the
+	// default browse scope before the user opens the picker. ensureRoots()
+	// is idempotent, so the call from handleOpenChange stays a no-op.
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		void ensureRoots();
+	});
+
 	function cancelSearch() {
 		searchController?.abort();
 		searchSeq++;
@@ -161,7 +177,7 @@
 					path: defaultRootPath ?? '',
 					limit: 20,
 					max_depth: 6,
-					show_hidden: showHidden
+					show_hidden: true
 				},
 				controller.signal
 			);
@@ -269,11 +285,11 @@
 		}
 	}
 
-	function clearDirectory(event: MouseEvent) {
+	function clearDirectory(event?: MouseEvent) {
 		// Stop the click from bubbling into the popover trigger and re-opening
 		// the picker on top of the now-cleared state.
-		event.stopPropagation();
-		event.preventDefault();
+		event?.stopPropagation();
+		event?.preventDefault();
 		directory = null;
 		onChange?.(null);
 		isOpen = false;
@@ -282,9 +298,9 @@
 	// Chip is always visible - the X just clears the picked directory and
 	// reveals the empty "Select working directory" placeholder again. No-op
 	// when there's already nothing to clear.
-	function handleDismiss(event: MouseEvent) {
-		event.stopPropagation();
-		event.preventDefault();
+	function handleDismiss(event?: MouseEvent) {
+		event?.stopPropagation();
+		event?.preventDefault();
 		if (directory) {
 			clearDirectory(event);
 		}
@@ -307,16 +323,6 @@
 			cancelSearch();
 		}
 	}
-
-	// Re-run the active query whenever the show-hidden toggle flips while the
-	// popover is open.
-	$effect(() => {
-		void showHidden;
-
-		if (isOpen && inputValue.trim()) {
-			runSearch(inputValue);
-		}
-	});
 
 	// Splits `text` into alternating segments at each case-insensitive
 	// occurrence of `query`. Used by the results list to highlight the search
@@ -347,6 +353,17 @@
 	export function openPicker() {
 		isOpen = true;
 	}
+
+	// Tooltips only on wider viewports - hover surfaces get in the way on
+	// touch / narrow layouts. Mirrors the gate used in ActionIcon.
+	let innerWidth = $state(0);
+	const showTooltip = $derived(innerWidth > 768);
+
+	// Branch label resolved down to a string so the chip's two branches
+	// (with / without Tooltip) don't have to re-narrow `gitInfo` inside
+	// a snippet body - svelte-check loses the outer narrowing once the
+	// markup crosses a Tooltip.Trigger boundary.
+	const gitBranchLabel = $derived(gitInfo && gitInfo.is_repo ? gitInfo.branch : '');
 </script>
 
 {#snippet resultsList()}
@@ -378,7 +395,7 @@
 					onmouseenter={() => (hoveredIndex = index)}
 				>
 					<Folder class="size-4 shrink-0 text-muted-foreground" />
-					<span class="min-w-0 flex-1 truncate font-mono">
+					<span class="min-w-0 flex-1 truncate font-mono text-left">
 						{#each highlightMatch(entry.path, inputValue.trim()) as seg, segIndex (segIndex)}
 							{#if seg.match}
 								<mark class="rounded bg-yellow-200/60 px-0.5 text-foreground dark:bg-yellow-500/30"
@@ -395,40 +412,71 @@
 	</div>
 {/snippet}
 
-<div class={cn('flex min-w-0 items-center gap-1 pt-3 px-1.5', className)}>
+<div class={['flex min-w-0 items-center gap-1 pt-2.5 px-2', className]}>
 	<Popover.Root bind:open={isOpen} onOpenChange={handleOpenChange}>
 		<Popover.Trigger {disabled} class="w-full flex justify-start">
 			<span
-				class="text-muted-foreground inline-flex items-center gap-1.5 text-xs group"
+				class="text-muted-foreground inline-flex items-center gap-1 text-xs group"
 				class:text-foreground={directory}
 			>
 				<div class="flex min-w-0 items-center gap-1 cursor-pointer">
 					<Folder class="w-3.5 h-3.5" />
 
-					<span class="max-w-64 truncate">{displayLabel}</span>
+					{#if showTooltip && displayLabelTitle}
+						<Tooltip.Root>
+							<Tooltip.Trigger>
+								{#snippet child({ props })}
+									<span {...props} class="max-w-64 truncate">{displayLabel}</span>
+								{/snippet}
+							</Tooltip.Trigger>
+							<Tooltip.Content>
+								<p>{displayLabelTitle}</p>
+							</Tooltip.Content>
+						</Tooltip.Root>
+					{:else}
+						<span class="max-w-64 truncate">{displayLabel}</span>
+					{/if}
 
-					{#if gitInfo?.is_repo && gitInfo.branch}
-						<span
-							class="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted/70 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
-							title="Git branch on disk"
-						>
-							<GitBranch class="h-2.5 w-2.5" />
-							<span>{gitInfo.branch}</span>
-						</span>
+					{#if gitBranchLabel}
+						{#if showTooltip}
+							<Tooltip.Root>
+								<Tooltip.Trigger>
+									{#snippet child({ props })}
+										<span
+											{...props}
+											class="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted/70 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+										>
+											<GitBranch class="h-2.5 w-2.5" />
+											<span>{gitBranchLabel}</span>
+										</span>
+									{/snippet}
+								</Tooltip.Trigger>
+								<Tooltip.Content>
+									<p>Git branch on disk</p>
+								</Tooltip.Content>
+							</Tooltip.Root>
+						{:else}
+							<span
+								class="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted/70 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+							>
+								<GitBranch class="h-2.5 w-2.5" />
+								<span>{gitBranchLabel}</span>
+							</span>
+						{/if}
 					{/if}
 				</div>
 
 				{#if directory}
-					<button
-						type="button"
-						class="inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-						onclick={handleDismiss}
+					<ActionIcon
+						icon={X}
+						tooltip="Reset working directory"
+						ariaLabel="Reset working directory"
 						{disabled}
-						tabindex={-1}
-						aria-label={directory ? 'Clear working directory' : 'Hide working directory'}
-					>
-						<X class="h-3 w-3" />
-					</button>
+						onclick={handleDismiss}
+						iconSize="h-3 w-3"
+						stopPropagationOnClick
+						class="!h-4 !w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+					/>
 				{/if}
 			</span>
 		</Popover.Trigger>
@@ -437,58 +485,71 @@
 			side="top"
 			align="start"
 			sideOffset={12}
-			class="p-1.5 dark:border-border/20"
+			class="w-[var(--bits-popover-anchor-width)] max-w-none rounded-xl border-border/50 p-0 shadow-xl"
 			onkeydown={handleKeydown}
 			onOpenAutoFocus={(event) => event.preventDefault()}
 		>
-			<SearchInput
-				bind:ref={searchInputRef}
-				bind:value={inputValue}
-				placeholder="Choose working directory"
-				onInput={handleInputInput}
-				onClose={() => (isOpen = false)}
-				onKeyDown={handleKeydown}
-				class="w-full"
-			/>
+			<div class="p-2">
+				<SearchInput
+					bind:ref={searchInputRef}
+					bind:value={inputValue}
+					placeholder="Choose working directory"
+					onInput={handleInputInput}
+					onClose={() => (isOpen = false)}
+					onKeyDown={handleKeydown}
+					class="w-full"
+				/>
 
-			{#if inputValue.trim() && (isSearching || queryResults.length > 0 || searchError || endpointDisabled)}
-				{@render resultsList()}
-			{/if}
-
-			{#if pickerSupported}
-				<button
-					type="button"
-					class="-mt-1 flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
-					onclick={browseNative}
-				>
-					<FolderOpen class="size-4 shrink-0 text-muted-foreground" />
-					<span>Browse</span>
-				</button>
-			{/if}
-
-			<label
-				class="flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
-			>
-				<Checkbox bind:checked={showHidden} aria-label="Show hidden directories" class="size-3.5" />
-				<span>Show hidden</span>
-			</label>
-
-			{#if defaultRootPath || rootsError}
-				<div class="-mx-1.5 my-1 h-px bg-border/20" aria-hidden="true"></div>
-
-				{#if defaultRootPath}
-					<div
-						class="truncate px-2 py-1.5 font-mono text-[10px] text-muted-foreground/70"
-						title="Search is bounded to this scope"
-					>
-						{defaultRootPath}
-					</div>
-				{:else if rootsError}
-					<div class="px-2 py-1.5 text-xs text-destructive">
-						Cannot load browse roots - {rootsError}
-					</div>
+				{#if inputValue.trim() && (isSearching || queryResults.length > 0 || searchError || endpointDisabled)}
+					{@render resultsList()}
 				{/if}
-			{/if}
+
+				{#if pickerSupported}
+					<button
+						type="button"
+						class="-mt-1 flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
+						onclick={browseNative}
+					>
+						<FolderOpen class="size-4 shrink-0 text-muted-foreground" />
+						<span>Browse</span>
+					</button>
+				{/if}
+
+				{#if defaultRootPath || rootsError}
+					<div class="-mx-2 my-1 h-px bg-border/20" aria-hidden="true"></div>
+
+					{#if defaultRootPath}
+						<span class="px-2 py-1.5 font-mono text-[10px]">
+							Searching in:
+
+							{#if showTooltip}
+								<Tooltip.Root>
+									<Tooltip.Trigger>
+										{#snippet child({ props })}
+											<span {...props} class="truncate text-muted-foreground/70">
+												{abbreviateWorkingDir(defaultRootPath, roots)}
+											</span>
+										{/snippet}
+									</Tooltip.Trigger>
+									<Tooltip.Content>
+										<p>{defaultRootPath}</p>
+									</Tooltip.Content>
+								</Tooltip.Root>
+							{:else}
+								<span class="truncate text-muted-foreground/70">
+									{abbreviateWorkingDir(defaultRootPath, roots)}
+								</span>
+							{/if}
+						</span>
+					{:else if rootsError}
+						<div class="px-2 py-1.5 text-xs text-destructive">
+							Cannot load browse roots - {rootsError}
+						</div>
+					{/if}
+				{/if}
+			</div>
 		</Popover.Content>
 	</Popover.Root>
 </div>
+
+<svelte:window bind:innerWidth />

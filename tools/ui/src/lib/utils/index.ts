@@ -158,6 +158,9 @@ export { createBase64DataUrl } from './data-url';
 // Header utilities
 export { parseHeadersToArray, serializeHeaders } from './headers';
 
+// Working-directory display helpers (HOME-style tilde abbreviation)
+export { abbreviateWorkingDir, lastPathSegment, resolveDefaultBrowseRoot } from './path-display';
+
 // Agentic content utilities (structured section derivation)
 export {
 	deriveAgenticSections,
