@@ -1,6 +1,7 @@
 #include "server-context.h"
 #include "server-chat.h"
 #include "server-common.h"
+#include "server-fs.h"
 #include "server-http.h"
 #include "server-task.h"
 #include "server-queue.h"
@@ -5051,6 +5052,197 @@ void server_routes::init_routes() {
 
         GGML_ASSERT(dynamic_cast<server_task_result_apply_lora*>(result.get()) != nullptr);
         res->ok(result->to_json());
+        return res;
+    };
+
+    this->post_filesystem_search = [this](const server_http_req & req) {
+        auto res = create_response();
+        if (params.server_tools.empty()) {
+            res->error(format_error_response(
+                    "Filesystem search endpoint is not enabled. Start the server with `--tools ...` or `--agent`",
+                    ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        std::string err;
+        std::vector<std::string> roots = server_fs::effective_roots(params.filesystem_browse_roots, err);
+        if (roots.empty()) {
+            res->error(format_error_response(err, ERROR_TYPE_SERVER));
+            return res;
+        }
+
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (const std::exception & e) {
+            res->error(format_error_response(std::string("Invalid JSON body: ") + e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (!body.is_object()) {
+            res->error(format_error_response("Request body must be a JSON object", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        server_fs::search_options opts;
+        opts.query = json_value(body, "query", std::string());
+        if (opts.query.empty()) {
+            res->error(format_error_response("`query` must be a non-empty string", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        opts.context_path = json_value(body, "path", std::string());
+
+        const std::string type_str = json_value(body, "type", std::string("any"));
+        if      (type_str == "any")       opts.type = server_fs::entry_type_filter::any;
+        else if (type_str == "file")      opts.type = server_fs::entry_type_filter::file;
+        else if (type_str == "directory") opts.type = server_fs::entry_type_filter::directory;
+        else {
+            res->error(format_error_response("`type` must be one of: any, file, directory", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        const std::string match_str = json_value(body, "match", std::string("substring"));
+        if      (match_str == "substring") opts.match = server_fs::match_mode::substring;
+        else if (match_str == "prefix")    opts.match = server_fs::match_mode::prefix;
+        else {
+            res->error(format_error_response("`match` must be one of: substring, prefix", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        opts.limit     = json_value(body, "limit",     50);
+        opts.max_depth = json_value(body, "max_depth", 8);
+        opts.show_hidden = json_value(body, "show_hidden", false);
+        if (opts.limit < 0 || opts.limit > 200) {
+            res->error(format_error_response("`limit` must be between 0 and 200", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (opts.max_depth < 0 || opts.max_depth > 32) {
+            res->error(format_error_response("`max_depth` must be between 0 and 32", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        std::string root = server_fs::resolve_path(opts.context_path, roots, err);
+        if (root.empty()) {
+            res->error(format_error_response(err, ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        std::vector<server_fs::search_entry> entries;
+        if (!server_fs::search(root, opts, entries, err)) {
+            res->error(format_error_response(err, ERROR_TYPE_SERVER));
+            return res;
+        }
+
+        json results = json::array();
+        for (const auto & e : entries) {
+            json item = {
+                {"name",     e.name},
+                {"path",     e.path},
+                {"parent",   e.parent},
+                {"type",     e.type},
+            };
+            if (e.type == "file") {
+                item["size"]     = e.size;
+                item["modified"] = e.modified;
+            } else {
+                item["modified"] = e.modified;
+            }
+            results.push_back(std::move(item));
+        }
+
+        res->ok({{"results", std::move(results)}});
+        return res;
+    };
+
+    this->get_filesystem_roots = [this](const server_http_req &) {
+        auto res = create_response();
+        if (params.server_tools.empty()) {
+            res->error(format_error_response(
+                    "Filesystem search endpoint is not enabled. Start the server with `--tools ...` or `--agent`",
+                    ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        std::string err;
+        std::vector<std::string> roots = server_fs::effective_roots(params.filesystem_browse_roots, err);
+        if (roots.empty()) {
+            res->error(format_error_response(err, ERROR_TYPE_SERVER));
+            return res;
+        }
+
+        json arr = json::array();
+        for (size_t i = 0; i < roots.size(); ++i) {
+            arr.push_back({
+                {"path",    roots[i]},
+                {"default", i == 0}
+            });
+        }
+
+        res->ok({{"roots", std::move(arr)}});
+        return res;
+    };
+
+    this->post_filesystem_git = [this](const server_http_req & req) {
+        auto res = create_response();
+        if (params.server_tools.empty()) {
+            res->error(format_error_response(
+                    "Filesystem git endpoint is not enabled. Start the server with `--tools ...` or `--agent`",
+                    ERROR_TYPE_NOT_SUPPORTED));
+            return res;
+        }
+
+        std::string err;
+        std::vector<std::string> roots = server_fs::effective_roots(params.filesystem_browse_roots, err);
+        if (roots.empty()) {
+            res->error(format_error_response(err, ERROR_TYPE_SERVER));
+            return res;
+        }
+
+        json body;
+        try {
+            body = json::parse(req.body);
+        } catch (const std::exception & e) {
+            res->error(format_error_response(std::string("Invalid JSON body: ") + e.what(), ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (!body.is_object()) {
+            res->error(format_error_response("Request body must be a JSON object", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        const std::string path = json_value(body, "path", std::string());
+        std::string resolved;
+        if (!path.empty()) {
+            resolved = server_fs::resolve_path(path, roots, err);
+        } else {
+            resolved = server_fs::resolve_path(std::string(), roots, err);
+        }
+        if (resolved.empty()) {
+            res->error(format_error_response(err, ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+
+        server_fs::git_info info;
+        if (!server_fs::git_status(resolved, roots, info, err)) {
+            // not-a-repo is a normal outcome, not an error: respond with
+            // is_repo=false so the UI can drop the branch badge without
+            // bubbling an error toast.
+            res->ok({
+                {"path",    resolved},
+                {"is_repo", false},
+                {"root",    std::string()},
+                {"branch",  std::string()},
+                {"sha",     std::string()},
+            });
+            return res;
+        }
+        res->ok({
+            {"path",    resolved},
+            {"is_repo", info.is_repo},
+            {"root",    info.root},
+            {"branch",  info.branch},
+            {"sha",     info.sha},
+        });
         return res;
     };
 }

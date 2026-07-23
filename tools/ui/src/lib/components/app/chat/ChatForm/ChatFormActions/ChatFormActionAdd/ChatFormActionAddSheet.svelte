@@ -4,7 +4,7 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import * as Sheet from '$lib/components/ui/sheet';
 	import * as Collapsible from '$lib/components/ui/collapsible';
-	import { File, MessageSquare, Zap, FolderOpen } from '@lucide/svelte';
+	import { File, Folder, MessageSquare, Zap, FolderOpen } from '@lucide/svelte';
 	import { Switch } from '$lib/components/ui/switch';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { TOOLTIP_DELAY_DURATION } from '$lib/constants';
@@ -35,9 +35,10 @@
 		hasMcpPromptsSupport?: boolean;
 		hasMcpResourcesSupport?: boolean;
 		onFileUpload?: () => void;
-		onSystemPromptClick?: () => void;
 		onMcpPromptClick?: () => void;
 		onMcpResourcesClick?: () => void;
+		onSystemPromptClick?: () => void;
+		onWorkingDirectoryClick?: () => void;
 		trigger: Snippet<[{ disabled: boolean; onclick?: () => void }]>;
 	}
 
@@ -50,9 +51,10 @@
 		hasMcpPromptsSupport = false,
 		hasMcpResourcesSupport = false,
 		onFileUpload,
-		onSystemPromptClick,
 		onMcpPromptClick,
 		onMcpResourcesClick,
+		onSystemPromptClick,
+		onWorkingDirectoryClick,
 		trigger
 	}: Props = $props();
 
@@ -347,6 +349,12 @@
 					<MessageSquare class="{ICON_CLASS_DEFAULT} shrink-0" />
 
 					<span>System Message</span>
+				</button>
+
+				<button type="button" class={sheetItemClass} onclick={() => onWorkingDirectoryClick?.()}>
+					<Folder class="{ICON_CLASS_DEFAULT} shrink-0" />
+
+					<span>Working Directory</span>
 				</button>
 
 				{#if hasMcpPromptsSupport}

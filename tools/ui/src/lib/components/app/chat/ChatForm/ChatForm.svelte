@@ -6,6 +6,7 @@
 		ChatFormMcpResourcesList,
 		ChatFormPickers,
 		ChatFormTextarea,
+		ChatFormWorkingDirectory,
 		DialogMcpResourcesBrowser
 	} from '$lib/components/app';
 	import {
@@ -31,7 +32,12 @@
 	import { chatStore } from '$lib/stores/chat.svelte';
 	import { mcpStore } from '$lib/stores/mcp.svelte';
 	import { mcpHasResourceAttachments } from '$lib/stores/mcp-resources.svelte';
-	import { conversationsStore, activeMessages } from '$lib/stores/conversations.svelte';
+	import {
+		conversationsStore,
+		activeMessages,
+		activeConversation,
+		pendingWorkingDirectory
+	} from '$lib/stores/conversations.svelte';
 	import type { GetPromptResult, MCPPromptInfo, MCPResourceInfo, PromptMessage } from '$lib/types';
 	import { isIMEComposing, parseClipboardContent, uuid } from '$lib/utils';
 	import {
@@ -40,7 +46,7 @@
 		createAudioFile,
 		isAudioRecordingSupported
 	} from '$lib/utils/browser-only';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 
 	interface Props {
 		// Data
@@ -106,6 +112,40 @@
 	let promptSearchQuery = $state('');
 	let isInlineResourcePickerOpen = $state(false);
 	let resourceSearchQuery = $state('');
+
+	// Working Directory State
+	// Sourced from the active conversation so the picked cwd is restored when
+	// the user reopens the same chat. On the empty new-chat screen there's no
+	// active conversation yet; falls back to the pending cwd that the user just
+	// picked (and which createConversation() will persist on first message).
+	let workingDirectory = $derived(
+		activeConversation()?.workingDirectory ?? pendingWorkingDirectory() ?? null
+	);
+
+	// Chip below the form is hidden by default and made visible via the
+	// "Working Directory" item in the Add dropdown. Once visible the user has
+	// to dismiss it twice to hide it: first X clears the directory but keeps
+	// the chip on screen so they can review and re-pick without going back
+	// through the dropdown; second X hides the chip entirely.
+	let isWorkingDirectoryVisible = $state(false);
+	let workingDirectoryRef: ChatFormWorkingDirectory | undefined = $state(undefined);
+
+	async function handleWorkingDirectoryClick() {
+		isWorkingDirectoryVisible = true;
+		// Wait for the chip to mount and the bind:this ref to be set, then
+		// pop the picker open so the user lands directly in the search field
+		// instead of having to click the chip trigger again.
+		await tick();
+		workingDirectoryRef?.openPicker();
+	}
+
+	function handleWorkingDirectoryDismiss() {
+		isWorkingDirectoryVisible = false;
+	}
+
+	async function handleWorkingDirectoryChange(value: string | null) {
+		await conversationsStore.setWorkingDirectory(value);
+	}
 
 	// Resource Dialog State
 	let isResourceDialogOpen = $state(false);
@@ -554,11 +594,24 @@
 				onSystemPromptClick={() => onSystemPromptClick?.({ message: value, files: uploadedFiles })}
 				onMcpPromptClick={showMcpPromptButton ? () => (isPromptPickerOpen = true) : undefined}
 				onMcpResourcesClick={() => (isResourceDialogOpen = true)}
+				onWorkingDirectoryClick={handleWorkingDirectoryClick}
 			/>
 		</div>
 	</div>
 
 	<ContextGaugePopup />
+
+	{#if isWorkingDirectoryVisible}
+		<div class="mt-2 px-1">
+			<ChatFormWorkingDirectory
+				bind:this={workingDirectoryRef}
+				directory={workingDirectory}
+				onChange={handleWorkingDirectoryChange}
+				onDismiss={handleWorkingDirectoryDismiss}
+				{disabled}
+			/>
+		</div>
+	{/if}
 </form>
 
 <DialogMcpResourcesBrowser

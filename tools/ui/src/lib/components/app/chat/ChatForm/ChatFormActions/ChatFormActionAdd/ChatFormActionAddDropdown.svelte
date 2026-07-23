@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { ICON_CLASS_DEFAULT } from '$lib/constants/css-classes';
-	import { Plus, File, MessageSquare, Zap, FolderOpen } from '@lucide/svelte';
+	import { Plus, File, MessageSquare, Zap, Folder, FolderOpen } from '@lucide/svelte';
 	import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { buttonVariants } from '$lib/components/ui/button';
@@ -26,10 +26,11 @@
 		hasMcpPromptsSupport?: boolean;
 		hasMcpResourcesSupport?: boolean;
 		onFileUpload?: () => void;
-		onSystemPromptClick?: () => void;
 		onMcpPromptClick?: () => void;
-		onMcpSettingsClick?: () => void;
 		onMcpResourcesClick?: () => void;
+		onMcpSettingsClick?: () => void;
+		onSystemPromptClick?: () => void;
+		onWorkingDirectoryClick?: () => void;
 	}
 
 	let {
@@ -41,10 +42,11 @@
 		hasMcpPromptsSupport = false,
 		hasMcpResourcesSupport = false,
 		onFileUpload,
-		onSystemPromptClick,
 		onMcpPromptClick,
+		onMcpResourcesClick,
 		onMcpSettingsClick,
-		onMcpResourcesClick
+		onSystemPromptClick,
+		onWorkingDirectoryClick
 	}: Props = $props();
 
 	let dropdownOpen = $state(false);
@@ -171,6 +173,15 @@
 			</DropdownMenu.Item>
 
 			<ChatFormActionAddToolsSubmenu />
+
+			<DropdownMenu.Item
+				class="flex cursor-pointer items-center gap-2"
+				onclick={onWorkingDirectoryClick}
+			>
+				<Folder class={ICON_CLASS_DEFAULT} />
+
+				<span>Working Directory</span>
+			</DropdownMenu.Item>
 
 			<ChatFormActionAddMcpServersSubmenu onMcpSettingsClick={handleMcpSettingsClick} />
 

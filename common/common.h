@@ -669,6 +669,10 @@ struct common_params {
     std::string mcp_servers_config;   // path to JSON file with MCP server definitions
     std::string mcp_servers_json;     // inline JSON with MCP server definitions
 
+    // filesystem browse roots for the /filesystem/search endpoint
+    // (repeatable via --browse-root). when empty, the server defaults to $HOME.
+    std::vector<std::string> filesystem_browse_roots;
+
     // router server configs
     std::string models_dir    = "";     // directory containing models for the router server
     std::string models_preset = "";     // directory containing model presets for the router server
