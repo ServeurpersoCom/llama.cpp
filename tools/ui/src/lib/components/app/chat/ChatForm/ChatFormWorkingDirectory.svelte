@@ -401,33 +401,37 @@
 
 <div class={cn('flex min-w-0 w-full items-center gap-1 pt-3 px-1.5', className)}>
 	<Popover.Root bind:open={isOpen} onOpenChange={handleOpenChange}>
-		<Popover.Trigger {disabled} class="w-full flex justify-between">
-			<span class="inline-flex gap-2 text-xs group max-w-64">
-				<Folder class={ICON_CLASS_DEFAULT} />
-				<div class="flex min-w-0 items-center gap-1.5">
-					<span class="truncate">{displayLabel}</span>
-					<button
-						type="button"
-						class="inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-						onclick={handleDismiss}
-						{disabled}
-						tabindex={-1}
-						aria-label={directory ? 'Clear working directory' : 'Hide working directory'}
-					>
-						<X class="h-3 w-3" />
-					</button>
-				</div>
-			</span>
+		<Popover.Trigger {disabled} class="w-full flex justify-start">
+			<span class="text-muted-foreground inline-flex items-center gap-1.5 text-xs group" class:text-foreground={directory}>
+				<div class="flex min-w-0 items-center gap-1">
+    				<Folder class="w-3.5 h-3.5" />
 
-			{#if gitInfo?.is_repo && gitInfo.branch}
-				<span
-					class="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted/70 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
-					title="Git branch on disk"
-				>
-					<GitBranch class="h-2.5 w-2.5" />
-					<span>{gitInfo.branch}</span>
-				</span>
-			{/if}
+					<span class="max-w-64 truncate">{displayLabel}</span>
+
+					{#if gitInfo?.is_repo && gitInfo.branch}
+						<span
+							class="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted/70 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground"
+							title="Git branch on disk"
+						>
+							<GitBranch class="h-2.5 w-2.5" />
+							<span>{gitInfo.branch}</span>
+						</span>
+					{/if}
+				</div>
+
+					{#if directory}
+    					<button
+    						type="button"
+    						class="inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+    						onclick={handleDismiss}
+    						{disabled}
+    						tabindex={-1}
+    						aria-label={directory ? 'Clear working directory' : 'Hide working directory'}
+    					>
+    						<X class="h-3 w-3" />
+    					</button>
+					{/if}
+			</span>
 		</Popover.Trigger>
 
 		<Popover.Content

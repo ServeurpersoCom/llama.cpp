@@ -9,7 +9,7 @@
 	interface Props {
 		open?: boolean;
 		class?: string;
-		icon?: Component;
+		icon?: Component | null;
 		iconClass?: string;
 		iconUrl?: string | null;
 		title?: string;

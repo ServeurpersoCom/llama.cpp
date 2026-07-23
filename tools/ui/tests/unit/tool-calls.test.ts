@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { AgenticSectionType, BuiltInTool } from '$lib/enums';
 import type { AgenticSection } from '$lib/utils';
-import { parseToolArgs } from '$lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/_shared';
+import {
+	lastPathSegment,
+	parseToolArgs
+} from '$lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/_shared';
 import {
 	parseWriteFileMeta,
 	type WriteFileMeta
@@ -26,6 +29,32 @@ function makeSection(
 		...overrides
 	};
 }
+
+describe('lastPathSegment (shared)', () => {
+	it('returns the last segment of an absolute path', () => {
+		expect(lastPathSegment('/Users/me/code/my-project')).toBe('my-project');
+	});
+
+	it('returns the last segment of a tilde-relative path', () => {
+		expect(lastPathSegment('~/git/llama.brand')).toBe('llama.brand');
+	});
+
+	it('strips trailing slashes', () => {
+		expect(lastPathSegment('/foo/bar/')).toBe('bar');
+	});
+
+	it('strips multiple trailing slashes', () => {
+		expect(lastPathSegment('/foo/bar///')).toBe('bar');
+	});
+
+	it('returns the input unchanged when there is no slash', () => {
+		expect(lastPathSegment('project')).toBe('project');
+	});
+
+	it('returns tilde when only tilde is given', () => {
+		expect(lastPathSegment('~/')).toBe('~');
+	});
+});
 
 describe('parseToolArgs (shared)', () => {
 	it('returns null when the section has no toolArgs', () => {

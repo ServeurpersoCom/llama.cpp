@@ -47,3 +47,17 @@ export function parseToolArgs(
 		? parsePartialJsonArgs(section.toolArgs)
 		: parseFinalToolArgs(section.toolArgs);
 }
+
+/**
+ * Last non-empty path segment with trailing slashes stripped. Returns
+ * the original input if it contains no `/`.
+ *
+ * Useful when rendering a working directory's human-friendly "which
+ * folder am I in" badge while keeping the full absolute (or
+ * tilde-relative) path available for a hover tooltip.
+ */
+export function lastPathSegment(p: string): string {
+	const trimmed = p.replace(/\/+$/, '');
+	const idx = trimmed.lastIndexOf('/');
+	return idx === -1 ? trimmed : trimmed.slice(idx + 1);
+}

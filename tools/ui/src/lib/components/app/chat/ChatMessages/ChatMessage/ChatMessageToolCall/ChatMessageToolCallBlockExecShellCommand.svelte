@@ -8,6 +8,7 @@
 
 	import { Check, Loader2, XCircle, AlertTriangle } from '@lucide/svelte';
 	import { CollapsibleTerminalBlock } from '$lib/components/app';
+	import * as Tooltip from '$lib/components/ui/tooltip';
 	import { SETTINGS_KEYS } from '$lib/constants';
 	import { config } from '$lib/stores/settings.svelte';
 	import { TOOL_RUNTIME_SCROLL_AT_BOTTOM_THRESHOLD_PX } from '$lib/constants/auto-scroll';
@@ -22,6 +23,7 @@
 		type ToolResultLine
 	} from '$lib/utils';
 	import { parseExecShellCommandMeta } from './parsers/exec-shell-command';
+	import { lastPathSegment } from './parsers/_shared';
 	import type { DatabaseMessageExtra } from '$lib/types';
 	import ToolCallBlock from './ToolCallBlock.svelte';
 
@@ -75,6 +77,10 @@
 		execShellMeta ? highlightCode(execShellMeta.command, 'bash') : ''
 	);
 
+	// Show only the last path segment in the prefix; the full path stays
+	// in `title` so a hover surfaces it as a tooltip.
+	const execShellWdBasename = $derived(lastPathSegment(execShellMeta?.workingDirectory ?? ''));
+
 	const exitBadgeClass = $derived(
 		execShellExitStatus?.timedOut
 			? 'exit-badge warning'
@@ -82,6 +88,9 @@
 				? 'exit-badge success'
 				: 'exit-badge failure'
 	);
+
+	// Last non-empty path segment with trailing slashes stripped. Falls
+	// back to the untrimmed input if the path has no `/`.
 
 	const useFullHeightCodeBlocks = $derived(
 		Boolean(config()[SETTINGS_KEYS.FULL_HEIGHT_CODE_BLOCKS])
@@ -159,22 +168,26 @@
 </script>
 
 {#snippet execShellTitle()}
+	<span class="font-mono text-[12px]">$</span>
+
 	{#if highlightedCommandHtml}
-		<span class="font-mono">{@html highlightedCommandHtml}</span>
-	{:else}
-		<span class="font-mono">{execShellMeta?.command}</span>
+		<span class="font-mono text-[12px]">{@html highlightedCommandHtml}</span>
+	{:else if execShellMeta?.command}
+		<span class="font-mono text-[12px]">{execShellMeta.command}</span>
 	{/if}
 {/snippet}
 
 {#snippet execShellPrefix()}
 	{#if execShellMeta?.workingDirectory}
-		<span
-			class="wd-prefix font-mono"
-			title={execShellMeta.workingDirectory}
-			data-testid="exec-shell-working-directory"
-		>
-			{execShellMeta.workingDirectory}
-		</span>
+		<Tooltip.Root>
+			<Tooltip.Trigger class="text-[12px]! tracking-6! min-h-0! h-5.5! p-0! wd-prefix font-mono items-center flex" data-testid="exec-shell-working-directory">
+				{execShellWdBasename}
+			</Tooltip.Trigger>
+
+			<Tooltip.Content class="z-9999 max-w-xl break-all">
+				<p class="font-mono">{execShellMeta.workingDirectory}</p>
+			</Tooltip.Content>
+		</Tooltip.Root>
 	{/if}
 {/snippet}
 
@@ -212,7 +225,8 @@
 				onscroll={handleScrollEvent}
 			>
 				{#each outputLines as line, i (i)}
-					<div class="font-mono text-[11px] leading-relaxed whitespace-pre-wrap">{line.text}</div>
+					<div class="font-mono text-[12px] leading-relaxed whitespace-pre-wrap">{line.text}</div>
+
 					{#if line.image}
 						<img
 							src={line.image.base64Url}
@@ -227,6 +241,7 @@
 					<div class={exitBadgeClass}>
 						{#if execShellExitStatus.timedOut}
 							<AlertTriangle class="h-3 w-3" />
+
 							<span>timed out</span>
 							<span class="exit-sep">&middot;</span>
 							<span>exit {execShellExitStatus.code}</span>
@@ -257,11 +272,10 @@
 	}
 
 	.wd-prefix {
-		font-size: 11px;
+		font-size: 12px;
 		line-height: 1rem;
 		color: color-mix(in oklch, var(--muted-foreground) 70%, transparent);
-		max-width: 22rem;
-		overflow: hidden;
+		max-width: 14rem;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		padding-top: 0.125rem;
@@ -275,7 +289,7 @@
 		padding: 0.2rem 0.55rem;
 		border-radius: 0.375rem;
 		font-family: var(--font-mono);
-		font-size: 11px;
+		font-size: 12px;
 		font-weight: 500;
 		letter-spacing: 0.01em;
 		line-height: 1;
