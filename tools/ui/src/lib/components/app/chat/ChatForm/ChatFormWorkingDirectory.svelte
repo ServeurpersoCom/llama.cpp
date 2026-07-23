@@ -17,18 +17,13 @@
 		disabled?: boolean;
 		directory?: string | null;
 		onChange?: (directory: string | null) => void;
-		// Fired when the user clicks the X on the chip while no directory is
-		// set. The first X click clears an existing directory and this fires
-		// only on the second click, when the chip should be removed entirely.
-		onDismiss?: () => void;
 	}
 
 	let {
 		class: className = '',
 		disabled = false,
 		directory = $bindable(null),
-		onChange,
-		onDismiss
+		onChange
 	}: Props = $props();
 
 	// File System Access API is opt-in: when available (Chrome / Edge / Opera) the popover
@@ -285,18 +280,15 @@
 		isOpen = false;
 	}
 
-	// Two-step dismiss: clearing keeps the chip on screen with the
-	// "Select working directory" placeholder so the user can re-pick without
-	// going back through the Add dropdown. A second X click on the empty
-	// chip fires onDismiss so the parent can hide it entirely.
+	// Chip is always visible - the X just clears the picked directory and
+	// reveals the empty "Select working directory" placeholder again. No-op
+	// when there's already nothing to clear.
 	function handleDismiss(event: MouseEvent) {
 		event.stopPropagation();
 		event.preventDefault();
 		if (directory) {
 			clearDirectory(event);
-			return;
 		}
-		onDismiss?.();
 	}
 
 	function handleOpenChange(open: boolean) {
@@ -320,7 +312,8 @@
 	// Re-run the active query whenever the show-hidden toggle flips while the
 	// popover is open.
 	$effect(() => {
-		showHidden;
+		void showHidden;
+
 		if (isOpen && inputValue.trim()) {
 			runSearch(inputValue);
 		}
@@ -390,7 +383,7 @@
 				>
 					<Folder class="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 					<span class="min-w-0 flex-1 truncate font-mono">
-						{#each highlightMatch(entry.path, inputValue.trim()) as seg}
+						{#each highlightMatch(entry.path, inputValue.trim()) as seg, segIndex (segIndex)}
 							{#if seg.match}
 								<mark class="rounded bg-yellow-200/60 px-0.5 text-foreground dark:bg-yellow-500/30"
 									>{seg.text}</mark
@@ -406,10 +399,10 @@
 	</div>
 {/snippet}
 
-<div class={cn('flex min-w-0 w-full items-center gap-1', className)}>
+<div class={cn('flex min-w-0 w-full items-center gap-1 pt-3 px-1.5', className)}>
 	<Popover.Root bind:open={isOpen} onOpenChange={handleOpenChange}>
 		<Popover.Trigger {disabled} class="w-full flex justify-between">
-			<span class="inline-flex gap-2 text-[10px] group max-w-64">
+			<span class="inline-flex gap-2 text-xs group max-w-64">
 				<Folder class={ICON_CLASS_DEFAULT} />
 				<div class="flex min-w-0 items-center gap-1.5">
 					<span class="truncate">{displayLabel}</span>

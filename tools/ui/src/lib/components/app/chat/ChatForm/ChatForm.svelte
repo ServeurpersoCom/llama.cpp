@@ -30,6 +30,7 @@
 	import { modelOptions, selectedModelId } from '$lib/stores/models.svelte';
 	import { isRouterMode } from '$lib/stores/server.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
+	import { BuiltInTool } from '$lib/enums';
 	import { mcpStore } from '$lib/stores/mcp.svelte';
 	import { mcpHasResourceAttachments } from '$lib/stores/mcp-resources.svelte';
 	import {
@@ -46,7 +47,7 @@
 		createAudioFile,
 		isAudioRecordingSupported
 	} from '$lib/utils/browser-only';
-	import { onMount, tick } from 'svelte';
+	import { onMount } from 'svelte';
 
 	interface Props {
 		// Data
@@ -122,29 +123,23 @@
 		activeConversation()?.workingDirectory ?? pendingWorkingDirectory() ?? null
 	);
 
-	// Chip below the form is hidden by default and made visible via the
-	// "Working Directory" item in the Add dropdown. Once visible the user has
-	// to dismiss it twice to hide it: first X clears the directory but keeps
-	// the chip on screen so they can review and re-pick without going back
-	// through the dropdown; second X hides the chip entirely.
-	let isWorkingDirectoryVisible = $state(false);
-	let workingDirectoryRef: ChatFormWorkingDirectory | undefined = $state(undefined);
-
-	async function handleWorkingDirectoryClick() {
-		isWorkingDirectoryVisible = true;
-		// Wait for the chip to mount and the bind:this ref to be set, then
-		// pop the picker open so the user lands directly in the search field
-		// instead of having to click the chip trigger again.
-		await tick();
-		workingDirectoryRef?.openPicker();
-	}
-
-	function handleWorkingDirectoryDismiss() {
-		isWorkingDirectoryVisible = false;
-	}
-
 	async function handleWorkingDirectoryChange(value: string | null) {
 		await conversationsStore.setWorkingDirectory(value);
+		// If the conversation has already started, drop a synthetic
+		// `set_working_directory` tool call into chat history so the model
+		// sees the change on its next turn. Pending mode (no active conv
+		// yet) is handled in `chatStore.sendMessage` at first-send time.
+		if (conversationsStore.activeConversation) {
+			const trimmed = value?.trim();
+			await chatStore.recordUserToolCall(
+				BuiltInTool.SET_WORKING_DIRECTORY,
+				{ path: trimmed ?? '' },
+				{
+					content: trimmed ? `Working directory set to: ${trimmed}` : 'Working directory cleared',
+					isError: false
+				}
+			);
+		}
 	}
 
 	// Resource Dialog State
@@ -594,24 +589,17 @@
 				onSystemPromptClick={() => onSystemPromptClick?.({ message: value, files: uploadedFiles })}
 				onMcpPromptClick={showMcpPromptButton ? () => (isPromptPickerOpen = true) : undefined}
 				onMcpResourcesClick={() => (isResourceDialogOpen = true)}
-				onWorkingDirectoryClick={handleWorkingDirectoryClick}
 			/>
 		</div>
 	</div>
 
 	<ContextGaugePopup />
 
-	{#if isWorkingDirectoryVisible}
-		<div class="mt-2 px-1">
-			<ChatFormWorkingDirectory
-				bind:this={workingDirectoryRef}
-				directory={workingDirectory}
-				onChange={handleWorkingDirectoryChange}
-				onDismiss={handleWorkingDirectoryDismiss}
-				{disabled}
-			/>
-		</div>
-	{/if}
+	<ChatFormWorkingDirectory
+		directory={workingDirectory}
+		onChange={handleWorkingDirectoryChange}
+		{disabled}
+	/>
 </form>
 
 <DialogMcpResourcesBrowser

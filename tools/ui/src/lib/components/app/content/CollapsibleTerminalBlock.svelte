@@ -14,6 +14,7 @@
 		iconUrl?: string | null;
 		title?: string;
 		titleSnippet?: Snippet;
+		prefixSnippet?: Snippet;
 		subtitle?: string;
 		shimmerTitle?: boolean;
 		onToggle?: () => void;
@@ -28,6 +29,7 @@
 		iconUrl = null,
 		title = '',
 		titleSnippet,
+		prefixSnippet,
 		subtitle,
 		shimmerTitle = false,
 		onToggle,
@@ -55,6 +57,9 @@
 		)}
 	>
 		<div class="flex min-w-0 items-start gap-2 text-muted-foreground">
+			{#if prefixSnippet}
+				{@render prefixSnippet()}
+			{/if}
 			{#if iconUrl}
 				<img
 					src={iconUrl}

@@ -166,6 +166,18 @@
 	{/if}
 {/snippet}
 
+{#snippet execShellPrefix()}
+	{#if execShellMeta?.workingDirectory}
+		<span
+			class="wd-prefix font-mono"
+			title={execShellMeta.workingDirectory}
+			data-testid="exec-shell-working-directory"
+		>
+			{execShellMeta.workingDirectory}
+		</span>
+	{/if}
+{/snippet}
+
 <ToolCallBlock
 	{section}
 	{open}
@@ -174,6 +186,7 @@
 	wrapper={CollapsibleTerminalBlock}
 	extraLiveStreaming={isLive}
 	spinIconWhenActive={true}
+	prefixSnippet={execShellPrefix}
 	{onToggle}
 >
 	{#snippet titleSnippet()}
@@ -241,6 +254,17 @@
 		overflow-y: auto;
 		scrollbar-gutter: stable;
 		padding-right: 0.25rem;
+	}
+
+	.wd-prefix {
+		font-size: 11px;
+		line-height: 1rem;
+		color: color-mix(in oklch, var(--muted-foreground) 70%, transparent);
+		max-width: 22rem;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		padding-top: 0.125rem;
 	}
 
 	.exit-badge {

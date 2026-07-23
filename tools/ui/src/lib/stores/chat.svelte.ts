@@ -36,7 +36,8 @@ import {
 	findLeafNode,
 	findMessageById,
 	isAbortError,
-	generateConversationTitle
+	generateConversationTitle,
+	uuid
 } from '$lib/utils';
 import { classifyContinueIntent } from '$lib/utils/agentic';
 import {
@@ -59,12 +60,14 @@ import type {
 	DatabaseMessageExtra
 } from '$lib/types';
 import {
+	BuiltInTool,
 	ContinueIntentKind,
 	ErrorDialogType,
 	MessageRole,
 	MessageType,
 	ReasoningEffort,
-	StreamConnectionState
+	StreamConnectionState,
+	ToolCallType
 } from '$lib/enums';
 
 interface ConversationStateEntry {
@@ -903,6 +906,175 @@ class ChatStore {
 		return message;
 	}
 
+	/**
+	 * Persist a user-initiated tool call into the chat history as if the
+	 * model had emitted it: an assistant message carrying the tool call,
+	 * followed by a tool message carrying the result. Both messages end
+	 * up in DB and the conversation history, so the next model turn sees
+	 * them in its context. Branches off the active conversation's current
+	 * leaf (or `parentIdOverride` when supplied, e.g. when injecting a
+	 * setup call after the system message on the first send).
+	 *
+	 * For setter-style calls (`set_working_directory` today), if the
+	 * current leaf is already an assistant+tool pair whose last tool call
+	 * bears the same name, mutate it in place rather than appending a new
+	 * pair - cwd is a state, not a history.
+	 */
+	async recordUserToolCall(
+		toolName: string,
+		args: Record<string, unknown>,
+		result: { content: string; isError: boolean },
+		parentIdOverride?: string
+	): Promise<{ assistantId: string; toolMessageId: string } | null> {
+		const activeConv = conversationsStore.activeConversation;
+		if (!activeConv) return null;
+
+		if (!parentIdOverride) {
+			const replaced = await this.replaceLastUserToolCallIfMatching(
+				toolName,
+				args,
+				result
+			);
+			if (replaced) return replaced;
+		}
+
+		let parentId: string;
+		if (parentIdOverride) {
+			parentId = parentIdOverride;
+		} else {
+			const last = conversationsStore.activeMessages[conversationsStore.activeMessages.length - 1];
+			if (last) {
+				parentId = last.id;
+			} else {
+				const all = await DatabaseService.getConversationMessages(activeConv.id);
+				const r = all.find((m) => m.parent === null && m.type === 'root');
+				parentId = r ? r.id : await DatabaseService.createRootMessage(activeConv.id);
+			}
+		}
+
+		const toolCallId = uuid();
+		const toolCallsJson = JSON.stringify([
+			{
+				id: toolCallId,
+				type: ToolCallType.FUNCTION,
+				function: { name: toolName, arguments: JSON.stringify(args) }
+			}
+		]);
+
+		const assistantMsg = await DatabaseService.createMessageBranch(
+			{
+				convId: activeConv.id,
+				type: MessageType.TEXT,
+				role: MessageRole.ASSISTANT,
+				content: '',
+				timestamp: Date.now(),
+				toolCalls: toolCallsJson,
+				children: [],
+				extra: undefined
+			},
+			parentId
+		);
+		conversationsStore.addMessageToActive(assistantMsg);
+		await conversationsStore.updateCurrentNode(assistantMsg.id);
+
+		const toolMsg = await DatabaseService.createMessageBranch(
+			{
+				convId: activeConv.id,
+				type: MessageType.TEXT,
+				role: MessageRole.TOOL,
+				content: result.content,
+				toolCallId,
+				timestamp: Date.now(),
+				toolCalls: '',
+				children: [],
+				extra: undefined
+			},
+			assistantMsg.id
+		);
+		conversationsStore.addMessageToActive(toolMsg);
+		await conversationsStore.updateCurrentNode(toolMsg.id);
+		conversationsStore.updateConversationTimestamp();
+
+		return { assistantId: assistantMsg.id, toolMessageId: toolMsg.id };
+	}
+
+	/**
+	 * If the active conversation ends with an assistant tool call whose
+	 * last entry is the same tool we're about to record, followed by the
+	 * matching tool result, mutate those two messages in place to carry
+	 * the new args/result instead of appending a redundant pair. Returns
+	 * the ids if a replacement happened; null otherwise (which lets the
+	 * caller fall through to the append path).
+	 *
+	 * Strict shape required: the assistant message must be at
+	 * `messages.length - 2` and the matching tool result at the tail; any
+	 * later activity means the user has already moved on, and we keep
+	 * the prior setter record untouched.
+	 */
+	private async replaceLastUserToolCallIfMatching(
+		toolName: string,
+		args: Record<string, unknown>,
+		result: { content: string; isError: boolean }
+	): Promise<{ assistantId: string; toolMessageId: string } | null> {
+		const activeConv = conversationsStore.activeConversation;
+		if (!activeConv) return null;
+		const messages = conversationsStore.activeMessages;
+		if (messages.length < 2) return null;
+
+		const idx = messages.length - 2;
+		const assistant = messages[idx];
+		const tool = messages[idx + 1];
+		if (
+			!assistant ||
+			assistant.role !== MessageRole.ASSISTANT ||
+			!assistant.toolCalls ||
+			!tool ||
+			tool.role !== MessageRole.TOOL
+		) {
+			return null;
+		}
+
+		let calls: Array<{
+			id?: string;
+			type?: string;
+			function?: { name?: string; arguments?: string };
+		}>;
+		try {
+			calls = JSON.parse(assistant.toolCalls);
+		} catch {
+			return null;
+		}
+		if (!Array.isArray(calls) || calls.length === 0) return null;
+
+		const lastCall = calls[calls.length - 1];
+		if (!lastCall || lastCall.function?.name !== toolName) return null;
+		if (!lastCall.id || tool.toolCallId !== lastCall.id) return null;
+
+		const newArgsJson = JSON.stringify(args);
+		calls[calls.length - 1] = {
+			...calls[calls.length - 1],
+			function: { ...(calls[calls.length - 1].function ?? {}), arguments: newArgsJson }
+		};
+		const updatedToolCallsJson = JSON.stringify(calls);
+
+		const assistantUpdates: Partial<DatabaseMessage> = {
+			toolCalls: updatedToolCallsJson,
+			timestamp: Date.now()
+		};
+		const toolUpdates: Partial<DatabaseMessage> = {
+			content: result.content,
+			timestamp: Date.now()
+		};
+
+		await DatabaseService.updateMessage(assistant.id, assistantUpdates);
+		conversationsStore.updateMessageAtIndex(idx, assistantUpdates);
+		await DatabaseService.updateMessage(tool.id, toolUpdates);
+		conversationsStore.updateMessageAtIndex(idx + 1, toolUpdates);
+		conversationsStore.updateConversationTimestamp();
+
+		return { assistantId: assistant.id, toolMessageId: tool.id };
+	}
+
 	async addSystemPrompt(): Promise<void> {
 		let activeConv = conversationsStore.activeConversation;
 		if (!activeConv) {
@@ -1055,6 +1227,7 @@ class ChatStore {
 				const rootId = await DatabaseService.createRootMessage(currentConv.id);
 				const currentConfig = config();
 				const systemPrompt = currentConfig.systemMessage?.toString().trim();
+				let sysOrRootId = rootId;
 				if (systemPrompt) {
 					const systemMessage = await DatabaseService.createSystemMessage(
 						currentConv.id,
@@ -1062,8 +1235,26 @@ class ChatStore {
 						rootId
 					);
 					conversationsStore.addMessageToActive(systemMessage);
-					parentIdForUserMessage = systemMessage.id;
-				} else parentIdForUserMessage = rootId;
+					sysOrRootId = systemMessage.id;
+				}
+				// If the new conversation inherited a working directory from the
+				// pending cwd on the new-chat picker, reflect it explicitly into
+				// chat history before the user's first message, so the model
+				// sees it on its first turn instead of having to remember.
+				if (currentConv.workingDirectory) {
+					const injected = await this.recordUserToolCall(
+						BuiltInTool.SET_WORKING_DIRECTORY,
+						{ path: currentConv.workingDirectory },
+						{
+							content: `Working directory set to: ${currentConv.workingDirectory}`,
+							isError: false
+						},
+						sysOrRootId
+					);
+					parentIdForUserMessage = injected?.toolMessageId ?? sysOrRootId;
+				} else {
+					parentIdForUserMessage = sysOrRootId;
+				}
 			}
 			const userMessage = await this.addMessage(
 				MessageRole.USER,

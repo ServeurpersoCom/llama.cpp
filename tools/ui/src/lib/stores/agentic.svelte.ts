@@ -22,6 +22,7 @@
 
 import { ChatService } from '$lib/services';
 import { config } from '$lib/stores/settings.svelte';
+import { conversationsStore } from '$lib/stores/conversations.svelte';
 import { mcpStore } from '$lib/stores/mcp.svelte';
 import { modelsStore } from '$lib/stores/models.svelte';
 import { toolsStore } from '$lib/stores/tools.svelte';
@@ -301,6 +302,17 @@ class AgenticStore {
 		const trimmed = args.trim();
 		if (trimmed === '') return {};
 		return JSON.parse(trimmed) as Record<string, unknown>;
+	}
+
+	// Inject the active conversation's working_directory into the params sent
+	// to server-side built-in tools, so relative paths resolve against the
+	// cwd the user set for this conversation (e.g. via the set_working_directory
+	// frontend tool). An explicit working_directory in the model's args wins.
+	private injectWorkingDirectory(args: Record<string, unknown>): Record<string, unknown> {
+		if (typeof args.working_directory === 'string') return args;
+		const wd = conversationsStore.activeConversation?.workingDirectory;
+		if (!wd) return args;
+		return { ...args, working_directory: wd };
 	}
 
 	private async requestPermission(
@@ -811,7 +823,9 @@ class AgenticStore {
 							createToolResultMessage &&
 							updateToolResultMessage
 						) {
-							const args = this.parseToolArguments(toolCall.function.arguments);
+							const args = this.injectWorkingDirectory(
+								this.parseToolArguments(toolCall.function.arguments)
+							);
 							const msg = await createToolResultMessage(toolCall.id, '');
 							createdToolResultMessageId = msg.id;
 
@@ -834,7 +848,9 @@ class AgenticStore {
 							}
 							result = accumulated;
 						} else if (toolSource === ToolSource.BUILTIN) {
-							const args = this.parseToolArguments(toolCall.function.arguments);
+							const args = this.injectWorkingDirectory(
+								this.parseToolArguments(toolCall.function.arguments)
+							);
 							const executionResult = await ToolsService.executeTool(toolName, args, signal);
 
 							result = executionResult.content;
@@ -985,14 +1001,26 @@ class AgenticStore {
 
 	private normalizeToolCalls(toolCalls: ApiChatCompletionToolCall[]): AgenticToolCallList {
 		if (!toolCalls) return [];
-		return toolCalls.map((call, index) => ({
-			id: call?.id ?? `tool_${index}`,
-			type: (call?.type as ToolCallType.FUNCTION) ?? ToolCallType.FUNCTION,
-			function: {
-				name: call?.function?.name ?? '',
-				arguments: call?.function?.arguments ?? ''
+		const wd = conversationsStore.activeConversation?.workingDirectory;
+		return toolCalls.map((call, index) => {
+			const name = call?.function?.name ?? '';
+			const argsIn = call?.function?.arguments ?? '';
+			let argsOut = argsIn;
+			if (wd && name && toolsStore.getToolSource(name) === ToolSource.BUILTIN) {
+				try {
+					const obj = JSON.parse(argsIn) as Record<string, unknown>;
+					if (typeof obj.working_directory !== 'string') {
+						obj.working_directory = wd;
+						argsOut = JSON.stringify(obj);
+					}
+				} catch { /* unparseable args; leave as-is */ }
 			}
-		}));
+			return {
+				id: call?.id ?? `tool_${index}`,
+				type: (call?.type as ToolCallType.FUNCTION) ?? ToolCallType.FUNCTION,
+				function: { name, arguments: argsOut }
+			};
+		});
 	}
 
 	private extractBase64Attachments(result: string): {

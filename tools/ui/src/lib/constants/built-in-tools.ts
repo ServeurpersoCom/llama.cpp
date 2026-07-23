@@ -15,6 +15,7 @@ import {
 	FilePlus,
 	FileSearch,
 	FileText,
+	Folder,
 	SearchCode,
 	Terminal
 } from '@lucide/svelte';
@@ -49,6 +50,11 @@ export const BUILTIN_TOOL_UI: Readonly<Record<BuiltInTool, BuiltinToolUiEntry>> 
 	[BuiltInTool.RUN_JAVASCRIPT]: {
 		icon: Braces,
 		label: 'Run JavaScript',
+		source: ToolSource.FRONTEND
+	},
+	[BuiltInTool.SET_WORKING_DIRECTORY]: {
+		icon: Folder,
+		label: 'Set working directory',
 		source: ToolSource.FRONTEND
 	}
 } as const;

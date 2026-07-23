@@ -4,11 +4,11 @@
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import * as Sheet from '$lib/components/ui/sheet';
 	import * as Collapsible from '$lib/components/ui/collapsible';
-	import { File, Folder, MessageSquare, Zap, FolderOpen } from '@lucide/svelte';
+	import { File, MessageSquare, Zap, FolderOpen } from '@lucide/svelte';
 	import { Switch } from '$lib/components/ui/switch';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { TOOLTIP_DELAY_DURATION } from '$lib/constants';
-	import { ATTACHMENT_FILE_ITEMS } from '$lib/constants/attachment-menu';
+	import { ATTACHMENT_FILE_ITEMS, ATTACHMENT_TOOLTIP_TEXT } from '$lib/constants/attachment-menu';
 	import { useAttachmentMenu } from '$lib/hooks/use-attachment-menu.svelte';
 	import { useToolsPanel } from '$lib/hooks/use-tools-panel.svelte';
 	import { useReasoningMenu } from '$lib/hooks/use-reasoning-menu.svelte';
@@ -38,7 +38,6 @@
 		onMcpPromptClick?: () => void;
 		onMcpResourcesClick?: () => void;
 		onSystemPromptClick?: () => void;
-		onWorkingDirectoryClick?: () => void;
 		trigger: Snippet<[{ disabled: boolean; onclick?: () => void }]>;
 	}
 
@@ -54,7 +53,6 @@
 		onMcpPromptClick,
 		onMcpResourcesClick,
 		onSystemPromptClick,
-		onWorkingDirectoryClick,
 		trigger
 	}: Props = $props();
 
@@ -99,7 +97,7 @@
 				<Sheet.Title>Add to chat</Sheet.Title>
 
 				<Sheet.Description class="sr-only">
-					Add files, system prompt or configure MCP servers
+					{ATTACHMENT_TOOLTIP_TEXT}
 				</Sheet.Description>
 			</Sheet.Header>
 
@@ -349,12 +347,6 @@
 					<MessageSquare class="{ICON_CLASS_DEFAULT} shrink-0" />
 
 					<span>System Message</span>
-				</button>
-
-				<button type="button" class={sheetItemClass} onclick={() => onWorkingDirectoryClick?.()}>
-					<Folder class="{ICON_CLASS_DEFAULT} shrink-0" />
-
-					<span>Working Directory</span>
 				</button>
 
 				{#if hasMcpPromptsSupport}

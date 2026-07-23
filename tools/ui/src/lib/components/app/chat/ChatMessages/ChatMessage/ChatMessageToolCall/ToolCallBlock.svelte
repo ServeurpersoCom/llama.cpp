@@ -59,6 +59,7 @@
 		wrapper?: typeof CollapsibleContentBlock;
 		title?: string;
 		titleSnippet?: Snippet;
+		prefixSnippet?: Snippet;
 		onToggle?: () => void;
 		children: Snippet<[TMeta | null | undefined, ToolCallCtx]>;
 	}
@@ -73,6 +74,7 @@
 		wrapper: Wrapper = CollapsibleContentBlock,
 		title,
 		titleSnippet,
+		prefixSnippet,
 		onToggle,
 		children
 	}: Props = $props();
@@ -117,6 +119,7 @@
 	{iconUrl}
 	{title}
 	{titleSnippet}
+	{prefixSnippet}
 	{subtitle}
 	{onToggle}
 >

@@ -413,4 +413,27 @@ describe('parseExecShellCommandMeta', () => {
 			)
 		).toBeNull();
 	});
+
+	it('surfaces working_directory from args', () => {
+		const meta = parseExecShellCommandMeta(
+			makeSection(
+				{
+					toolName: BuiltInTool.EXEC_SHELL_COMMAND,
+					toolArgs: '{"command":"ls","working_directory":"~/git/llama.brand"}'
+				},
+				BuiltInTool.EXEC_SHELL_COMMAND
+			)
+		);
+		expect(meta?.workingDirectory).toBe('~/git/llama.brand');
+	});
+
+	it('leaves working_directory undefined when absent', () => {
+		const meta = parseExecShellCommandMeta(
+			makeSection(
+				{ toolName: BuiltInTool.EXEC_SHELL_COMMAND, toolArgs: '{"command":"ls"}' },
+				BuiltInTool.EXEC_SHELL_COMMAND
+			)
+		);
+		expect(meta?.workingDirectory).toBeUndefined();
+	});
 });
