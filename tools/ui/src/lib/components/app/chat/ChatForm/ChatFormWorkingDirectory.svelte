@@ -6,7 +6,6 @@
 	import { ApiError } from '$lib/utils';
 	import { debounce } from '$lib/utils/debounce';
 	import * as Popover from '$lib/components/ui/popover';
-	import { Button } from '$lib/components/ui/button';
 	import SearchInput from '$lib/components/app/forms/SearchInput.svelte';
 	import { Checkbox } from '$lib/components/ui/checkbox';
 	import { cn } from '$lib/components/ui/utils';
@@ -351,14 +350,11 @@
 </script>
 
 {#snippet resultsList()}
-	<div
-		class="max-h-48 overflow-y-auto rounded-md border border-border/40 bg-popover"
-		transition:fly={{ y: -4, duration: 100 }}
-	>
+	<div class="max-h-48 overflow-y-auto" transition:fly={{ y: -4, duration: 100 }}>
 		{#if isSearching && queryResults.length === 0}
-			<div class="px-3 py-2 text-xs text-muted-foreground/70">Searching...</div>
+			<div class="px-2 py-1.5 text-sm text-muted-foreground">Searching...</div>
 		{:else if endpointDisabled}
-			<div class="px-3 py-2 text-xs text-muted-foreground/70">
+			<div class="px-2 py-1.5 text-sm text-muted-foreground">
 				Filesystem browsing is disabled. Start the server with
 				<code class="rounded bg-muted px-1 py-0.5 text-[10px]">--tools</code>
 				or
@@ -366,22 +362,22 @@
 				to enable it.
 			</div>
 		{:else if searchError}
-			<div class="px-3 py-2 text-xs text-destructive">{searchError}</div>
+			<div class="px-2 py-1.5 text-sm text-destructive">{searchError}</div>
 		{:else if queryResults.length === 0}
-			<div class="px-3 py-2 text-xs text-muted-foreground/70">No matching folders</div>
+			<div class="px-2 py-1.5 text-sm text-muted-foreground">No matching folders</div>
 		{:else}
 			{#each queryResults as entry, index (entry.path)}
 				<button
 					type="button"
 					data-result-index={index}
+					data-highlighted={index === hoveredIndex ? '' : undefined}
 					class={cn(
-						'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors',
-						index === hoveredIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-accent/50'
+						'relative flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground'
 					)}
 					onclick={() => commit(entry)}
 					onmouseenter={() => (hoveredIndex = index)}
 				>
-					<Folder class="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+					<Folder class="size-4 shrink-0 text-muted-foreground" />
 					<span class="min-w-0 flex-1 truncate font-mono">
 						{#each highlightMatch(entry.path, inputValue.trim()) as seg, segIndex (segIndex)}
 							{#if seg.match}
@@ -399,12 +395,15 @@
 	</div>
 {/snippet}
 
-<div class={cn('flex min-w-0 w-full items-center gap-1 pt-3 px-1.5', className)}>
+<div class={cn('flex min-w-0 items-center gap-1 pt-3 px-1.5', className)}>
 	<Popover.Root bind:open={isOpen} onOpenChange={handleOpenChange}>
 		<Popover.Trigger {disabled} class="w-full flex justify-start">
-			<span class="text-muted-foreground inline-flex items-center gap-1.5 text-xs group" class:text-foreground={directory}>
-				<div class="flex min-w-0 items-center gap-1">
-    				<Folder class="w-3.5 h-3.5" />
+			<span
+				class="text-muted-foreground inline-flex items-center gap-1.5 text-xs group"
+				class:text-foreground={directory}
+			>
+				<div class="flex min-w-0 items-center gap-1 cursor-pointer">
+					<Folder class="w-3.5 h-3.5" />
 
 					<span class="max-w-64 truncate">{displayLabel}</span>
 
@@ -419,18 +418,18 @@
 					{/if}
 				</div>
 
-					{#if directory}
-    					<button
-    						type="button"
-    						class="inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-    						onclick={handleDismiss}
-    						{disabled}
-    						tabindex={-1}
-    						aria-label={directory ? 'Clear working directory' : 'Hide working directory'}
-    					>
-    						<X class="h-3 w-3" />
-    					</button>
-					{/if}
+				{#if directory}
+					<button
+						type="button"
+						class="inline-flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+						onclick={handleDismiss}
+						{disabled}
+						tabindex={-1}
+						aria-label={directory ? 'Clear working directory' : 'Hide working directory'}
+					>
+						<X class="h-3 w-3" />
+					</button>
+				{/if}
 			</span>
 		</Popover.Trigger>
 
@@ -438,7 +437,7 @@
 			side="top"
 			align="start"
 			sideOffset={12}
-			class="space-y-2 rounded-xl border-border/50 p-3 shadow-xl"
+			class="p-1.5 dark:border-border/20"
 			onkeydown={handleKeydown}
 			onOpenAutoFocus={(event) => event.preventDefault()}
 		>
@@ -456,35 +455,39 @@
 				{@render resultsList()}
 			{/if}
 
-			<div class="flex items-center justify-between gap-2">
-				<label class="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-					<Checkbox
-						bind:checked={showHidden}
-						aria-label="Show hidden directories"
-						class="size-3.5"
-					/>
-					<span>Show hidden</span>
-				</label>
-
-				{#if pickerSupported}
-					<Button type="button" variant="outline" size="sm" class="shrink-0" onclick={browseNative}>
-						<FolderOpen class={ICON_CLASS_DEFAULT} />
-						<span>Browse</span>
-					</Button>
-				{/if}
-			</div>
-
-			{#if defaultRootPath}
-				<div
-					class="truncate font-mono text-[10px] text-muted-foreground/70"
-					title="Search is bounded to this scope"
+			{#if pickerSupported}
+				<button
+					type="button"
+					class="-mt-1 flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
+					onclick={browseNative}
 				>
-					{defaultRootPath}
-				</div>
-			{:else if rootsError}
-				<div class="text-[10px] text-destructive">
-					Cannot load browse roots - {rootsError}
-				</div>
+					<FolderOpen class="size-4 shrink-0 text-muted-foreground" />
+					<span>Browse</span>
+				</button>
+			{/if}
+
+			<label
+				class="flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
+			>
+				<Checkbox bind:checked={showHidden} aria-label="Show hidden directories" class="size-3.5" />
+				<span>Show hidden</span>
+			</label>
+
+			{#if defaultRootPath || rootsError}
+				<div class="-mx-1.5 my-1 h-px bg-border/20" aria-hidden="true"></div>
+
+				{#if defaultRootPath}
+					<div
+						class="truncate px-2 py-1.5 font-mono text-[10px] text-muted-foreground/70"
+						title="Search is bounded to this scope"
+					>
+						{defaultRootPath}
+					</div>
+				{:else if rootsError}
+					<div class="px-2 py-1.5 text-xs text-destructive">
+						Cannot load browse roots - {rootsError}
+					</div>
+				{/if}
 			{/if}
 		</Popover.Content>
 	</Popover.Root>
