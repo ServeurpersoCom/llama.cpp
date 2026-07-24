@@ -358,14 +358,14 @@ export { default as ChatFormPickerPopover } from './ChatForm/ChatFormPickers/Cha
  * Generic scrollable list for picker popovers. Provides search input,
  * scroll-into-view for keyboard navigation, loading skeletons, empty state,
  * and optional footer. Uses Svelte 5 snippets for item/skeleton/footer rendering.
- * Shared by ChatFormPickerMcpPrompts and ChatFormPickerMcpResources.
+ * Shared by ChatFormPickerMcpPrompts and ChatFormMentionPicker.
  */
 export { default as ChatFormPickerList } from './ChatForm/ChatFormPickers/ChatFormPicker/ChatFormPickerList.svelte';
 
 /**
  * Generic button wrapper for picker list items. Provides consistent styling,
  * hover/selected states, and data-picker-index attribute for scroll-into-view.
- * Shared by ChatFormPickerMcpPrompts and ChatFormPickerMcpResources.
+ * Shared by ChatFormPickerMcpPrompts and ChatFormMentionPicker.
  */
 export { default as ChatFormPickerListItem } from './ChatForm/ChatFormPickers/ChatFormPicker/ChatFormPickerListItem.svelte';
 
@@ -383,23 +383,29 @@ export { default as ChatFormPickerItemHeader } from './ChatForm/ChatFormPickers/
 export { default as ChatFormPickerListItemSkeleton } from './ChatForm/ChatFormPickers/ChatFormPicker/ChatFormPickerListItemSkeleton.svelte';
 
 /**
- * **ChatFormPickerMcpResources** - MCP resource selection interface
+ * **ChatFormMentionPicker** - `@`-triggered file/folder mention picker
  *
- * Floating picker for browsing and attaching MCP Server Resources.
- * Triggered by typing `@` in the chat input.
- * Loads resources from connected MCP servers and allows users to attach them to the chat context.
+ * Floating picker that resolves `@<query>` in the chat textarea to a
+ * filesystem file or folder chosen from the server's browse roots.
+ * Source data is `FilesystemService.search({ type: 'any', ... })` so
+ * both files and folders appear in the same list.
+ *
+ * Selection produces a markdown link `[name](file:///<abs path>)` plus
+ * a trailing space, spliced into the textarea so the cursor lands at
+ * the end of the inserted link (ready for the user to keep typing).
  *
  * **Features:**
- * - Search/filter resources by name, title, description, or URI across all connected servers
- * - Keyboard navigation (↑/↓ to navigate, Enter to select, Esc to close)
- * - Shows attached state for already-attached resources
- * - Loading states with skeleton placeholders
- * - Server information header per resource for visual identification
+ * - Debounced substring search across files and folders
+ * - Substring highlighting of the user's query inside each result path
+ * - Keyboard navigation (ArrowUp/ArrowDown to navigate, Enter to select, Esc to close)
+ * - Additive to file uploads: this picker inserts an inline reference;
+ *   it does not replace the file-upload handling in ChatForm
+ * - Hidden files included by default (server is source of truth)
  *
  * **Exported API:**
  * - `handleKeydown(event): boolean` - Process keyboard events, returns true if handled
  */
-export { default as ChatFormPickerMcpResources } from './ChatForm/ChatFormPickers/ChatFormPickerMcpResources.svelte';
+export { default as ChatFormMentionPicker } from './ChatForm/ChatFormPickers/ChatFormMentionPicker.svelte';
 
 /**
  * **ChatFormPickers** - Chat input picker container

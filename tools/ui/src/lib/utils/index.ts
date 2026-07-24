@@ -161,6 +161,13 @@ export { parseHeadersToArray, serializeHeaders } from './headers';
 // Working-directory display helpers (HOME-style tilde abbreviation)
 export { abbreviateWorkingDir, lastPathSegment, resolveDefaultBrowseRoot } from './path-display';
 
+// Mention-token detection (for the `@`-triggered file/folder mention picker)
+export {
+	findMentionToken,
+	takeMentionDismissSnapshot,
+	type MentionDismissSnapshot
+} from './mention-token';
+
 // Agentic content utilities (structured section derivation)
 export {
 	deriveAgenticSections,

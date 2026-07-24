@@ -34,6 +34,20 @@
 
 	let listContainer = $state<HTMLDivElement | null>(null);
 
+	/**
+	 * Keep the keyboard-selected row visible without jerk on hover.
+	 *
+	 * The picker feeds `selectedIndex` from two sources:
+	 *  - mouse hover (every onmouseenter bumps the index)
+	 *  - keyboard ArrowUp / ArrowDown (only on key events)
+	 *
+	 * With `block: 'center'` the browser scrolled on every hover, which
+	 * visibly drifted the row the user pointed at when it sat near the
+	 * top or bottom edge. Using `block: 'nearest'` makes the call a
+	 * no-op for any row that is already fully visible - hovering only
+	 * updates the highlight; keyboard nav that actually exits the visible
+	 * area still snaps to the nearest edge.
+	 */
 	$effect(() => {
 		if (listContainer && selectedIndex >= 0 && selectedIndex < items.length) {
 			const selectedElement = listContainer.querySelector(
@@ -42,8 +56,7 @@
 
 			if (selectedElement) {
 				selectedElement.scrollIntoView({
-					behavior: 'smooth',
-					block: 'center',
+					block: 'nearest',
 					inline: 'nearest'
 				});
 			}

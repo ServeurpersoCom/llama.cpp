@@ -13,11 +13,12 @@
 	import { chatStore, isLoading, isChatStreaming } from '$lib/stores/chat.svelte';
 	import { modelLoadProgressText } from '$lib/utils';
 	import { MessageRole } from '$lib/enums';
+	import { BuiltInTool, AgenticSectionType } from '$lib/enums';
 	import { config } from '$lib/stores/settings.svelte';
 	import { isRouterMode } from '$lib/stores/server.svelte';
 	import { modelsStore } from '$lib/stores/models.svelte';
 
-	import { hasAgenticContent } from '$lib/utils';
+	import { hasAgenticContent, deriveAgenticSections } from '$lib/utils';
 
 	interface Props {
 		class?: string;
@@ -69,6 +70,39 @@
 
 	const isAgentic = $derived(hasAgenticContent(message, toolMessages));
 	const processingState = useProcessingState();
+
+	/**
+	 * The chat-form triggers a `set_working_directory` tool call when the
+	 * user picks a directory. It produces an assistant message whose
+	 * entire agentic content is just that single tool section - no
+	 * reasoning, no prose. For messages like this the full Copy / Edit /
+	 * Regenerate / Continue toolbar is noise (there's nothing useful to
+	 * copy or continue from), so we collapse it down to Fork + Delete.
+	 *
+	 * The check intentionally looks at ALL sections rather than `sections[0]`
+	 * so a mixed message (real text + set_working_directory side call) keeps
+	 * the full toolbar.
+	 */
+	const isMinimalSetWorkingDirectoryMessage = $derived.by(() => {
+		if (message.role !== MessageRole.ASSISTANT) return false;
+
+		const streamingToolCalls = isChatStreaming() ? (message.toolCalls ?? []) : [];
+		const sections = deriveAgenticSections(
+			message,
+			toolMessages,
+			streamingToolCalls,
+			isChatStreaming()
+		);
+		if (sections.length === 0) return false;
+
+		return sections.every(
+			(section) =>
+				(section.type === AgenticSectionType.TOOL_CALL ||
+					section.type === AgenticSectionType.TOOL_CALL_PENDING ||
+					section.type === AgenticSectionType.TOOL_CALL_STREAMING) &&
+				section.toolName === BuiltInTool.SET_WORKING_DIRECTORY
+		);
+	});
 
 	let currentConfig = $derived(config());
 	let isRouter = $derived(isRouterMode());
@@ -183,8 +217,8 @@
 		<ChatMessageAssistantProcessingInfo {modelLoadingText} {processingState} position="bottom" />
 	{/if}
 
-	<div class="info my-6 grid gap-4 tabular-nums">
-		{#if displayedModel}
+	{#if displayedModel}
+		<div class="info my-6 grid gap-4 tabular-nums">
 			<div class="inline-flex flex-wrap items-start gap-2 text-xs text-muted-foreground">
 				<ChatMessageAssistantModel
 					{displayedModel}
@@ -200,8 +234,8 @@
 					showMessageStats={currentConfig.showMessageStats}
 				/>
 			</div>
-		{/if}
-	</div>
+		</div>
+	{/if}
 
 	{#if message.timestamp && !editCtx.isEditing}
 		<ChatMessageActionIcons
@@ -211,6 +245,7 @@
 			{siblingInfo}
 			{showDeleteDialog}
 			{deletionInfo}
+			mode={isMinimalSetWorkingDirectoryMessage ? 'minimal' : 'default'}
 			{onCopy}
 			{onEdit}
 			{onRegenerate}

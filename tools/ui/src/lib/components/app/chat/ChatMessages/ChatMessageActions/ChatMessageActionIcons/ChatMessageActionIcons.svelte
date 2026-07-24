@@ -24,6 +24,7 @@
 			assistantMessages: number;
 			messageTypes: string[];
 		} | null;
+		mode?: 'default' | 'minimal';
 		onCopy: () => void;
 		onEdit?: () => void;
 		onRegenerate?: () => void;
@@ -42,6 +43,7 @@
 		actionsPosition,
 		deletionInfo,
 		justify,
+		mode = 'default',
 		onCopy,
 		onEdit,
 		onConfirmDelete,
@@ -95,18 +97,24 @@
 		<div
 			class="pointer-events-auto inset-0 flex items-center gap-1 opacity-100 transition-all duration-150"
 		>
-			<ActionIcon icon={Copy} tooltip="Copy" onclick={onCopy} />
+			<!-- Default mode: full toolbar (copy / edit / regenerate / continue).
+			     Minimal mode (used by non-contributing tool calls like
+			     set_working_directory) drops them and leaves only fork + delete,
+			     since the message carries no user-facing prose to copy or continue. -->
+			{#if mode === 'default'}
+				<ActionIcon icon={Copy} tooltip="Copy" onclick={onCopy} />
 
-			{#if onEdit}
-				<ActionIcon icon={Edit} tooltip="Edit" onclick={onEdit} />
-			{/if}
+				{#if onEdit}
+					<ActionIcon icon={Edit} tooltip="Edit" onclick={onEdit} />
+				{/if}
 
-			{#if role === MessageRole.ASSISTANT && onRegenerate}
-				<ActionIcon icon={RefreshCw} tooltip="Regenerate" onclick={() => onRegenerate()} />
-			{/if}
+				{#if role === MessageRole.ASSISTANT && onRegenerate}
+					<ActionIcon icon={RefreshCw} tooltip="Regenerate" onclick={() => onRegenerate()} />
+				{/if}
 
-			{#if role === MessageRole.ASSISTANT && onContinue}
-				<ActionIcon icon={ArrowRight} tooltip="Continue" onclick={onContinue} />
+				{#if role === MessageRole.ASSISTANT && onContinue}
+					<ActionIcon icon={ArrowRight} tooltip="Continue" onclick={onContinue} />
+				{/if}
 			{/if}
 
 			{#if onForkConversation}

@@ -1,16 +1,24 @@
 <script lang="ts">
 	import { ICON_CLASS_DEFAULT } from '$lib/constants/css-classes';
 	import { Folder, FolderOpen, GitBranch, X } from '@lucide/svelte';
-	import { fly } from 'svelte/transition';
 	import { FilesystemService } from '$lib/services';
 	import { abbreviateWorkingDir, ApiError } from '$lib/utils';
 	import { debounce } from '$lib/utils/debounce';
+	import {
+		browseRoots,
+		browseRootsError,
+		defaultBrowseRootPath,
+		ensureBrowseRoots,
+		isBrowseEndpointDisabled,
+		markBrowseEndpointDisabled
+	} from '$lib/stores/browse-roots.svelte';
 	import * as Popover from '$lib/components/ui/popover';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import SearchInput from '$lib/components/app/forms/SearchInput.svelte';
+	import HighlightedMatch from '$lib/components/app/forms/HighlightedMatch.svelte';
 	import { ActionIcon } from '$lib/components/app/actions';
-	import { cn } from '$lib/components/ui/utils';
-	import type { ApiFilesystemRoot, ApiFilesystemSearchEntry } from '$lib/types';
+	import { ChatFormPickerList, ChatFormPickerListItem } from '$lib/components/app/chat';
+	import type { ApiFilesystemSearchEntry } from '$lib/types';
 
 	interface Props {
 		class?: string;
@@ -42,25 +50,25 @@
 	let queryResults = $state<ApiFilesystemSearchEntry[]>([]);
 	let isSearching = $state(false);
 	let searchError = $state<string | null>(null);
-	let endpointDisabled = $state(false);
 	let hoveredIndex = $state(-1);
-	// Browse roots loaded once per session; default root anchors the search.
-	let roots = $state<ApiFilesystemRoot[] | null>(null);
-	let loadingRoots = $state(false);
-	let rootsError = $state<string | null>(null);
+	// Browse roots live in the shared browse-roots store; both this component
+	// and the file-mention picker (Phase B) read from it. defaultRootPath is
+	// a derived view used to scope server-side search calls.
 
-	let defaultRootPath = $derived.by(() => {
-		if (!roots || roots.length === 0) return null;
-		const def = roots.find((r) => r.default);
-		return def ? def.path : roots[0].path;
-	});
+	// Invisible anchor for popover positioning - sits at the top edge of the
+	// chat form so the popover floats above the box (matching the MCP picker
+	// pattern). The visible chip is the click target (Popover.Trigger) but
+	// positions via this anchor instead of the chip's own bounding box.
+	let popoverAnchor = $state<HTMLDivElement | null>(null);
+
+	let defaultRootPath = $derived(defaultBrowseRootPath());
 
 	// Label on the trigger button: abbreviated active path, or the ghost
 	// prompt. The default browse root is intentionally NOT previewed on
 	// the chip - the user picks explicitly via the popover.
 	let displayLabel = $derived.by(() => {
 		if (!directory) return 'Select working directory';
-		return abbreviateWorkingDir(directory, roots);
+		return abbreviateWorkingDir(directory, browseRoots());
 	});
 
 	// Full path surface for the chip - lets the user hover the abbreviated
@@ -119,32 +127,18 @@
 		void doSearch(query);
 	}, 180);
 
-	async function ensureRoots() {
-		if (roots !== null || loadingRoots) return;
-		loadingRoots = true;
-		rootsError = null;
-		try {
-			const res = await FilesystemService.getRoots();
-			roots = res.roots;
-		} catch (err) {
-			if (err instanceof ApiError && err.status === 501) {
-				roots = [];
-				endpointDisabled = true;
-			} else {
-				roots = [];
-				rootsError = err instanceof Error ? err.message : String(err);
-			}
-		} finally {
-			loadingRoots = false;
-		}
-	}
+	// Local 501 handler removed; the search endpoint is gated by the same
+	// server flag as the roots endpoint, so a 501 on /search implies the
+	// whole browsing feature is off - markBrowseEndpointDisabled() tells
+	// the shared store so other consumers see the same state.
 
 	// Load browse roots eagerly on mount so the trigger can advertise the
-	// default browse scope before the user opens the picker. ensureRoots()
-	// is idempotent, so the call from handleOpenChange stays a no-op.
+	// default browse scope before the user opens the picker. ensureBrowseRoots()
+	// is idempotent and promise-cached, so the call from handleOpenChange
+	// stays a no-op once resolved.
 	$effect(() => {
 		if (typeof window === 'undefined') return;
-		void ensureRoots();
+		void ensureBrowseRoots();
 	});
 
 	function cancelSearch() {
@@ -191,7 +185,7 @@
 			hoveredIndex = -1;
 			if (controller.signal.aborted) return;
 			if (err instanceof ApiError && err.status === 501) {
-				endpointDisabled = true;
+				markBrowseEndpointDisabled();
 				searchError = null;
 			} else {
 				searchError = err instanceof Error ? err.message : String(err);
@@ -218,7 +212,7 @@
 	// only the leaf name) to a server-side absolute path. Falls back to the
 	// leaf name when the server cannot locate a matching directory.
 	async function resolveNativeName(name: string): Promise<string> {
-		if (endpointDisabled || !defaultRootPath) return name;
+		if (isBrowseEndpointDisabled() || !defaultRootPath) return name;
 		try {
 			const res = await FilesystemService.search(
 				{
@@ -315,35 +309,13 @@
 			hoveredIndex = -1;
 			queryResults = [];
 			searchError = null;
-			void ensureRoots();
+			void ensureBrowseRoots();
 			// Move focus to the search field on next tick so it wins over the
 			// popover's own focus-stealing on open.
 			queueMicrotask(() => searchInputRef?.focus({ preventScroll: true }));
 		} else {
 			cancelSearch();
 		}
-	}
-
-	// Splits `text` into alternating segments at each case-insensitive
-	// occurrence of `query`. Used by the results list to highlight the search
-	// terms inside full-path strings.
-	function highlightMatch(text: string, query: string): { text: string; match: boolean }[] {
-		if (!query) return [{ text, match: false }];
-		const segments: { text: string; match: boolean }[] = [];
-		const lowerText = text.toLowerCase();
-		const lowerQuery = query.toLowerCase();
-		let i = 0;
-		while (i < text.length) {
-			const idx = lowerText.indexOf(lowerQuery, i);
-			if (idx < 0) {
-				segments.push({ text: text.slice(i), match: false });
-				break;
-			}
-			if (idx > i) segments.push({ text: text.slice(i, idx), match: false });
-			segments.push({ text: text.slice(idx, idx + query.length), match: true });
-			i = idx + query.length;
-		}
-		return segments;
 	}
 
 	// Imperative API: opens the picker without requiring the chip's own
@@ -366,53 +338,12 @@
 	const gitBranchLabel = $derived(gitInfo && gitInfo.is_repo ? gitInfo.branch : '');
 </script>
 
-{#snippet resultsList()}
-	<div class="max-h-48 overflow-y-auto" transition:fly={{ y: -4, duration: 100 }}>
-		{#if isSearching && queryResults.length === 0}
-			<div class="px-2 py-1.5 text-sm text-muted-foreground">Searching...</div>
-		{:else if endpointDisabled}
-			<div class="px-2 py-1.5 text-sm text-muted-foreground">
-				Filesystem browsing is disabled. Start the server with
-				<code class="rounded bg-muted px-1 py-0.5 text-[10px]">--tools</code>
-				or
-				<code class="rounded bg-muted px-1 py-0.5 text-[10px]">--agent</code>
-				to enable it.
-			</div>
-		{:else if searchError}
-			<div class="px-2 py-1.5 text-sm text-destructive">{searchError}</div>
-		{:else if queryResults.length === 0}
-			<div class="px-2 py-1.5 text-sm text-muted-foreground">No matching folders</div>
-		{:else}
-			{#each queryResults as entry, index (entry.path)}
-				<button
-					type="button"
-					data-result-index={index}
-					data-highlighted={index === hoveredIndex ? '' : undefined}
-					class={cn(
-						'relative flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none data-highlighted:bg-accent data-highlighted:text-accent-foreground'
-					)}
-					onclick={() => commit(entry)}
-					onmouseenter={() => (hoveredIndex = index)}
-				>
-					<Folder class="size-4 shrink-0 text-muted-foreground" />
-					<span class="min-w-0 flex-1 truncate font-mono text-left">
-						{#each highlightMatch(entry.path, inputValue.trim()) as seg, segIndex (segIndex)}
-							{#if seg.match}
-								<mark class="rounded bg-yellow-200/60 px-0.5 text-foreground dark:bg-yellow-500/30"
-									>{seg.text}</mark
-								>
-							{:else}
-								{seg.text}
-							{/if}
-						{/each}
-					</span>
-				</button>
-			{/each}
-		{/if}
-	</div>
-{/snippet}
-
 <div class={['flex min-w-0 items-center gap-1 pt-2.5 px-2', className]}>
+	<div
+		bind:this={popoverAnchor}
+		class="pointer-events-none absolute top-0 right-0 left-0 h-px"
+		aria-hidden="true"
+	></div>
 	<Popover.Root bind:open={isOpen} onOpenChange={handleOpenChange}>
 		<Popover.Trigger {disabled} class="w-full flex justify-start">
 			<span
@@ -488,6 +419,7 @@
 			class="w-[var(--bits-popover-anchor-width)] max-w-none rounded-xl border-border/50 p-0 shadow-xl"
 			onkeydown={handleKeydown}
 			onOpenAutoFocus={(event) => event.preventDefault()}
+			customAnchor={popoverAnchor}
 		>
 			<div class="p-2">
 				<SearchInput
@@ -500,8 +432,46 @@
 					class="w-full"
 				/>
 
-				{#if inputValue.trim() && (isSearching || queryResults.length > 0 || searchError || endpointDisabled)}
-					{@render resultsList()}
+				{#if inputValue.trim()}
+					{#if isBrowseEndpointDisabled()}
+						<div class="px-2 py-1.5 text-sm text-muted-foreground">
+							Filesystem browsing is disabled. Start the server with
+							<code class="rounded bg-muted px-1 py-0.5 text-[10px]">--tools</code>
+							or
+							<code class="rounded bg-muted px-1 py-0.5 text-[10px]">--agent</code>
+							to enable it.
+						</div>
+					{:else if searchError}
+						<div class="px-2 py-1.5 text-sm text-destructive">{searchError}</div>
+					{:else}
+						<ChatFormPickerList
+							items={queryResults}
+							isLoading={isSearching}
+							selectedIndex={hoveredIndex}
+							showSearchInput={false}
+							searchQuery=""
+							searchPlaceholder="Search directories..."
+							emptyMessage="No matching folders"
+							itemKey={(entry) => entry.path}
+						>
+							{#snippet item(entry, index, isSelected)}
+								<ChatFormPickerListItem
+									dataIndex={index}
+									{isSelected}
+									onclick={() => commit(entry)}
+									onmouseenter={() => (hoveredIndex = index)}
+								>
+									<Folder class="size-4 shrink-0 text-muted-foreground" />
+									<span class="min-w-0 flex-1 truncate font-mono text-left">
+										<HighlightedMatch text={entry.path} query={inputValue.trim()} />
+									</span>
+								</ChatFormPickerListItem>
+							{/snippet}
+							{#snippet skeleton()}
+								<div class="px-3 py-2 text-sm text-muted-foreground">Searching...</div>
+							{/snippet}
+						</ChatFormPickerList>
+					{/if}
 				{/if}
 
 				{#if pickerSupported}
@@ -515,7 +485,7 @@
 					</button>
 				{/if}
 
-				{#if defaultRootPath || rootsError}
+				{#if defaultRootPath || browseRootsError()}
 					<div class="-mx-2 my-1 h-px bg-border/20" aria-hidden="true"></div>
 
 					{#if defaultRootPath}
@@ -527,7 +497,7 @@
 									<Tooltip.Trigger>
 										{#snippet child({ props })}
 											<span {...props} class="truncate text-muted-foreground/70">
-												{abbreviateWorkingDir(defaultRootPath, roots)}
+												{abbreviateWorkingDir(defaultRootPath, browseRoots())}
 											</span>
 										{/snippet}
 									</Tooltip.Trigger>
@@ -537,13 +507,13 @@
 								</Tooltip.Root>
 							{:else}
 								<span class="truncate text-muted-foreground/70">
-									{abbreviateWorkingDir(defaultRootPath, roots)}
+									{abbreviateWorkingDir(defaultRootPath, browseRoots())}
 								</span>
 							{/if}
 						</span>
-					{:else if rootsError}
+					{:else if browseRootsError()}
 						<div class="px-2 py-1.5 text-xs text-destructive">
-							Cannot load browse roots - {rootsError}
+							Cannot load browse roots - {browseRootsError()}
 						</div>
 					{/if}
 				{/if}

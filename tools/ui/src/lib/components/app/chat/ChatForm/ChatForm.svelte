@@ -16,7 +16,7 @@
 		INITIAL_FILE_SIZE,
 		PROMPT_CONTENT_SEPARATOR,
 		PROMPT_TRIGGER_PREFIX,
-		RESOURCE_TRIGGER_PREFIX
+		MENTION_TRIGGER_PREFIX
 	} from '$lib/constants';
 	import {
 		ContentPartType,
@@ -39,8 +39,22 @@
 		activeConversation,
 		pendingWorkingDirectory
 	} from '$lib/stores/conversations.svelte';
-	import type { GetPromptResult, MCPPromptInfo, MCPResourceInfo, PromptMessage } from '$lib/types';
-	import { isIMEComposing, parseClipboardContent, uuid } from '$lib/utils';
+	import type {
+		ApiFilesystemSearchEntry,
+		GetPromptResult,
+		MCPPromptInfo,
+		MCPResourceInfo,
+		PromptMessage
+	} from '$lib/types';
+	import {
+		findMentionToken,
+		isIMEComposing,
+		lastPathSegment,
+		parseClipboardContent,
+		takeMentionDismissSnapshot,
+		uuid,
+		type MentionDismissSnapshot
+	} from '$lib/utils';
 	import {
 		AudioRecorder,
 		convertToWav,
@@ -111,8 +125,25 @@
 	// Picker State
 	let isPromptPickerOpen = $state(false);
 	let promptSearchQuery = $state('');
-	let isInlineResourcePickerOpen = $state(false);
-	let resourceSearchQuery = $state('');
+	let isMentionPickerOpen = $state(false);
+	let mentionQuery = $state('');
+
+	/**
+	 * Snapshot of the most recent `@`-mention token the user dismissed
+	 * (via Escape, outside-click, or simply by deleting it). When the
+	 * picker is closed AND the same token is still intact in the buffer,
+	 * we do NOT auto-reopen - the user has explicitly told us this
+	 * `@<query>` should be treated as literal text. The snapshot
+	 * becomes stale the moment any character inside the token changes,
+	 * at which point the picker is allowed to reopen on the next input.
+	 */
+	let mentionDismissedSnapshot: MentionDismissSnapshot | null = null;
+
+	// Invisible anchor for the mention picker: sits at the top edge of the
+	// chat form so the popover floats above the box (matches the working-
+	// directory picker's `customAnchor` pattern). One anchor per popover we
+	// want to anchor above the form.
+	let mentionAnchor: HTMLDivElement | null = $state(null);
 
 	// Working Directory State
 	// Sourced from the active conversation so the picked cwd is restored when
@@ -232,26 +263,46 @@
 	function handleInput() {
 		const perChatOverrides = conversationsStore.getAllMcpServerOverrides();
 		const hasServers = mcpStore.hasEnabledServers(perChatOverrides);
+		const cursor = textareaRef?.getElement()?.selectionStart ?? value.length;
 
 		if (value.startsWith(PROMPT_TRIGGER_PREFIX) && hasServers) {
 			isPromptPickerOpen = true;
 			promptSearchQuery = value.slice(1);
-			isInlineResourcePickerOpen = false;
-			resourceSearchQuery = '';
-		} else if (
-			value.startsWith(RESOURCE_TRIGGER_PREFIX) &&
-			hasServers &&
-			mcpStore.hasResourcesCapability(perChatOverrides)
-		) {
-			isInlineResourcePickerOpen = true;
-			resourceSearchQuery = value.slice(1);
-			isPromptPickerOpen = false;
-			promptSearchQuery = '';
+			isMentionPickerOpen = false;
+			mentionQuery = '';
 		} else {
+			const token = findMentionToken(value, cursor);
+
+			if (token) {
+				// Picker's been dismissed for THIS exact token - honor the
+				// "literal until delete + retype" rule: don't reopen until the
+				// token changes (typed-then-Esc'd a slot, then kept typing
+				// inside the same `@<q>`).
+				const isDismissedSticky =
+					mentionDismissedSnapshot !== null &&
+					mentionDismissedSnapshot.start === token.start &&
+					mentionDismissedSnapshot.query === token.query;
+
+				if (!isDismissedSticky) {
+					mentionDismissedSnapshot = null;
+					isMentionPickerOpen = true;
+					mentionQuery = token.query;
+					isPromptPickerOpen = false;
+					promptSearchQuery = '';
+					return;
+				}
+			}
+
 			isPromptPickerOpen = false;
 			promptSearchQuery = '';
-			isInlineResourcePickerOpen = false;
-			resourceSearchQuery = '';
+			isMentionPickerOpen = false;
+			mentionQuery = '';
+
+			// Token gone or no longer intact - the snapshot is stale. Reset so
+			// the next fresh `@` opens immediately even at the same offset.
+			if (mentionDismissedSnapshot !== null && !token) {
+				mentionDismissedSnapshot = null;
+			}
 		}
 	}
 
@@ -263,12 +314,6 @@
 		if (event.key === KeyboardKey.ESCAPE && isPromptPickerOpen) {
 			isPromptPickerOpen = false;
 			promptSearchQuery = '';
-			return;
-		}
-
-		if (event.key === KeyboardKey.ESCAPE && isInlineResourcePickerOpen) {
-			isInlineResourcePickerOpen = false;
-			resourceSearchQuery = '';
 			return;
 		}
 
@@ -445,33 +490,55 @@
 		textareaRef?.focus();
 	}
 
-	function handleInlineResourcePickerClose() {
-		isInlineResourcePickerOpen = false;
-		resourceSearchQuery = '';
-		textareaRef?.focus();
+	/**
+	 * Mention picker dismissed (Esc, outside-click, or selection-complete).
+	 * Capture a `(start, query)` snapshot of the live token so subsequent
+	 * input events that produce the SAME token won't reopen the picker -
+	 * the user has explicitly told us that `@<query>` should be literal
+	 * until they delete or retype a fresh `@`.
+	 */
+	function handleMentionPickerClose() {
+		if (isMentionPickerOpen) {
+			const cursor = textareaRef?.getElement()?.selectionStart ?? value.length;
+			mentionDismissedSnapshot = takeMentionDismissSnapshot(value, cursor);
+		}
+		isMentionPickerOpen = false;
+		mentionQuery = '';
 	}
 
-	function handleInlineResourceSelect() {
-		if (value.startsWith(RESOURCE_TRIGGER_PREFIX)) {
-			value = '';
-			onValueChange?.('');
-		}
+	/**
+	 * Selection from the mention picker: splice `[name](file://<abs>)`
+	 * + trailing space in place of the `@<query>` token. Cursor lands
+	 * right after the trailing space so the user can keep typing
+	 * naturally. Uses the live cursor position (not the stale snapshot)
+	 * because the token might have been edited since we last saw it.
+	 *
+	 * URI shape follows RFC 8089: `file:` + `//` + absolute path. The
+	 * search entry's `path` is already rooted (begins with `/`), so the
+	 * prefix is `file://` not `file:///` - that yields the canonical
+	 * three-slash form `file:///Users/foo/bar` without an extra `/`.
+	 *
+	 * Directories get a trailing `/` so the link resolves to a folder
+	 * rather than being interpreted as a file with no extension.
+	 */
+	function handleMentionSelect(entry: ApiFilesystemSearchEntry) {
+		const cursor = textareaRef?.getElement()?.selectionStart ?? value.length;
+		const token = findMentionToken(value, cursor);
+		if (!token) return;
 
-		isInlineResourcePickerOpen = false;
-		resourceSearchQuery = '';
-		textareaRef?.focus();
-	}
+		const basename = lastPathSegment(entry.path) || entry.name;
+		const pathWithSeparator = entry.type === 'directory' ? `${entry.path}/` : entry.path;
+		const insertion = `[${basename}](file://${pathWithSeparator}) `;
+		const newValue = value.slice(0, token.start) + insertion + value.slice(token.end);
+		const cursorOffset = token.start + insertion.length;
 
-	function handleBrowseResources() {
-		isInlineResourcePickerOpen = false;
-		resourceSearchQuery = '';
+		value = newValue;
+		onValueChange?.(newValue);
 
-		if (value.startsWith(RESOURCE_TRIGGER_PREFIX)) {
-			value = '';
-			onValueChange?.('');
-		}
-
-		isResourceDialogOpen = true;
+		// Place the caret right after the trailing space we just inserted.
+		queueMicrotask(() => {
+			textareaRef?.getElement()?.setSelectionRange(cursorOffset, cursorOffset);
+		});
 	}
 
 	async function handleMicClick() {
@@ -518,16 +585,22 @@
 		bind:this={pickersRef}
 		{isPromptPickerOpen}
 		{promptSearchQuery}
-		{isInlineResourcePickerOpen}
-		{resourceSearchQuery}
+		{isMentionPickerOpen}
+		{mentionQuery}
+		{mentionAnchor}
 		onPromptPickerClose={handlePromptPickerClose}
-		onInlineResourcePickerClose={handleInlineResourcePickerClose}
-		onInlineResourceSelect={handleInlineResourceSelect}
+		onMentionPickerClose={handleMentionPickerClose}
+		onMentionSelect={handleMentionSelect}
 		onPromptLoadStart={handlePromptLoadStart}
 		onPromptLoadComplete={handlePromptLoadComplete}
 		onPromptLoadError={handlePromptLoadError}
-		onInlineResourceBrowse={handleBrowseResources}
 	/>
+
+	<div
+		bind:this={mentionAnchor}
+		class="pointer-events-none absolute top-0 right-0 left-0 h-px"
+		aria-hidden="true"
+	></div>
 
 	<div
 		class="{INPUT_CLASSES} overflow-hidden rounded-4xl md:rounded-3xl backdrop-blur-md {disabled
