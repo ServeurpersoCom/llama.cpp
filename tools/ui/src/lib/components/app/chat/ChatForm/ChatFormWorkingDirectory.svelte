@@ -309,7 +309,18 @@
 			hoveredIndex = -1;
 			queryResults = [];
 			searchError = null;
-			void ensureBrowseRoots();
+			// Setting inputValue programmatically does not fire the input event, so
+			// the search that handleInputInput would normally start is never triggered.
+			// Kick it off here once browse roots are available (defaultRootPath
+			// feeds into doSearch's request path).
+			void ensureBrowseRoots().then(() => {
+				if (!isOpen) return;
+				if (isBrowseEndpointDisabled()) return;
+				const trimmed = inputValue.trim();
+				if (trimmed) {
+					void doSearch(trimmed);
+				}
+			});
 			// Move focus to the search field on next tick so it wins over the
 			// popover's own focus-stealing on open.
 			queueMicrotask(() => searchInputRef?.focus({ preventScroll: true }));
