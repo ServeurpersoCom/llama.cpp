@@ -1,12 +1,14 @@
 <script lang="ts">
 	import { File, Folder } from '@lucide/svelte';
 	import { FilesystemService } from '$lib/services';
-	import { abbreviateWorkingDir, ApiError, debounce, lastPathSegment } from '$lib/utils';
+	import { abbreviateWorkingDir, debounce, lastPathSegment } from '$lib/utils';
 	import {
 		browseRoots,
 		ensureBrowseRoots,
 		isBrowseEndpointDisabled
 	} from '$lib/stores/browse-roots.svelte';
+	import { config } from '$lib/stores/settings.svelte';
+	import { SETTINGS_KEYS } from '$lib/constants';
 	import * as Popover from '$lib/components/ui/popover';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import HighlightedMatch from '$lib/components/app/forms/HighlightedMatch.svelte';
@@ -30,8 +32,10 @@
 		isOpen: boolean;
 		query: string;
 		customAnchor?: HTMLElement | null;
+		scopePath?: string | null;
 		onClose: () => void;
 		onSelect: (entry: ApiFilesystemSearchEntry) => void;
+		onSearchChange?: (q: string) => void;
 	}
 
 	let {
@@ -39,14 +43,41 @@
 		isOpen,
 		query,
 		customAnchor = null,
+		scopePath = null,
 		onClose,
-		onSelect
+		onSelect,
+		onSearchChange
 	}: Props = $props();
 
 	let queryResults = $state<ApiFilesystemSearchEntry[]>([]);
 	let isLoading = $state(false);
 	let searchError = $state<string | null>(null);
 	let hoveredIndex = $state(0);
+
+	// Mirror of the @<token> from the textarea. The textarea owns the
+	// canonical `query` prop (ChatForm re-reads it on every keystroke), so
+	// we also expose an editable header input here that lets the user
+	// refine the search from either surface. Edits here round-trip back
+	// through `onSearchChange` so the textarea's @<token> stays in sync.
+	let internalSearchQuery = $state('');
+
+	// Mirror external -> internal. Updates whenever `query` changes (textarea
+	// typing, or the round-trip response from a previous propagation).
+	$effect(() => {
+		internalSearchQuery = query ?? '';
+	});
+
+	// Propagate internal -> external when the two diverge. Reads both
+	// signals so the effect re-runs after either move; the equality check
+	// below prevents feedback (a mirror write re-aligns both to the same
+	// value before the next run).
+	$effect(() => {
+		const internal = internalSearchQuery;
+		const external = query ?? '';
+		if (internal !== external) {
+			onSearchChange?.(internal);
+		}
+	});
 
 	// Drop stale responses when the user keeps typing; both an AbortController
 	// (cancels the network) and a sequence counter (covers the gap between
@@ -61,6 +92,17 @@
 	const showTooltip = $derived(innerWidth > 768);
 
 	const endpointDisabled = $derived(isBrowseEndpointDisabled());
+
+	// Search depth configured by the user in the Agentic settings section.
+	// Falls back to 16 when no value is set; clamped to [1, 32] matching the
+	// server-side validation range so a stale localStorage value cannot push
+	// the request into the rejection path.
+	const maxDepth = $derived.by(() => {
+		const raw = Number(config()[SETTINGS_KEYS.MENTION_SEARCH_MAX_DEPTH]);
+		const fallback = 16;
+		const n = Number.isFinite(raw) && raw > 0 ? Math.round(raw) : fallback;
+		return Math.min(32, Math.max(1, n));
+	});
 
 	// Reactive subscription to the shared browse-roots cache so the path
 	// abbreviation re-renders once the roots resolve.
@@ -89,10 +131,12 @@
 	});
 
 	$effect(() => {
-		// Re-run whenever the query string changes (parent owns it). Disabled
-		// endpoint short-circuits to a single zero-result sticky state so the
-		// user gets the "filesystem unavailable" message instead of a growing
-		// spinner.
+		// Re-run whenever the search string changes (textarea reflects into
+		// `internalSearchQuery`, plus direct edits to the header input).
+		// Disabled endpoint short-circuits to a single zero-result sticky
+		// state so the user gets the "filesystem unavailable" message
+		// instead of a growing spinner.
+		const q = internalSearchQuery;
 		if (!isOpen) {
 			cancelSearch();
 			return;
@@ -103,7 +147,7 @@
 			searchError = null;
 			return;
 		}
-		runSearch(query);
+		runSearch(q);
 	});
 
 	const runSearch = debounce((q: string) => {
@@ -136,8 +180,9 @@
 				{
 					query: trimmed,
 					type: 'any',
-					limit: 20,
-					max_depth: 6,
+					path: scopePath ?? undefined,
+					limit: 50,
+					max_depth: maxDepth,
 					show_hidden: true
 				},
 				controller.signal
@@ -243,16 +288,14 @@
 				<code class="rounded bg-muted px-1 py-0.5 text-[10px]">--agent</code>
 				to enable it.
 			</div>
-		{:else if query.trim().length === 0}
-			<div class="px-2 py-3 text-sm text-muted-foreground">Type a path or filename to search</div>
 		{:else}
-			{@const trimmed = query.trim()}
+			{@const trimmed = internalSearchQuery.trim()}
 			<ChatFormPickerList
 				items={queryResults}
 				{isLoading}
 				selectedIndex={hoveredIndex}
-				showSearchInput={false}
-				searchQuery={trimmed}
+				showSearchInput={true}
+				bind:searchQuery={internalSearchQuery}
 				searchPlaceholder="Search files..."
 				emptyMessage={searchError
 					? `Search failed - ${searchError}`

@@ -14,7 +14,6 @@
 	} from '$lib/stores/browse-roots.svelte';
 	import * as Popover from '$lib/components/ui/popover';
 	import * as Tooltip from '$lib/components/ui/tooltip';
-	import SearchInput from '$lib/components/app/forms/SearchInput.svelte';
 	import HighlightedMatch from '$lib/components/app/forms/HighlightedMatch.svelte';
 	import { ActionIcon } from '$lib/components/app/actions';
 	import { ChatFormPickerList, ChatFormPickerListItem } from '$lib/components/app/chat';
@@ -272,12 +271,25 @@
 		}
 	}
 
-	function handleInputInput(value: string) {
-		hoveredIndex = -1;
-		if (value.trim().length > 0) {
-			runSearch(value);
+	// Drive the search from `inputValue` itself - the picker now binds its
+	// header input to `inputValue`, so user typing in the search head
+	// (and the seeded value on open) both pick up the same debounced fetch
+	// without needing a side-channel onInput callback.
+	$effect(() => {
+		const q = inputValue;
+		if (!isOpen) {
+			cancelSearch();
+			return;
 		}
-	}
+		if (isBrowseEndpointDisabled()) {
+			queryResults = [];
+			isSearching = false;
+			searchError = null;
+			hoveredIndex = -1;
+			return;
+		}
+		runSearch(q);
+	});
 
 	function clearDirectory(event?: MouseEvent) {
 		// Stop the click from bubbling into the popover trigger and re-opening
@@ -309,21 +321,10 @@
 			hoveredIndex = -1;
 			queryResults = [];
 			searchError = null;
-			// Setting inputValue programmatically does not fire the input event, so
-			// the search that handleInputInput would normally start is never triggered.
-			// Kick it off here once browse roots are available (defaultRootPath
-			// feeds into doSearch's request path).
-			void ensureBrowseRoots().then(() => {
-				if (!isOpen) return;
-				if (isBrowseEndpointDisabled()) return;
-				const trimmed = inputValue.trim();
-				if (trimmed) {
-					void doSearch(trimmed);
-				}
-			});
-			// Move focus to the search field on next tick so it wins over the
-			// popover's own focus-stealing on open.
-			queueMicrotask(() => searchInputRef?.focus({ preventScroll: true }));
+			// The inputValue $effect picks up the seeded search automatically,
+			// but it would only run after browse roots resolve; warm the cache
+			// here so the first request is not gated on the initial fetch.
+			void ensureBrowseRoots();
 		} else {
 			cancelSearch();
 		}
@@ -432,103 +433,96 @@
 			onOpenAutoFocus={(event) => event.preventDefault()}
 			customAnchor={popoverAnchor}
 		>
-			<div class="p-2">
-				<SearchInput
-					bind:ref={searchInputRef}
-					bind:value={inputValue}
-					placeholder="Choose working directory"
-					onInput={handleInputInput}
-					onClose={() => (isOpen = false)}
-					onKeyDown={handleKeydown}
-					class="w-full"
-				/>
-
-				{#if inputValue.trim()}
-					{#if isBrowseEndpointDisabled()}
-						<div class="px-2 py-1.5 text-sm text-muted-foreground">
-							Filesystem browsing is disabled. Start the server with
-							<code class="rounded bg-muted px-1 py-0.5 text-[10px]">--tools</code>
-							or
-							<code class="rounded bg-muted px-1 py-0.5 text-[10px]">--agent</code>
-							to enable it.
-						</div>
-					{:else if searchError}
-						<div class="px-2 py-1.5 text-sm text-destructive">{searchError}</div>
-					{:else}
-						<ChatFormPickerList
-							items={queryResults}
-							isLoading={isSearching}
-							selectedIndex={hoveredIndex}
-							showSearchInput={false}
-							searchQuery=""
-							searchPlaceholder="Search directories..."
-							emptyMessage="No matching folders"
-							itemKey={(entry) => entry.path}
+			{#if isBrowseEndpointDisabled()}
+				<div class="px-3 py-4 text-sm text-muted-foreground">
+					Filesystem browsing is disabled. Start the server with
+					<code class="rounded bg-muted px-1 py-0.5 text-[10px]">--tools</code>
+					or
+					<code class="rounded bg-muted px-1 py-0.5 text-[10px]">--agent</code>
+					to enable it.
+				</div>
+			{:else}
+				<ChatFormPickerList
+					items={queryResults}
+					isLoading={isSearching}
+					selectedIndex={hoveredIndex}
+					showSearchInput={true}
+					bind:searchQuery={inputValue}
+					bind:inputRef={searchInputRef}
+					autofocus={true}
+					onSearchClose={() => (isOpen = false)}
+					searchPlaceholder="Choose working directory"
+					emptyMessage={searchError
+						? `Search failed - ${searchError}`
+						: 'No matching folders'}
+					itemKey={(entry) => entry.path}
+				>
+					{#snippet item(entry, index, isSelected)}
+						<ChatFormPickerListItem
+						    class="gap-2!"
+							dataIndex={index}
+							{isSelected}
+							onclick={() => commit(entry)}
+							onmouseenter={() => (hoveredIndex = index)}
 						>
-							{#snippet item(entry, index, isSelected)}
-								<ChatFormPickerListItem
-									dataIndex={index}
-									{isSelected}
-									onclick={() => commit(entry)}
-									onmouseenter={() => (hoveredIndex = index)}
-								>
-									<Folder class="size-4 shrink-0 text-muted-foreground" />
-									<span class="min-w-0 flex-1 truncate font-mono text-left">
-										<HighlightedMatch text={entry.path} query={inputValue.trim()} />
+							<Folder class="size-4 shrink-0 text-muted-foreground pt-1" />
+
+							<span class="min-w-0 flex-1 truncate font-mono text-left text-sm">
+								<HighlightedMatch text={entry.path} query={inputValue.trim()} />
+							</span>
+						</ChatFormPickerListItem>
+					{/snippet}
+					{#snippet skeleton()}
+						<div class="px-3 py-2 text-sm text-muted-foreground">Searching...</div>
+					{/snippet}
+				</ChatFormPickerList>
+
+				<div class="px-2 py-2">
+					{#if pickerSupported}
+						<button
+							type="button"
+							class="-mt-1 flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
+							onclick={browseNative}
+						>
+							<FolderOpen class="size-4 shrink-0 text-muted-foreground" />
+							<span>Browse</span>
+						</button>
+					{/if}
+
+					{#if defaultRootPath || browseRootsError()}
+						<div class="-mx-2 my-1 h-px bg-border/20" aria-hidden="true"></div>
+
+						{#if defaultRootPath}
+							<span class="px-2 py-1.5 font-mono text-[10px]">
+								Searching in:
+
+								{#if showTooltip}
+									<Tooltip.Root>
+										<Tooltip.Trigger>
+											{#snippet child({ props })}
+												<span {...props} class="truncate text-muted-foreground/70">
+													{abbreviateWorkingDir(defaultRootPath, browseRoots())}
+												</span>
+											{/snippet}
+										</Tooltip.Trigger>
+										<Tooltip.Content>
+											<p>{defaultRootPath}</p>
+										</Tooltip.Content>
+									</Tooltip.Root>
+								{:else}
+									<span class="truncate text-muted-foreground/70">
+										{abbreviateWorkingDir(defaultRootPath, browseRoots())}
 									</span>
-								</ChatFormPickerListItem>
-							{/snippet}
-							{#snippet skeleton()}
-								<div class="px-3 py-2 text-sm text-muted-foreground">Searching...</div>
-							{/snippet}
-						</ChatFormPickerList>
+								{/if}
+							</span>
+						{:else if browseRootsError()}
+							<div class="px-2 py-1.5 text-xs text-destructive">
+								Cannot load browse roots - {browseRootsError()}
+							</div>
+						{/if}
 					{/if}
-				{/if}
-
-				{#if pickerSupported}
-					<button
-						type="button"
-						class="-mt-1 flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
-						onclick={browseNative}
-					>
-						<FolderOpen class="size-4 shrink-0 text-muted-foreground" />
-						<span>Browse</span>
-					</button>
-				{/if}
-
-				{#if defaultRootPath || browseRootsError()}
-					<div class="-mx-2 my-1 h-px bg-border/20" aria-hidden="true"></div>
-
-					{#if defaultRootPath}
-						<span class="px-2 py-1.5 font-mono text-[10px]">
-							Searching in:
-
-							{#if showTooltip}
-								<Tooltip.Root>
-									<Tooltip.Trigger>
-										{#snippet child({ props })}
-											<span {...props} class="truncate text-muted-foreground/70">
-												{abbreviateWorkingDir(defaultRootPath, browseRoots())}
-											</span>
-										{/snippet}
-									</Tooltip.Trigger>
-									<Tooltip.Content>
-										<p>{defaultRootPath}</p>
-									</Tooltip.Content>
-								</Tooltip.Root>
-							{:else}
-								<span class="truncate text-muted-foreground/70">
-									{abbreviateWorkingDir(defaultRootPath, browseRoots())}
-								</span>
-							{/if}
-						</span>
-					{:else if browseRootsError()}
-						<div class="px-2 py-1.5 text-xs text-destructive">
-							Cannot load browse roots - {browseRootsError()}
-						</div>
-					{/if}
-				{/if}
-			</div>
+				</div>
+			{/if}
 		</Popover.Content>
 	</Popover.Root>
 </div>

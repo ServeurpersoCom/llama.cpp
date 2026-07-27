@@ -9,9 +9,11 @@
 		isMentionPickerOpen?: boolean;
 		mentionQuery?: string;
 		mentionAnchor?: HTMLElement | null;
+		scopePath?: string | null;
 		onPromptPickerClose?: () => void;
 		onMentionPickerClose?: () => void;
 		onMentionSelect?: (entry: ApiFilesystemSearchEntry) => void;
+		onMentionSearchChange?: (q: string) => void;
 		onPromptLoadStart?: (
 			placeholderId: string,
 			promptInfo: MCPPromptInfo,
@@ -27,9 +29,11 @@
 		isMentionPickerOpen,
 		mentionQuery,
 		mentionAnchor,
+		scopePath,
 		onPromptPickerClose,
 		onMentionPickerClose,
 		onMentionSelect,
+		onMentionSearchChange,
 		onPromptLoadStart,
 		onPromptLoadComplete,
 		onPromptLoadError
@@ -81,6 +85,8 @@
 	isOpen={isMentionPickerOpen ?? false}
 	query={mentionQuery ?? ''}
 	customAnchor={mentionAnchor}
+	scopePath={scopePath ?? null}
 	onClose={onMentionPickerClose ?? (() => {})}
 	onSelect={handleMentionSelect}
+	onSearchChange={onMentionSearchChange}
 />

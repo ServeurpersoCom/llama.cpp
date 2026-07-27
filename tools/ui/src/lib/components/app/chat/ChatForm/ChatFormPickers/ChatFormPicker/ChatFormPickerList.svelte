@@ -12,6 +12,9 @@
 		showSearchInput: boolean;
 		searchPlaceholder?: string;
 		emptyMessage?: string;
+		autofocus?: boolean;
+		inputRef?: HTMLInputElement | null;
+		onSearchClose?: () => void;
 		itemKey: (item: T, index: number) => string;
 		item: Snippet<[T, number, boolean]>;
 		skeleton?: Snippet;
@@ -26,6 +29,9 @@
 		showSearchInput,
 		searchPlaceholder = 'Search...',
 		emptyMessage = 'No items available',
+		autofocus = false,
+		inputRef = $bindable(null),
+		onSearchClose,
 		itemKey,
 		item,
 		skeleton,
@@ -67,7 +73,13 @@
 <ScrollArea>
 	{#if showSearchInput}
 		<div class="absolute top-0 right-0 left-0 z-10 p-2 pb-0">
-			<SearchInput placeholder={searchPlaceholder} bind:value={searchQuery} />
+			<SearchInput
+				{autofocus}
+				placeholder={searchPlaceholder}
+				bind:value={searchQuery}
+				bind:ref={inputRef}
+				onClose={onSearchClose}
+			/>
 		</div>
 	{/if}
 

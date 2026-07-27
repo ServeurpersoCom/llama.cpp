@@ -39,6 +39,7 @@
 		activeConversation,
 		pendingWorkingDirectory
 	} from '$lib/stores/conversations.svelte';
+	import { defaultBrowseRootPath } from '$lib/stores/browse-roots.svelte';
 	import type {
 		ApiFilesystemSearchEntry,
 		GetPromptResult,
@@ -153,6 +154,11 @@
 	let workingDirectory = $derived(
 		activeConversation()?.workingDirectory ?? pendingWorkingDirectory() ?? null
 	);
+
+	// Scopes the @-mention search to the cwd the user picked (when set),
+	// falling back to the server's first browse root so the picker still
+	// finds matches before the user has chosen a directory.
+	let mentionScopePath = $derived(workingDirectory ?? defaultBrowseRootPath() ?? null);
 
 	async function handleWorkingDirectoryChange(value: string | null) {
 		await conversationsStore.setWorkingDirectory(value);
@@ -541,6 +547,41 @@
 		});
 	}
 
+	/**
+	 * Round-trip handler for edits made INSIDE the mention picker's search
+	 * header. Picks up whatever the picker refined `internalSearchQuery` to
+	 * and splices it back into the textarea in place of the existing
+	 * `@<token>` query part. Mirrors the cursor/handleMentionSelect logic
+	 * so the caret stays at the end of the token the moment the splice
+	 * settles.
+	 *
+	 * If the token has vanished (e.g. user deleted the `@` while focus
+	 * was elsewhere), the handler bails instead of guessing where the new
+	 * token belongs - the next `handleInput` cycle will reopen the picker
+	 * cleanly if the user re-types `@`.
+	 */
+	function handleMentionSearchChange(newQuery: string) {
+		const cursor = textareaRef?.getElement()?.selectionStart ?? value.length;
+		const token = findMentionToken(value, cursor);
+		if (!token) return;
+
+		// Only splice when the actual query portion changed; a no-op ping
+		// would still touch the textarea state via `value =` even though
+		// the observable values are identical.
+		if (token.query === newQuery) return;
+
+		const newValue = value.slice(0, token.start + 1) + newQuery + value.slice(token.end);
+		const cursorOffset = token.start + 1 + newQuery.length;
+
+		value = newValue;
+		mentionQuery = newQuery;
+		onValueChange?.(newValue);
+
+		queueMicrotask(() => {
+			textareaRef?.getElement()?.setSelectionRange(cursorOffset, cursorOffset);
+		});
+	}
+
 	async function handleMicClick() {
 		if (!audioRecorder || !recordingSupported) {
 			console.warn('Audio recording not supported');
@@ -588,9 +629,11 @@
 		{isMentionPickerOpen}
 		{mentionQuery}
 		{mentionAnchor}
+		scopePath={mentionScopePath}
 		onPromptPickerClose={handlePromptPickerClose}
 		onMentionPickerClose={handleMentionPickerClose}
 		onMentionSelect={handleMentionSelect}
+		onMentionSearchChange={handleMentionSearchChange}
 		onPromptLoadStart={handlePromptLoadStart}
 		onPromptLoadComplete={handlePromptLoadComplete}
 		onPromptLoadError={handlePromptLoadError}
