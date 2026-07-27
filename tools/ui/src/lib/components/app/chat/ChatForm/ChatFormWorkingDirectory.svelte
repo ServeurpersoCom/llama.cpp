@@ -50,6 +50,10 @@
 	let isSearching = $state(false);
 	let searchError = $state<string | null>(null);
 	let hoveredIndex = $state(-1);
+	// Bumped only by ArrowUp/ArrowDown handlers; the list's
+	// ChatFormPickerList uses this to scroll the picked row into view
+	// without scrolling on mouse hover.
+	let scrollTrigger = $state(0);
 	// Browse roots live in the shared browse-roots store; both this component
 	// and the file-mention picker (Phase B) read from it. defaultRootPath is
 	// a derived view used to scope server-side search calls.
@@ -122,6 +126,14 @@
 	let searchController: AbortController | null = null;
 	let searchSeq = 0;
 
+	// Auto-focus the search input when the popover opens.
+	// HTML `autofocus` is unreliable on dynamically shown elements, so we
+	// use a microtask (0ms setTimeout) after the effect flushes.
+	$effect(() => {
+		if (!isOpen) return;
+		setTimeout(() => searchInputRef?.focus(), 0);
+	});
+
 	const runSearch = debounce((query: string) => {
 		void doSearch(query);
 	}, 180);
@@ -147,15 +159,12 @@
 	}
 
 	async function doSearch(query: string) {
-		const trimmed = query.trim();
-		if (!trimmed) {
-			queryResults = [];
-			searchError = null;
-			isSearching = false;
-			hoveredIndex = -1;
-			return;
-		}
+		// The inputValue $effect handles empty queries synchronously
+		// before scheduling this fetch; doSearch is never called with
+		// empty input, so an empty-input guard here would be dead
+		// code. Trim is taken once at the top and reused.
 
+		const trimmed = query.trim();
 		cancelSearch();
 		const controller = new AbortController();
 		searchController = controller;
@@ -176,7 +185,11 @@
 			);
 			if (mySeq !== searchSeq) return;
 			queryResults = response.results;
-			hoveredIndex = -1;
+			// Auto-highlight the first row once results land so a fresh
+			// query is immediately commit-able via Enter. Reset to -1
+			// when the query returned nothing so the empty-state owns
+			// the visual cue.
+			hoveredIndex = queryResults.length > 0 ? 0 : -1;
 			searchError = null;
 		} catch (err) {
 			if (mySeq !== searchSeq) return;
@@ -257,24 +270,43 @@
 	function handleKeydown(event: KeyboardEvent) {
 		if (event.key === 'Enter') {
 			event.preventDefault();
-			handleSubmit();
+			// Commit the highlighted search result when there is one
+			// (the user may have arrow-keyed to it or it is the auto-
+			// selected first row after results landed). Fall back to
+			// the raw input only when the query returned no matches,
+			// so the user can still type a known absolute path.
+			if (hoveredIndex >= 0 && queryResults[hoveredIndex]) {
+				commit(queryResults[hoveredIndex]);
+			} else if (queryResults.length === 0) {
+				handleSubmit();
+			}
 		} else if (event.key === 'ArrowDown') {
 			if (queryResults.length > 0) {
 				event.preventDefault();
 				hoveredIndex = (hoveredIndex + 1) % queryResults.length;
+				scrollTrigger++;
 			}
 		} else if (event.key === 'ArrowUp') {
 			if (queryResults.length > 0) {
 				event.preventDefault();
 				hoveredIndex = hoveredIndex <= 0 ? queryResults.length - 1 : hoveredIndex - 1;
+				scrollTrigger++;
 			}
 		}
 	}
 
-	// Drive the search from `inputValue` itself - the picker now binds its
+	// Drive the search from `inputValue` itself — the picker binds its
 	// header input to `inputValue`, so user typing in the search head
-	// (and the seeded value on open) both pick up the same debounced fetch
-	// without needing a side-channel onInput callback.
+	// (and the seeded value on open) both pick up the same debounced
+	// fetch without needing a side-channel onInput callback.
+	//
+	// Synchronously reflects the correct state during the 180ms
+	// debounce window so the picker never flashes the "API responded
+	// with no matches" empty-state for a query that hasn't actually
+	// been sent yet. Active query → skeleton immediately; empty
+	// query → clears state and renders nothing; API-returned-empty →
+	// renders the "No matching folders" message (recorded only by
+	// doSearch).
 	$effect(() => {
 		const q = inputValue;
 		if (!isOpen) {
@@ -282,12 +314,28 @@
 			return;
 		}
 		if (isBrowseEndpointDisabled()) {
+			cancelSearch();
 			queryResults = [];
 			isSearching = false;
 			searchError = null;
 			hoveredIndex = -1;
 			return;
 		}
+		const trimmed = q.trim();
+		if (!trimmed) {
+			cancelSearch();
+			queryResults = [];
+			isSearching = false;
+			searchError = null;
+			hoveredIndex = -1;
+			return;
+		}
+		// Active query — cancel any in-flight stale request and show
+		// the skeleton synchronously so the picker doesn't sit on
+		// previously-returned empty data while debouncing the new
+		// request.
+		cancelSearch();
+		isSearching = true;
 		runSearch(q);
 	});
 
@@ -431,6 +479,7 @@
 			class="w-[var(--bits-popover-anchor-width)] max-w-none rounded-xl border-border/50 p-0 shadow-xl"
 			onkeydown={handleKeydown}
 			onOpenAutoFocus={(event) => event.preventDefault()}
+			onCloseAutoFocus={(event) => event.preventDefault()}
 			customAnchor={popoverAnchor}
 		>
 			{#if isBrowseEndpointDisabled()}
@@ -454,9 +503,36 @@
 					searchPlaceholder="Choose working directory"
 					emptyMessage={searchError
 						? `Search failed - ${searchError}`
-						: 'No matching folders'}
+						: inputValue.trim() ? 'No matching folders' : undefined}
 					itemKey={(entry) => entry.path}
+					{scrollTrigger}
 				>
+					<!--
+						Skeleton rows mirror the real row layout (folder
+						icon + a single truncating monospace path bar).
+						Widths vary per index so the placeholder reads as
+						a list of directories, not six identical boxes;
+						that swap-in is the only thing standing between the
+						search request and any visible layout shift.
+					-->
+					{#snippet skeleton()}
+						<div aria-busy="true" aria-live="polite" class="flex flex-col">
+							{#each { length: 8 } as _, rowIndex (rowIndex)}
+								{@const widths = ['w-3/5', 'w-4/5', 'w-2/5', 'w-3/4', 'w-1/2', 'w-5/6', 'w-3/4', 'w-4/5']}
+								{@const widthClass = widths[rowIndex % widths.length]}
+								<div class="flex items-start gap-2 rounded-lg px-3 py-2">
+									<div class="mt-1 size-4 shrink-0 rounded-md bg-muted/60"></div>
+									<div
+										class={[
+											'h-4 mt-1 animate-pulse rounded-sm bg-muted/60',
+											widthClass
+										]}
+									></div>
+								</div>
+							{/each}
+						</div>
+					{/snippet}
+
 					{#snippet item(entry, index, isSelected)}
 						<ChatFormPickerListItem
 						    class="gap-2!"
@@ -472,12 +548,9 @@
 							</span>
 						</ChatFormPickerListItem>
 					{/snippet}
-					{#snippet skeleton()}
-						<div class="px-3 py-2 text-sm text-muted-foreground">Searching...</div>
-					{/snippet}
 				</ChatFormPickerList>
 
-				<div class="px-2 py-2">
+				<div class="px-2 pb-2">
 					{#if pickerSupported}
 						<button
 							type="button"

@@ -13,7 +13,6 @@
 		onPromptPickerClose?: () => void;
 		onMentionPickerClose?: () => void;
 		onMentionSelect?: (entry: ApiFilesystemSearchEntry) => void;
-		onMentionSearchChange?: (q: string) => void;
 		onPromptLoadStart?: (
 			placeholderId: string,
 			promptInfo: MCPPromptInfo,
@@ -33,7 +32,6 @@
 		onPromptPickerClose,
 		onMentionPickerClose,
 		onMentionSelect,
-		onMentionSearchChange,
 		onPromptLoadStart,
 		onPromptLoadComplete,
 		onPromptLoadError
@@ -88,5 +86,4 @@
 	scopePath={scopePath ?? null}
 	onClose={onMentionPickerClose ?? (() => {})}
 	onSelect={handleMentionSelect}
-	onSearchChange={onMentionSearchChange}
 />

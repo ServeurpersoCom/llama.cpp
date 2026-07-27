@@ -168,6 +168,28 @@ export {
 	type MentionDismissSnapshot
 } from './mention-token';
 
+// Tokenization for the chat-form contenteditable (renders `@`-picked
+// `[name](file://...)` links as inline badges inside the input while
+// keeping the markdown source unchanged).
+export {
+	tokenizeContent,
+	serializeContent,
+	buildFragment,
+	rangeToTextOffset,
+	textOffsetToRange,
+	type ContentToken
+} from './contenteditable-tokenizer';
+
+// Mention-badge visual contract (used by MentionBadge.svelte and the
+// contenteditable / rehype DOM paths that build the same chip without
+// a Svelte mount)
+export {
+	containsFileMentionLink,
+	MENTION_BADGE_CLASSNAME,
+	MENTION_BADGE_ICON_CLASSNAME,
+	MENTION_BADGE_FOLDER_D
+} from './mention-badge';
+
 // Agentic content utilities (structured section derivation)
 export {
 	deriveAgenticSections,

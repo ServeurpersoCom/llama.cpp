@@ -120,7 +120,8 @@ export { default as ChatAttachmentsPreviewCurrentItem } from './ChatAttachments/
  * Used by ChatScreenForm and ChatMessageEditForm for both new conversations and message editing.
  *
  * **Architecture:**
- * - Composes ChatFormTextarea, ChatFormActions, and ChatFormPickerMcpPrompts
+ * - Composes ChatFormTextarea (or ChatFormContenteditable for messages with
+ *   file mention links), ChatFormActions, and ChatFormPickerMcpPrompts
  * - Manages file upload state via `uploadedFiles` bindable prop
  * - Integrates with ModelsSelectorDropdown for model selection in router mode
  * - Communicates with parent via callbacks (onSubmit, onFilesAdd, onStop, etc.)
@@ -266,11 +267,42 @@ export { default as ChatFormFileInputInvisible } from './ChatForm/ChatFormFileIn
 export { default as ChatFormMcpResourcesList } from './ChatForm/ChatFormMcpResourcesList.svelte';
 
 /**
- * Auto-resizing textarea with IME composition support. Automatically adjusts
- * height based on content. Handles IME input correctly (waits for composition
- * end before processing Enter key). Exposes focus() and resetHeight() methods.
+ * Auto-resizing contenteditable input with IME composition support and inline
+ * mention badges. Renders `[name](file://...)` markdown links produced by the
+ * `@`-picker as inline chips inside the editable area while keeping the
+ * underlying value as the markdown source string. ChatForm swaps in this
+ * component lazily, only after a `file://` markdown link has been
+ * introduced into the buffer. Exposes focus(), resetHeight(),
+ * getCaretOffset() and setCaretOffset() methods.
+ */
+export { default as ChatFormContenteditable } from './ChatForm/ChatFormContenteditable.svelte';
+
+/**
+ * Plain auto-resizing textarea. Default input renderer inside ChatForm;
+ * the component swaps in `ChatFormContenteditable` once a file mention
+ * lands. Exposes focus(), resetHeight(), getCaretOffset() and
+ * setCaretOffset() so the two renderers share one handle type.
  */
 export { default as ChatFormTextarea } from './ChatForm/ChatFormTextarea.svelte';
+
+/**
+ * Inline `file://` mention chip - the visual representation of a
+ * single `[name](file://...)` mention embedded in chat content.
+ * Renders with a folder glyph prefix, font-mono label, and a
+ * subtle bordered-pill background (matches the `ModelId` chip
+ * shape so the model selector and the chat input share one
+ * pill vocabulary). The contenteditable tokenizer and the
+ * markdown `rehypeFileBadge` plugin emit the same DOM shape via
+ * the shared class string in `$lib/utils/mention-badge` - keep
+ * the class literal in sync if you retheme this component.
+ *
+ * - Without `href`: renders as a non-interactive `<span>`
+ *   suitable for preview chips / chip rails etc.
+ * - With `href`: renders as `<a target="_blank">`, the path
+ *   also goes into `data-href` so an external host (e.g. the
+ *   OS file manager) can resolve it on click.
+ */
+export { default as MentionBadge } from './ChatForm/MentionBadge.svelte';
 
 /**
  * Working directory selector for tool calls. Hidden by default; revealed below

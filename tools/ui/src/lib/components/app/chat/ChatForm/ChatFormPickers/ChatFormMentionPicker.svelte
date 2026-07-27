@@ -7,6 +7,7 @@
 		ensureBrowseRoots,
 		isBrowseEndpointDisabled
 	} from '$lib/stores/browse-roots.svelte';
+	import { recentMentionsStore } from '$lib/stores/recent-mentions.svelte';
 	import { config } from '$lib/stores/settings.svelte';
 	import { SETTINGS_KEYS } from '$lib/constants';
 	import * as Popover from '$lib/components/ui/popover';
@@ -23,9 +24,12 @@
 	 * `onSelect` so the parent can splice a `[name](file:///<abs>)<space>`
 	 * markdown link into the textarea at the cursor.
 	 *
-	 * Closes via Escape, outside-click, or selection. The parent owns the
-	 * "user dismissed this token, don't re-open until it changes" snapshot
-	 * so the picker stays simple.
+	 * The picker has no internal search input - the chatbot textarea is
+	 * the search surface, and `query` (what the user typed after `@`) is
+	 * sent to the filesystem search endpoint directly. Closes via Escape,
+	 * outside-click, or selection. The parent owns the "user dismissed
+	 * this token, don't re-open until it changes" snapshot so the picker
+	 * stays simple.
 	 */
 	interface Props {
 		class?: string;
@@ -35,7 +39,6 @@
 		scopePath?: string | null;
 		onClose: () => void;
 		onSelect: (entry: ApiFilesystemSearchEntry) => void;
-		onSearchChange?: (q: string) => void;
 	}
 
 	let {
@@ -45,39 +48,41 @@
 		customAnchor = null,
 		scopePath = null,
 		onClose,
-		onSelect,
-		onSearchChange
+		onSelect
 	}: Props = $props();
 
 	let queryResults = $state<ApiFilesystemSearchEntry[]>([]);
 	let isLoading = $state(false);
 	let searchError = $state<string | null>(null);
 	let hoveredIndex = $state(0);
+	// Bump on ArrowUp/ArrowDown only; mouse hover does NOT change this,
+	// so the list's auto-scroll never fires on hover (see
+	// `scrollTrigger` prop on ChatFormPickerList).
+	let scrollTrigger = $state(0);
 
-	// Mirror of the @<token> from the textarea. The textarea owns the
-	// canonical `query` prop (ChatForm re-reads it on every keystroke), so
-	// we also expose an editable header input here that lets the user
-	// refine the search from either surface. Edits here round-trip back
-	// through `onSearchChange` so the textarea's @<token> stays in sync.
-	let internalSearchQuery = $state('');
+	// Most-recently-picked entries (deduped, capped, persisted to
+	// localStorage). Surfaced when the user opens the picker with no
+	// characters typed after `@`, so they can re-use a file or folder
+	// without re-typing the search.
+	const recentMentions = $derived(recentMentionsStore.value);
 
-	// Mirror external -> internal. Updates whenever `query` changes (textarea
-	// typing, or the round-trip response from a previous propagation).
-	$effect(() => {
-		internalSearchQuery = query ?? '';
-	});
+	// What the list actually renders. Recents when the user has not
+	// typed anything after `@`, live search results otherwise.
+	const trimmedQuery = $derived((query ?? '').trim());
+	const isShowingRecents = $derived(trimmedQuery === '');
+	const displayedItems = $derived(isShowingRecents ? recentMentions : queryResults);
 
-	// Propagate internal -> external when the two diverge. Reads both
-	// signals so the effect re-runs after either move; the equality check
-	// below prevents feedback (a mirror write re-aligns both to the same
-	// value before the next run).
-	$effect(() => {
-		const internal = internalSearchQuery;
-		const external = query ?? '';
-		if (internal !== external) {
-			onSearchChange?.(internal);
-		}
-	});
+	// Empty-message policy:
+	//  - recents empty -> nudge them to start typing
+	//  - search error -> surface it (network / scope issues)
+	//  - search returned nothing -> "No matching files or folders"
+	const emptyMessage = $derived(
+		isShowingRecents
+			? 'Start typing to search files and folders'
+			: searchError
+				? `Search failed - ${searchError}`
+				: 'No matching files or folders'
+	);
 
 	// Drop stale responses when the user keeps typing; both an AbortController
 	// (cancels the network) and a sequence counter (covers the gap between
@@ -132,21 +137,42 @@
 
 	$effect(() => {
 		// Re-run whenever the search string changes (textarea reflects into
-		// `internalSearchQuery`, plus direct edits to the header input).
-		// Disabled endpoint short-circuits to a single zero-result sticky
-		// state so the user gets the "filesystem unavailable" message
-		// instead of a growing spinner.
-		const q = internalSearchQuery;
+		// `query` directly - no internal picker header input).
+		//
+		// Skeleton policy: the instant `q.trim()` has at least one
+		// character we flip `isLoading` to true synchronously, so the
+		// list renders the skeleton placeholder instead of the
+		// stale `queryResults` from a prior query (or the empty-state
+		// message). The empty-state is reserved for "API responded
+		// with no matches" once the request settles.
+		const q = query ?? '';
 		if (!isOpen) {
 			cancelSearch();
 			return;
 		}
 		if (endpointDisabled) {
+			cancelSearch();
 			queryResults = [];
 			isLoading = false;
 			searchError = null;
 			return;
 		}
+		const trimmed = q.trim();
+		if (!trimmed) {
+			// Empty query -> recents panel; nothing to fetch.
+			cancelSearch();
+			queryResults = [];
+			isLoading = false;
+			searchError = null;
+			return;
+		}
+		// Active query: skeleton appears instantly while the
+		// debounced request is in flight. Stale items from a prior
+		// query are cleared so the skeleton slots in cleanly.
+		cancelSearch();
+		queryResults = [];
+		isLoading = true;
+		searchError = null;
 		runSearch(q);
 	});
 
@@ -201,6 +227,10 @@
 	}
 
 	function handleSelect(entry: ApiFilesystemSearchEntry) {
+		// Bump to the front of the recent-mentions list before handing
+		// off so a re-pick of the same entry within the same mount
+		// already sees it at the top of the recents panel.
+		recentMentionsStore.add(entry);
 		onSelect(entry);
 		onClose();
 	}
@@ -208,7 +238,7 @@
 	export function handleKeydown(event: KeyboardEvent): boolean {
 		if (!isOpen) return false;
 
-		const results = queryResults;
+		const results = displayedItems;
 
 		if (event.key === 'Escape') {
 			event.preventDefault();
@@ -220,6 +250,7 @@
 			event.preventDefault();
 			if (results.length > 0) {
 				hoveredIndex = (hoveredIndex + 1) % results.length;
+				scrollTrigger++;
 			}
 			return true;
 		}
@@ -228,6 +259,7 @@
 			event.preventDefault();
 			if (results.length > 0) {
 				hoveredIndex = hoveredIndex === 0 ? results.length - 1 : hoveredIndex - 1;
+				scrollTrigger++;
 			}
 			return true;
 		}
@@ -289,18 +321,23 @@
 				to enable it.
 			</div>
 		{:else}
-			{@const trimmed = internalSearchQuery.trim()}
+			{#if isShowingRecents && recentMentions.length > 0}
+				<div
+					class="flex items-center justify-between px-4 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground"
+				>
+					<span>Recently used</span>
+				</div>
+			{/if}
+
 			<ChatFormPickerList
-				items={queryResults}
-				{isLoading}
+				items={displayedItems}
+				isLoading={isShowingRecents ? false : isLoading}
 				selectedIndex={hoveredIndex}
-				showSearchInput={true}
-				bind:searchQuery={internalSearchQuery}
-				searchPlaceholder="Search files..."
-				emptyMessage={searchError
-					? `Search failed - ${searchError}`
-					: 'No matching files or folders'}
+				showSearchInput={false}
+				searchQuery={query ?? ''}
+				{emptyMessage}
 				itemKey={(entry) => entry.type + ':' + entry.path}
+				{scrollTrigger}
 			>
 				{#snippet item(entry, index, isSelected)}
 					<ChatFormPickerListItem
@@ -341,7 +378,7 @@
 								</span>
 							</div>
 							<span class="min-w-0 flex-1 truncate font-mono text-left text-xs">
-								<HighlightedMatch text={displayPath(entry)} query={trimmed} />
+								<HighlightedMatch text={displayPath(entry)} query={trimmedQuery} />
 							</span>
 						</div>
 					</ChatFormPickerListItem>

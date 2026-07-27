@@ -1,0 +1,279 @@
+/**
+ * Tokenizer for the chat-form contenteditable input.
+ *
+ * The chat input renders some user-typed segments as plain text and
+ * others (`[name](file://...)` markdown links produced by the @
+ * picker) as inline badge chips. This module owns the two-way
+ * mapping between the underlying markdown source string and a flat
+ * token stream the DOM is built from.
+ *
+ * Hard rules that the invariants below rely on:
+ *
+ * 1. A badge span's own inner DOM (`<svg>`, label `<span>`, inner
+ *    text) must NEVER be observed as input source. The badge's
+ *    inner text length is NOT the badge's source length; a chip
+ *    labelled "chat" can represent `[chat](file://long/path)` in
+ *    the source. An earlier version of `serializeContent` walked
+ *    the badge's subtree and emitted the inner label AS PART OF
+ *    the source, producing a `[chip ChatForm.svelte] ChatForm.svelte`
+ *    leak in the read-only user bubble. The current impl iterates
+ *    `root.childNodes` only and treats each badge as one opaque
+ *    contribution.
+ *
+ * 2. Anything inside a badge subtree is invisible to source/diff
+ *    math. The badge root contributes `[name](file://path)` and
+ *    nothing else; its descendants (svg, label span, inner text)
+ *    are implementation detail that must not leak into source.
+ *
+ * 3. `textOffsetToRange` cannot place the caret inside a badge
+ *    (the badge is `contenteditable=false`). We collapse to the
+ *    nearest editable edge (`setStartBefore` / `setStartAfter`)
+ *    so the user-visible caret lands cleanly.
+ */
+
+import {
+	MENTION_BADGE_CLASSNAME,
+	MENTION_BADGE_FOLDER_D,
+	MENTION_BADGE_ICON_CLASSNAME
+} from './mention-badge';
+
+export type ContentToken = { kind: 'text'; text: string } | { kind: 'badge'; name: string; path: string };
+
+/**
+ * Recognize completed `[name](file://path)` insertions across the buffer.
+ *
+ * - `file://` is required so a normal web link like `[foo](https://...)`
+ *   is left untouched in the stream.
+ * - The bracket-name forbids `]` and the path forbids whitespace + `)`;
+ *   this is the same shape `handleMentionSelect` emits from the picker.
+ * - The match consumes the markdown link only; any trailing whitespace
+ *   typed or pasted after stays in a separate text token so the
+ *   round trip is byte-exact.
+ */
+const MENTION_BADGE_RE = /\[([^\]\n]+?)\]\(file:\/\/([^\s\)\n]+)\)/g;
+
+/**
+ * Compute the byte-length contribution of one badge in source form.
+ * Centralized so `serializeContent`, `rangeToTextOffset` and
+ * `textOffsetToRange` agree on what counts; otherwise math of
+ * `caret offset -> markdown offset` silently breaks.
+ */
+function badgeSourceLength(name: string, path: string): number {
+	if (!name || !path) return 0;
+	return `[${name}](file://${path})`.length;
+}
+
+/**
+ * Tokenize a markdown source value into the segments the
+ * contenteditable will render. Plain text and badges interleave in
+ * source order. Any whitespace after a badge stays in a plain
+ * text token so the round trip is byte-exact.
+ */
+export function tokenizeContent(input: string): ContentToken[] {
+	const tokens: ContentToken[] = [];
+	let cursor = 0;
+	MENTION_BADGE_RE.lastIndex = 0;
+
+	let match: RegExpExecArray | null;
+	while ((match = MENTION_BADGE_RE.exec(input)) !== null) {
+		const [whole, name, path] = match;
+		const start = match.index;
+
+		if (start > cursor) {
+			tokens.push({ kind: 'text', text: input.slice(cursor, start) });
+		}
+
+		tokens.push({ kind: 'badge', name, path });
+		cursor = start + whole.length;
+	}
+
+	if (cursor < input.length) {
+		tokens.push({ kind: 'text', text: input.slice(cursor) });
+	}
+
+	return tokens;
+}
+
+/**
+ * Serialize a contenteditable subtree back to markdown source form.
+ *
+ * Iterates `root.childNodes` directly so a badge is one opaque
+ * contribution: its descendants are NEVER walked. This is the
+ * primitive guarantee that fixes the duplication bug. Text nodes
+ * (direct children) contribute their textContent verbatim. Any
+ * non-text, non-badge element is skipped (defensive - the
+ * contenteditable root should not contain anything else by
+ * construction, but browsers can inject wrappers in some edit
+ * scenarios and we don't want those to leak into the source).
+ */
+export function serializeContent(root: HTMLElement): string {
+	let out = '';
+
+	for (const child of Array.from(root.childNodes)) {
+		if (child.nodeType === Node.TEXT_NODE) {
+			out += child.textContent ?? '';
+			continue;
+		}
+
+		if (child.nodeType !== Node.ELEMENT_NODE) continue;
+
+		const el = child as HTMLElement;
+		if (el.dataset.mentionBadge !== 'true') continue;
+
+		const name = el.dataset.mentionName ?? '';
+		const path = el.dataset.mentionPath ?? '';
+		if (name && path) {
+			out += `[${name}](file://${path})`;
+		}
+	}
+
+	return out;
+}
+
+/**
+ * Compute the plain-text character offset of a `Range` anchored
+ * inside the contenteditable root. Used to capture caret position
+ * before any DOM rebuild so we can restore it after.
+ *
+ * If `range` is null (selection lost during teardown) the position
+ * falls back to buffer length. The body walks `tmp.childNodes`
+ * only, so badges contribute their full source length, not their
+ * visible label width. `cloneContents()` truncates the trailing
+ * text node properly via the browser's range semantics, so its
+ * `textContent` is the buffer length up to and including the caret.
+ */
+export function rangeToTextOffset(root: HTMLElement, range: Range | null): number {
+	if (!range) return serializeContent(root).length;
+
+	const pre = range.cloneRange();
+	pre.selectNodeContents(root);
+	pre.setEnd(range.endContainer, range.endOffset);
+
+	const tmp = document.createElement('div');
+	tmp.appendChild(pre.cloneContents());
+
+	let total = 0;
+	for (const child of Array.from(tmp.childNodes)) {
+		if (child.nodeType === Node.TEXT_NODE) {
+			total += (child.textContent ?? '').length;
+			continue;
+		}
+
+		if (child.nodeType !== Node.ELEMENT_NODE) continue;
+
+		const el = child as HTMLElement;
+		if (el.dataset.mentionBadge !== 'true') continue;
+
+		total += badgeSourceLength(el.dataset.mentionName ?? '', el.dataset.mentionPath ?? '');
+	}
+
+	return total;
+}
+
+/**
+ * Materialize a single token stream into a freshly-built DOM subtree
+ * suitable for inserting in place of the live contenteditable body.
+ * The returned fragment contains plain text nodes for text tokens
+ * and `<span data-mention-badge="true">` elements for badges. The
+ * badge's class string + inline folder SVG mirror
+ * `MentionBadge.svelte` exactly; Tailwind scans both and gets the
+ * same style applied.
+ */
+export function buildFragment(tokens: ContentToken[]): DocumentFragment {
+	const fragment = document.createDocumentFragment();
+
+	for (const token of tokens) {
+		if (token.kind === 'text') {
+			fragment.appendChild(document.createTextNode(token.text));
+			continue;
+		}
+
+		const badge = document.createElement('span');
+		badge.dataset.mentionBadge = 'true';
+		badge.dataset.mentionName = token.name;
+		badge.dataset.mentionPath = token.path;
+		badge.title = token.path;
+		badge.className = MENTION_BADGE_CLASSNAME;
+		badge.contentEditable = 'false';
+
+		// Folder icon - matches lucide-svelte's `<Folder />` so the
+		// DOM-built badge is visually identical to MentionBadge.svelte.
+		const SVG_NS = 'http://www.w3.org/2000/svg';
+		const svg = document.createElementNS(SVG_NS, 'svg');
+		svg.setAttribute('viewBox', '0 0 24 24');
+		svg.setAttribute('fill', 'none');
+		svg.setAttribute('stroke', 'currentColor');
+		svg.setAttribute('stroke-width', '2');
+		svg.setAttribute('stroke-linecap', 'round');
+		svg.setAttribute('stroke-linejoin', 'round');
+		svg.setAttribute('aria-hidden', 'true');
+		for (const cls of MENTION_BADGE_ICON_CLASSNAME.split(/\s+/).filter(Boolean)) {
+			svg.classList.add(cls);
+		}
+
+		const path = document.createElementNS(SVG_NS, 'path');
+		path.setAttribute('d', MENTION_BADGE_FOLDER_D);
+		svg.appendChild(path);
+
+		const label = document.createElement('span');
+		label.classList.add('shrink-0', 'truncate');
+		label.textContent = token.name;
+
+		badge.appendChild(svg);
+		badge.appendChild(label);
+		fragment.appendChild(badge);
+	}
+
+	return fragment;
+}
+
+/**
+ * Translate a plain-text character offset into a `Range` placed at
+ * that position in the DOM. Returns a degenerate range (collapsed
+ * to a single point). Out-of-range `offset` clamps to buffer end.
+ *
+ * Inside a badge we cannot land caret, so the offset resolves to
+ * one of the two badge edges: zero offset lands BEFORE the badge,
+ * any positive source offset lands AFTER. This matches the
+ * visible-edit behavior the user expects from a non-editable
+ * inline element.
+ */
+export function textOffsetToRange(root: HTMLElement, offset: number): Range {
+	const range = document.createRange();
+	let remaining = offset;
+
+	for (const child of Array.from(root.childNodes)) {
+		if (child.nodeType === Node.TEXT_NODE) {
+			const text = child.textContent ?? '';
+			if (remaining <= text.length) {
+				range.setStart(child, remaining);
+				range.setEnd(child, remaining);
+				return range;
+			}
+			remaining -= text.length;
+			continue;
+		}
+
+		if (child.nodeType !== Node.ELEMENT_NODE) continue;
+
+		const el = child as HTMLElement;
+		if (el.dataset.mentionBadge !== 'true') continue;
+
+		const badgeLen = badgeSourceLength(el.dataset.mentionName ?? '', el.dataset.mentionPath ?? '');
+		if (remaining <= badgeLen) {
+			if (remaining === 0) {
+				range.setStartBefore(el);
+				range.setEndBefore(el);
+			} else {
+				range.setStartAfter(el);
+				range.setEndAfter(el);
+			}
+			return range;
+		}
+		remaining -= badgeLen;
+	}
+
+	range.selectNodeContents(root);
+	range.collapse(false);
+	return range;
+}

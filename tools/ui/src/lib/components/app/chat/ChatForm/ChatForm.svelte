@@ -2,6 +2,7 @@
 	import {
 		ChatAttachmentsList,
 		ChatFormActions,
+		ChatFormContenteditable,
 		ChatFormFileInputInvisible,
 		ChatFormMcpResourcesList,
 		ChatFormPickers,
@@ -40,6 +41,7 @@
 		pendingWorkingDirectory
 	} from '$lib/stores/conversations.svelte';
 	import { defaultBrowseRootPath } from '$lib/stores/browse-roots.svelte';
+	import { recentMentionsStore } from '$lib/stores/recent-mentions.svelte';
 	import type {
 		ApiFilesystemSearchEntry,
 		GetPromptResult,
@@ -48,6 +50,7 @@
 		PromptMessage
 	} from '$lib/types';
 	import {
+		containsFileMentionLink,
 		findMentionToken,
 		isIMEComposing,
 		lastPathSegment,
@@ -112,12 +115,31 @@
 	}: Props = $props();
 
 	// Component References
+	// Component handle shared by both the simple textarea and the
+	// contenteditable variant - both expose the same surface (focus,
+	// resetHeight, getElement, getCaretOffset, setCaretOffset).
+	type ChatInputHandle = {
+		focus(): void;
+		resetHeight(): void;
+		getElement(): HTMLElement | undefined;
+		getCaretOffset(): number;
+		setCaretOffset(offset: number): void;
+	};
+
 	let audioRecorder: AudioRecorder | undefined;
 	let chatFormActionsRef: ChatFormActions | undefined = $state(undefined);
 	let fileInputRef: ChatFormFileInputInvisible | undefined = $state(undefined);
 	let pickersRef: { handleKeydown: (event: KeyboardEvent) => boolean } | undefined =
 		$state(undefined);
-	let textareaRef: ChatFormTextarea | undefined = $state(undefined);
+	let inputRef: ChatInputHandle | undefined = $state(undefined);
+
+	// One-way promotion gate: render the simple textarea by default,
+	// swap in the contenteditable once a `file://` markdown link lands
+	// in the buffer. The promotion is sticky for the lifetime of the
+	// composition - backspacing every file link out does NOT demote,
+	// preventing the swap-thrash that comes from a textarea tearing
+	// down and remounting mid-edit.
+	let useContenteditable = $state(false);
 
 	// Audio Recording State
 	let isRecording = $state(false);
@@ -222,17 +244,70 @@
 	);
 	let canSubmit = $derived(value.trim().length > 0 || hasAttachments);
 
+	// Capture the caret offset before a swap from textarea to
+	// contenteditable happens, so we can restore it after the new
+	// component mounts. We capture on the `false` -> `true` edge
+	// only (see the promotion $effect below).
+	//
+	// Callers that mutate `value` themselves (e.g. the mention picker
+	// splicing in `[name](file://path)`) pin this BEFORE the value
+	// assignment so the post-swap caret restore uses their target.
+	// The promotion $effect falls back to the current caret only
+	// when no caller has pinned an explicit offset.
+	let pendingCaretOffset = 0;
+	let caretOffsetPinned = false;
+
+	// Render-mode selector: promote to the contenteditable when the
+	// value carries a `file://`-mention link, demote to the plain
+	// textarea when it doesn't any longer. Both transitions share
+	// the caret handling below so the cursor position survives the
+	// mode swap.
+	$effect(() => {
+		const wantContenteditable = containsFileMentionLink(value ?? '');
+		if (useContenteditable === wantContenteditable) return;
+
+		// Pin (set by the mention picker) wins; otherwise snapshot the
+		// current caret from whatever renderer is mounted. Source-text
+		// and UTF-16 coordinates agree on mention-badge lengths
+		// (`[name](file://path)` per badge), so a caret captured on
+		// the contenteditable maps cleanly onto the textarea's
+		// selectionStart.
+		if (!caretOffsetPinned) {
+			pendingCaretOffset = inputRef?.getCaretOffset() ?? (value ?? '').length;
+		}
+
+		useContenteditable = wantContenteditable;
+	});
+
+	// Caret-restore: fires whenever useContenteditable actually flips.
+	// Skip the initial baseline run so freshly-mounted forms don't
+	// queue a redundant caret set against an already-focused input
+	// (the textarea's onMount already focuses).
+	let sawTransition = false;
+	$effect(() => {
+		void useContenteditable;
+		if (!sawTransition) {
+			sawTransition = true;
+			return;
+		}
+		queueMicrotask(() => {
+			inputRef?.focus();
+			inputRef?.setCaretOffset(pendingCaretOffset);
+			caretOffsetPinned = false;
+		});
+	});
+
 	onMount(() => {
 		recordingSupported = isAudioRecordingSupported();
 		audioRecorder = new AudioRecorder();
 	});
 
 	export function focus() {
-		textareaRef?.focus();
+		inputRef?.focus();
 	}
 
 	export function resetTextareaHeight() {
-		textareaRef?.resetHeight();
+		inputRef?.resetHeight();
 	}
 
 	export function openModelSelector() {
@@ -269,7 +344,7 @@
 	function handleInput() {
 		const perChatOverrides = conversationsStore.getAllMcpServerOverrides();
 		const hasServers = mcpStore.hasEnabledServers(perChatOverrides);
-		const cursor = textareaRef?.getElement()?.selectionStart ?? value.length;
+		const cursor = inputRef?.getCaretOffset() ?? value.length;
 
 		if (value.startsWith(PROMPT_TRIGGER_PREFIX) && hasServers) {
 			isPromptPickerOpen = true;
@@ -290,12 +365,24 @@
 					mentionDismissedSnapshot.query === token.query;
 
 				if (!isDismissedSticky) {
-					mentionDismissedSnapshot = null;
-					isMentionPickerOpen = true;
-					mentionQuery = token.query;
-					isPromptPickerOpen = false;
-					promptSearchQuery = '';
-					return;
+					// Show the picker only if it can actually render something
+					// useful: either the user has typed at least one
+					// character after `@` (live search), or we've previously
+					// picked at least one file/folder (recents surface). A
+					// bare `@` with no recents is a no-op - re-typing into
+					// the token would otherwise flash an empty "start
+					// typing…" hint before the user types anything.
+					const haveRecents = recentMentionsStore.value.length > 0;
+					const haveQuery = token.query.length > 0;
+
+					if (haveRecents || haveQuery) {
+						mentionDismissedSnapshot = null;
+						isMentionPickerOpen = true;
+						mentionQuery = token.query;
+						isPromptPickerOpen = false;
+						promptSearchQuery = '';
+						return;
+					}
 				}
 			}
 
@@ -396,7 +483,7 @@
 				}
 
 				setTimeout(() => {
-					textareaRef?.focus();
+					inputRef?.focus();
 				}, 10);
 
 				return;
@@ -448,7 +535,7 @@
 
 		uploadedFiles = [...uploadedFiles, placeholder];
 		onUploadedFilesChange?.(uploadedFiles);
-		textareaRef?.focus();
+		inputRef?.focus();
 	}
 
 	function handlePromptLoadComplete(placeholderId: string, result: GetPromptResult) {
@@ -493,7 +580,7 @@
 	function handlePromptPickerClose() {
 		isPromptPickerOpen = false;
 		promptSearchQuery = '';
-		textareaRef?.focus();
+		inputRef?.focus();
 	}
 
 	/**
@@ -505,7 +592,7 @@
 	 */
 	function handleMentionPickerClose() {
 		if (isMentionPickerOpen) {
-			const cursor = textareaRef?.getElement()?.selectionStart ?? value.length;
+			const cursor = inputRef?.getCaretOffset() ?? value.length;
 			mentionDismissedSnapshot = takeMentionDismissSnapshot(value, cursor);
 		}
 		isMentionPickerOpen = false;
@@ -528,58 +615,29 @@
 	 * rather than being interpreted as a file with no extension.
 	 */
 	function handleMentionSelect(entry: ApiFilesystemSearchEntry) {
-		const cursor = textareaRef?.getElement()?.selectionStart ?? value.length;
+		const cursor = inputRef?.getCaretOffset() ?? value.length;
 		const token = findMentionToken(value, cursor);
 		if (!token) return;
 
-		const basename = lastPathSegment(entry.path) || entry.name;
-		const pathWithSeparator = entry.type === 'directory' ? `${entry.path}/` : entry.path;
+		// Strip trailing `/` so that entry.path (which already ends
+		// in `/` for directories per the filesystem service) does
+		// not get a second `/` appended below. The directory marker
+		// is then re-added deterministically.
+		const cleanedPath = entry.path.replace(/\/+$/, '');
+		const pathWithSeparator = entry.type === 'directory' ? `${cleanedPath}/` : cleanedPath;
+		const basename = lastPathSegment(cleanedPath) || entry.name;
 		const insertion = `[${basename}](file://${pathWithSeparator}) `;
 		const newValue = value.slice(0, token.start) + insertion + value.slice(token.end);
-		const cursorOffset = token.start + insertion.length;
+
+		// Pin the post-insertion caret offset BEFORE the swap effect
+		// runs; otherwise the effect would clobber it with whatever
+		// the textarea's selection was at promotion time (browser-
+		// dependent: usually reset to 0).
+		pendingCaretOffset = token.start + insertion.length;
+		caretOffsetPinned = true;
 
 		value = newValue;
 		onValueChange?.(newValue);
-
-		// Place the caret right after the trailing space we just inserted.
-		queueMicrotask(() => {
-			textareaRef?.getElement()?.setSelectionRange(cursorOffset, cursorOffset);
-		});
-	}
-
-	/**
-	 * Round-trip handler for edits made INSIDE the mention picker's search
-	 * header. Picks up whatever the picker refined `internalSearchQuery` to
-	 * and splices it back into the textarea in place of the existing
-	 * `@<token>` query part. Mirrors the cursor/handleMentionSelect logic
-	 * so the caret stays at the end of the token the moment the splice
-	 * settles.
-	 *
-	 * If the token has vanished (e.g. user deleted the `@` while focus
-	 * was elsewhere), the handler bails instead of guessing where the new
-	 * token belongs - the next `handleInput` cycle will reopen the picker
-	 * cleanly if the user re-types `@`.
-	 */
-	function handleMentionSearchChange(newQuery: string) {
-		const cursor = textareaRef?.getElement()?.selectionStart ?? value.length;
-		const token = findMentionToken(value, cursor);
-		if (!token) return;
-
-		// Only splice when the actual query portion changed; a no-op ping
-		// would still touch the textarea state via `value =` even though
-		// the observable values are identical.
-		if (token.query === newQuery) return;
-
-		const newValue = value.slice(0, token.start + 1) + newQuery + value.slice(token.end);
-		const cursorOffset = token.start + 1 + newQuery.length;
-
-		value = newValue;
-		mentionQuery = newQuery;
-		onValueChange?.(newValue);
-
-		queueMicrotask(() => {
-			textareaRef?.getElement()?.setSelectionRange(cursorOffset, cursorOffset);
-		});
 	}
 
 	async function handleMicClick() {
@@ -633,7 +691,6 @@
 		onPromptPickerClose={handlePromptPickerClose}
 		onMentionPickerClose={handleMentionPickerClose}
 		onMentionSelect={handleMentionSelect}
-		onMentionSearchChange={handleMentionSearchChange}
 		onPromptLoadStart={handlePromptLoadStart}
 		onPromptLoadComplete={handlePromptLoadComplete}
 		onPromptLoadError={handlePromptLoadError}
@@ -665,18 +722,35 @@
 			class="flex-column relative min-h-12 items-center rounded-4xl md:rounded-3xl py-2 pb-2.25 shadow-sm transition-all focus-within:shadow-md md:py-3!"
 			onpaste={handlePaste}
 		>
-			<ChatFormTextarea
-				class="px-5 py-1.5 md:pt-0"
-				bind:this={textareaRef}
-				bind:value
-				onKeydown={handleKeydown}
-				onInput={() => {
-					handleInput();
-					onValueChange?.(value);
-				}}
-				{disabled}
-				{placeholder}
-			/>
+			{#if useContenteditable}
+				<ChatFormContenteditable
+					class="px-5 py-1.5 md:pt-0"
+					bind:this={inputRef}
+					bind:value
+					onKeydown={handleKeydown}
+					onInput={() => {
+						handleInput();
+						onValueChange?.(value);
+					}}
+					onPaste={handlePaste}
+					{disabled}
+					{placeholder}
+				/>
+			{:else}
+				<ChatFormTextarea
+					class="px-5 py-1.5 md:pt-0"
+					bind:this={inputRef}
+					bind:value
+					onKeydown={handleKeydown}
+					onInput={() => {
+						handleInput();
+						onValueChange?.(value);
+					}}
+					onPaste={handlePaste}
+					{disabled}
+					{placeholder}
+				/>
+			{/if}
 
 			{#if mcpHasResourceAttachments()}
 				<ChatFormMcpResourcesList
