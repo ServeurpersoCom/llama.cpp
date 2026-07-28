@@ -315,6 +315,24 @@ class AgenticStore {
 		return { ...args, working_directory: wd };
 	}
 
+	// Resolve the effective builtin-tool args (working_directory injected) and,
+	// when injection changed them, record them back onto the stored tool call
+	// so rendering and future turns see what actually executed. sessionMessages
+	// shares the normalizedCalls reference.
+	private async applyWorkingDirectory(
+		normalizedCalls: AgenticToolCallList,
+		toolCall: AgenticToolCallList[number],
+		updateToolCallArguments?: (toolCalls: AgenticToolCallList) => Promise<void>
+	): Promise<Record<string, unknown>> {
+		const parsed = this.parseToolArguments(toolCall.function.arguments);
+		const args = this.injectWorkingDirectory(parsed);
+		if (args !== parsed) {
+			toolCall.function.arguments = JSON.stringify(args);
+			await updateToolCallArguments?.(normalizedCalls);
+		}
+		return args;
+	}
+
 	private async requestPermission(
 		conversationId: string,
 		toolName: string,
@@ -508,6 +526,7 @@ class AgenticStore {
 			onAssistantTurnComplete,
 			createToolResultMessage,
 			updateToolResultMessage,
+			updateToolCallArguments,
 			createAssistantMessage,
 			onFlowComplete,
 			onTimings,
@@ -823,8 +842,10 @@ class AgenticStore {
 							createToolResultMessage &&
 							updateToolResultMessage
 						) {
-							const args = this.injectWorkingDirectory(
-								this.parseToolArguments(toolCall.function.arguments)
+							const args = await this.applyWorkingDirectory(
+								normalizedCalls,
+								toolCall,
+								updateToolCallArguments
 							);
 							const msg = await createToolResultMessage(toolCall.id, '');
 							createdToolResultMessageId = msg.id;
@@ -848,8 +869,10 @@ class AgenticStore {
 							}
 							result = accumulated;
 						} else if (toolSource === ToolSource.BUILTIN) {
-							const args = this.injectWorkingDirectory(
-								this.parseToolArguments(toolCall.function.arguments)
+							const args = await this.applyWorkingDirectory(
+								normalizedCalls,
+								toolCall,
+								updateToolCallArguments
 							);
 							const executionResult = await ToolsService.executeTool(toolName, args, signal);
 

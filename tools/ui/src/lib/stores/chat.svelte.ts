@@ -1432,6 +1432,15 @@ class ChatStore {
 				}
 				await DatabaseService.updateMessage(messageId, updates);
 			},
+			updateToolCallArguments: async (toolCalls) => {
+				// currentMessageId is the current turn's assistant message here
+				const json = JSON.stringify(toolCalls);
+				await DatabaseService.updateMessage(currentMessageId, { toolCalls: json });
+				if (conversationsStore.activeConversation?.id === convId) {
+					const idx = conversationsStore.findMessageIndex(currentMessageId);
+					if (idx >= 0) conversationsStore.updateMessageAtIndex(idx, { toolCalls: json });
+				}
+			},
 			createAssistantMessage: async () => {
 				// Reset streaming state for new message
 				streamedContent = '';
