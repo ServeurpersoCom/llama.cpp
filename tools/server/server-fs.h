@@ -70,8 +70,12 @@ std::string resolve_path(
 
 // Walk `root` (canonical path of an existing directory) and populate `results`
 // with entries matching `opts`, ranked by match quality.
+// `root` must be inside `allowed_roots` (see resolve_path). A leading "~" in
+// the query expands to the user's home directory; an absolute query that
+// escapes `root` but lives under another allowed root re-roots the search.
 bool search(
         const std::string & root,
+        const std::vector<std::string> & allowed_roots,
         const search_options & opts,
         std::vector<search_entry> & results,
         std::string & err);

@@ -5139,7 +5139,7 @@ void server_routes::init_routes() {
         }
 
         std::vector<server_fs::search_entry> entries;
-        if (!server_fs::search(root, opts, entries, err)) {
+        if (!server_fs::search(root, roots, opts, entries, err)) {
             res->error(format_error_response(err, ERROR_TYPE_SERVER));
             return res;
         }

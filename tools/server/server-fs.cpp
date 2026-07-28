@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <system_error>
 
@@ -260,9 +261,25 @@ int classify_pathlike(const std::vector<std::string> & p_segs, const std::vector
     return worst_tier;
 }
 
-// Depth-limited iterative DFS from `root`, skipping junk dirs.
-void walk_root(const fs::path & root, int max_depth, std::vector<walk_entry> & out) {
+// Why a walk stops early.
+enum class walk_status { exhausted, match_capped, time_capped };
+
+// Hard bound on a single walk: a huge tree (default browse root is $HOME,
+// walked with hidden dirs at depth 16 by the mention picker) must not block
+// the endpoint - one request holds the walk mutex while it runs.
+constexpr int64_t WALK_TIME_BUDGET_MS = 1000;
+
+// Depth-limited iterative DFS from `root`, skipping junk dirs. `on_entry`
+// runs right after each entry lands in `out`; returning false stops the
+// walk (match cap). The walk also stops once the time budget elapses.
+void walk_root(
+        const fs::path & root,
+        int max_depth,
+        std::vector<walk_entry> & out,
+        const std::function<bool(const walk_entry &)> & on_entry,
+        walk_status & status) {
     out.clear();
+    status = walk_status::exhausted;
 
     struct frame {
         fs::path dir;
@@ -271,6 +288,9 @@ void walk_root(const fs::path & root, int max_depth, std::vector<walk_entry> & o
     };
     std::vector<frame> stack;
     stack.push_back({root, {}, false});
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(WALK_TIME_BUDGET_MS);
+    int since_clock_check = 0;
 
     std::error_code ec;
     while (!stack.empty()) {
@@ -314,6 +334,18 @@ void walk_root(const fs::path & root, int max_depth, std::vector<walk_entry> & o
             if (!tm_ec) we.modified = to_unix_seconds(mtime);
 
             out.push_back(std::move(we));
+            if (!on_entry(out.back())) {
+                status = walk_status::match_capped;
+                return;
+            }
+
+            if (++since_clock_check >= 256) {
+                since_clock_check = 0;
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    status = walk_status::time_capped;
+                    return;
+                }
+            }
 
             if (is_dir && (int) frame.segs.size() + 1 < max_depth) {
                 std::vector<std::string> child_segs = frame.segs;
@@ -328,6 +360,8 @@ void walk_root(const fs::path & root, int max_depth, std::vector<walk_entry> & o
 // keystroke) against a tree that rarely changes mid-burst, so a short TTL
 // turns repeat searches into match+sort only. The mutex also serializes
 // walks so concurrent requests cannot each trigger a full filesystem scan.
+// Entries may come from a time-capped walk: bursts then see one consistent
+// truncated snapshot instead of re-scanning the same prefix per keystroke.
 struct walk_cache {
     std::mutex mtx;
     std::string root;
@@ -344,6 +378,7 @@ constexpr int WALK_CACHE_TTL_MS = 3000;
 
 bool search(
         const std::string & root,
+        const std::vector<std::string> & allowed_roots,
         const search_options & opts,
         std::vector<search_entry> & results,
         std::string & err) {
@@ -351,31 +386,40 @@ bool search(
 
     std::lock_guard<std::mutex> lock(g_walk_cache.mtx);
 
+    std::string query = opts.query;
+
+    // "~" at the start of the query expands to the user's home directory
+    const std::string home = home_dir();
+    if (!home.empty() && (query == "~" || query.rfind("~/", 0) == 0 || query.rfind("~\\", 0) == 0)) {
+        query = home + query.substr(1);
+    }
+
+    // An absolute query that escapes the search root but lives under another
+    // allowed root re-roots the search there (e.g. "~/x" typed while a
+    // working directory scopes the search).
+    std::string eff_root = root;
+    const bool absolute_query = !query.empty() && (query[0] == '/' || query[0] == '\\');
+    if (absolute_query && !is_child_of(query, root)) {
+        for (const auto & r : allowed_roots) {
+            if (r != root && is_child_of(query, r)) {
+                eff_root = r;
+                break;
+            }
+        }
+    }
+
     std::error_code ec;
-    if (!fs::is_directory(root, ec) || ec) {
-        err = "not a directory: " + root;
+    if (!fs::is_directory(eff_root, ec) || ec) {
+        err = "not a directory: " + eff_root;
         return false;
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    const bool cache_fresh =
-        g_walk_cache.root == root &&
-        g_walk_cache.max_depth == opts.max_depth &&
-        now - g_walk_cache.time < std::chrono::milliseconds(WALK_CACHE_TTL_MS);
-    if (!cache_fresh) {
-        walk_root(root, opts.max_depth, g_walk_cache.entries);
-        g_walk_cache.root = root;
-        g_walk_cache.max_depth = opts.max_depth;
-        g_walk_cache.time = now;
-    }
-    const std::vector<walk_entry> & entries = g_walk_cache.entries;
-
-    std::vector<std::string> q_segs = split_query_on_slash(opts.query);
+    std::vector<std::string> q_segs = split_query_on_slash(query);
 
     // Absolute path-like query ("/Users/foo/proj"): strip the root prefix so
     // pasting a full path under the root matches like the relative form.
-    if (!opts.query.empty() && (opts.query[0] == '/' || opts.query[0] == '\\')) {
-        const std::vector<std::string> root_segs = split_query_on_slash(root);
+    if (absolute_query) {
+        const std::vector<std::string> root_segs = split_query_on_slash(eff_root);
         const bool under_root = q_segs.size() >= root_segs.size() &&
             std::equal(root_segs.begin(), root_segs.end(), q_segs.begin(),
                 [](const std::string & a, const std::string & b) {
@@ -386,38 +430,74 @@ bool search(
         }
     }
 
+    const int max_tier = opts.match == match_mode::prefix ? 1 : 2;
+
+    // -1 when the entry is filtered out, otherwise its match tier
+    const auto match_tier = [&](const walk_entry & we) {
+        if (opts.type == entry_type_filter::directory && !we.is_dir) return -1;
+        if (opts.type == entry_type_filter::file && we.is_dir) return -1;
+        if (!opts.show_hidden && we.hidden) return -1;
+        if (q_segs.empty()) return 0;
+        const int tier = q_segs.size() >= 2
+            ? classify_pathlike(we.segs, q_segs)
+            : classify_basename(we.name, q_segs[0]);
+        return tier > max_tier ? -1 : tier;
+    };
+
     struct scored {
         int tier;
         size_t idx;
     };
     std::vector<scored> matches;
+    std::vector<walk_entry> walked;
+    const std::vector<walk_entry> * entries = nullptr;
 
-    for (size_t i = 0; i < entries.size(); ++i) {
-        const walk_entry & we = entries[i];
+    const auto now = std::chrono::steady_clock::now();
+    const bool cache_fresh =
+        g_walk_cache.root == eff_root &&
+        g_walk_cache.max_depth == opts.max_depth &&
+        now - g_walk_cache.time < std::chrono::milliseconds(WALK_CACHE_TTL_MS);
 
-        if (opts.type == entry_type_filter::directory && !we.is_dir) continue;
-        if (opts.type == entry_type_filter::file && we.is_dir) continue;
-        if (!opts.show_hidden && we.hidden) continue;
-
-        int tier = 0;
-        if (!q_segs.empty()) {
-            if (q_segs.size() >= 2) {
-                tier = classify_pathlike(we.segs, q_segs);
-            } else {
-                tier = classify_basename(we.name, q_segs[0]);
-            }
-            const int max_tier = opts.match == match_mode::prefix ? 1 : 2;
-            if (tier > max_tier) continue;
+    if (cache_fresh) {
+        entries = &g_walk_cache.entries;
+        for (size_t i = 0; i < entries->size(); ++i) {
+            const int tier = match_tier((*entries)[i]);
+            if (tier >= 0) matches.push_back({tier, i});
         }
-
-        matches.push_back({tier, i});
+    } else {
+        // Match pool for ranking: big enough that partial_sort still has
+        // same-tier candidates, small enough that a common query over a huge
+        // tree returns without a full walk.
+        const size_t match_cap = (size_t) opts.limit * 4 + 32;
+        walk_status status;
+        walk_root(eff_root, opts.max_depth, walked,
+            [&](const walk_entry & we) {
+                const int tier = match_tier(we);
+                if (tier >= 0) matches.push_back({tier, walked.size() - 1});
+                return matches.size() < match_cap;
+            },
+            status);
+        if (status != walk_status::match_capped) {
+            // Cache only complete snapshots: a match-capped walk is cheap to
+            // redo, and caching it would hide entries from later queries.
+            // A time-capped walk is cached so a rare-query burst reuses the
+            // same truncated snapshot instead of re-scanning per keystroke.
+            g_walk_cache.root = eff_root;
+            g_walk_cache.max_depth = opts.max_depth;
+            g_walk_cache.time = now;
+            g_walk_cache.entries = std::move(walked);
+            entries = &g_walk_cache.entries;
+        } else {
+            entries = &walked;
+        }
     }
+    const std::vector<walk_entry> & ents = *entries;
 
     // rank: tier (exact < prefix < substring), then non-hidden, shallower
     // first, most recently modified, alphabetical (case-insensitive)
-    const auto cmp = [](const scored & a, const scored & b) {
-        const walk_entry & x = entries[a.idx];
-        const walk_entry & y = entries[b.idx];
+    const auto cmp = [&ents](const scored & a, const scored & b) {
+        const walk_entry & x = ents[a.idx];
+        const walk_entry & y = ents[b.idx];
         if (a.tier != b.tier) return a.tier < b.tier;
         if (x.hidden != y.hidden) return !x.hidden;
         if (x.depth != y.depth) return x.depth < y.depth;
@@ -433,7 +513,7 @@ bool search(
 
     results.reserve(matches.size());
     for (const auto & m : matches) {
-        const walk_entry & we = entries[m.idx];
+        const walk_entry & we = ents[m.idx];
         search_entry e;
         e.name     = we.name;
         e.path     = we.path;

@@ -33,13 +33,15 @@ def _git_available() -> bool:
     return shutil.which("git") is not None
 
 
-def _start_server(tools: bool = True, port: int = 8091) -> ServerProcess:
+def _start_server(tools: bool = True, port: int = 8091, env: dict | None = None) -> ServerProcess:
     srv = ServerPreset.router()
     srv.no_ui = True
     srv.server_port = port
     if tools:
         srv.server_tools = "all"
         srv.browse_root = ROOT
+    if env:
+        srv.env_extra = env
     srv.start()
     return srv
 
@@ -152,6 +154,48 @@ def test_search_absolute_path_query():
     assert res.status_code == 200
     names = [r["name"] for r in res.body["results"]]
     assert "main.cpp" in names
+
+
+def _start_home_server(port: int = 8093) -> ServerProcess:
+    # HOME pointed at the fixture tree so "~" queries resolve inside it
+    return _start_server(port=port, env={"HOME": ROOT, "USERPROFILE": ROOT})
+
+
+def test_search_tilde_expands_to_home():
+    server = _start_home_server()
+    res = _search(server, query="~")
+    assert res.status_code == 200
+    names = [r["name"] for r in res.body["results"]]
+    assert "project-alpha" in names
+    assert "project-beta" in names
+
+
+def test_search_tilde_pathlike_query():
+    server = _start_home_server()
+    res = _search(server, query="~/alpha/src/main")
+    assert res.status_code == 200
+    names = [r["name"] for r in res.body["results"]]
+    assert "main.cpp" in names
+
+
+def test_search_tilde_without_slash_not_expanded():
+    server = _start_home_server()
+    res = _search(server, query="~alpha")
+    assert res.status_code == 200
+    assert res.body["results"] == []
+
+
+def test_search_tilde_reroots_outside_context_path():
+    server = _start_home_server()
+    # scoped to project-alpha, but "~" must search from the browse root
+    res = _search(
+        server,
+        query="~",
+        path=os.path.join(os.path.realpath(server.browse_root), "project-alpha"),
+    )
+    assert res.status_code == 200
+    names = [r["name"] for r in res.body["results"]]
+    assert "project-beta" in names
 
 
 def test_search_limit():

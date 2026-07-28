@@ -1194,7 +1194,7 @@ Walks the resolved root directory and returns ranked matches. Entries under dire
 
 *Options:*
 
-`query`: (Required) Search text. A query containing `/` (e.g. `"src/main"`) matches its segments against successive path segments; otherwise it matches entry names.
+`query`: (Required) Search text. A query containing `/` (e.g. `"src/main"`) matches its segments against successive path segments; otherwise it matches entry names. A leading `~` expands to the user's home directory (e.g. `"~/src/main"`); an absolute query outside `path` re-roots the search to the browse root containing it.
 
 `path`: Optional context directory. When set, only entries inside it are returned. Must resolve inside a browse root, otherwise HTTP 400.
 
