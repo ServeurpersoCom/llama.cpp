@@ -43,13 +43,17 @@ export type ContentToken =
  *
  * - `file://` is required so a normal web link like `[foo](https://...)`
  *   is left untouched in the stream.
- * - The bracket-name forbids `]` and the path forbids whitespace + `)`;
- *   this is the same shape `handleMentionSelect` emits from the picker.
+ * - The path allows `)` only when it is not followed by whitespace or
+ *   `[` - this admits macOS paths like `Screenshot (1).png` and
+ *   folders named `Foo (Stuff)/bar` while still cutting the match
+ *   at the closing `)` of an adjacent badge (`[a](file:///p)[b]...`)
+ *   and at the link's actual end. This is the same shape
+ *   `handleMentionSelect` emits from the picker.
  * - The match consumes the markdown link only; any trailing whitespace
  *   typed or pasted after stays in a separate text token so the
  *   round trip is byte-exact.
  */
-const MENTION_BADGE_RE = /\[([^\]\n]+?)\]\(file:\/\/([^\s\)\n]+)\)/g;
+const MENTION_BADGE_RE = /\[([^\]\n]+?)\]\(file:\/\/((?:[^)\n]|\)(?![\s\[]))+)\)/g;
 
 /**
  * Compute the byte-length contribution of one badge in source form.

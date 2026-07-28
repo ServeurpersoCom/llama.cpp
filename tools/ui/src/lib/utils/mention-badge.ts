@@ -9,7 +9,11 @@
  * is what keeps the styles in sync without runtime mounting.
  */
 
-const FILE_MENTION_LINK = /\[([^\]\n]+?)\]\(file:\/\/[^\s\)\n]+\)/;
+// Recognizes `[name](file://path)` markdown mention links. The path allows
+// `)` only when not followed by whitespace or `[` so the closing `)` of an
+// adjacent badge still terminates the match, while macOS paths like
+// `Screenshot (1).png` and folders named `Foo (Stuff)/bar` parse correctly.
+const FILE_MENTION_LINK = /\[([^\]\n]+?)\]\(file:\/\/(?:[^)\n]|\)(?![\s\[]))+\)/;
 
 export function containsFileMentionLink(value: string): boolean {
 	return FILE_MENTION_LINK.test(value);
