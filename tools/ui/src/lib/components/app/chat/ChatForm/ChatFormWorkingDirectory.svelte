@@ -24,13 +24,22 @@
 		disabled?: boolean;
 		directory?: string | null;
 		onChange?: (directory: string | null) => void;
+		/**
+		 * Fired when the picker settles: after a pick (row click / Enter on
+		 * highlighted row / Enter on a typed-in path / Browse button / chip
+		 * X clear) and after a plain dismiss (Escape / outside-click).
+		 * Lets the host refocus the chat input so typing can resume without
+		 * an extra click on the textarea.
+		 */
+		onClose?: () => void;
 	}
 
 	let {
 		class: className = '',
 		disabled = false,
 		directory = $bindable(null),
-		onChange
+		onChange,
+		onClose
 	}: Props = $props();
 
 	// File System Access API is opt-in: when available (Chrome / Edge / Opera) the popover
@@ -207,10 +216,17 @@
 		}
 	}
 
+	// Single funnel for every local close so the host refocus fires
+	// regardless of which commit/dismiss path ended the interaction.
+	function closePicker() {
+		isOpen = false;
+		onClose?.();
+	}
+
 	function commit(entry: ApiFilesystemSearchEntry) {
 		directory = entry.path;
 		onChange?.(entry.path);
-		isOpen = false;
+		closePicker();
 	}
 
 	function setDirectory(value: string) {
@@ -249,7 +265,7 @@
 			const handle = await window.showDirectoryPicker();
 			const path = await resolveNativeName(handle.name);
 			setDirectory(path);
-			isOpen = false;
+			closePicker();
 		} catch (err) {
 			// user cancelled - silently ignore; other errors are logged
 			if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -260,11 +276,11 @@
 	function handleSubmit() {
 		const value = inputValue.trim();
 		if (!value) {
-			isOpen = false;
+			closePicker();
 			return;
 		}
 		setDirectory(value);
-		isOpen = false;
+		closePicker();
 	}
 
 	function handleKeydown(event: KeyboardEvent) {
@@ -346,7 +362,7 @@
 		event?.preventDefault();
 		directory = null;
 		onChange?.(null);
-		isOpen = false;
+		closePicker();
 	}
 
 	// Chip is always visible - the X just clears the picked directory and
@@ -375,6 +391,9 @@
 			void ensureBrowseRoots();
 		} else {
 			cancelSearch();
+			// bits-ui-initiated close (Escape on the content, outside-click,
+			// trigger toggle) - the only path that bypasses closePicker().
+			onClose?.();
 		}
 	}
 
@@ -499,7 +518,7 @@
 					bind:searchQuery={inputValue}
 					bind:inputRef={searchInputRef}
 					autofocus={true}
-					onSearchClose={() => (isOpen = false)}
+					onSearchClose={closePicker}
 					searchPlaceholder="Choose working directory"
 					emptyMessage={searchError
 						? `Search failed - ${searchError}`

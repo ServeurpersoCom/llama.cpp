@@ -177,6 +177,8 @@ export {
 	buildFragment,
 	rangeToTextOffset,
 	textOffsetToRange,
+	badgeAwareWordJump,
+	leadingBadgeEdgeOffset,
 	type ContentToken
 } from './contenteditable-tokenizer';
 

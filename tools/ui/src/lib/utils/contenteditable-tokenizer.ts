@@ -188,6 +188,14 @@ export function buildFragment(tokens: ContentToken[]): DocumentFragment {
 			continue;
 		}
 
+		// A leading badge gets an empty text node prepended: without a
+		// real text position at the buffer start, the spot before the
+		// badge is unreachable via keyboard (ArrowLeft/Home). The empty
+		// node serializes to nothing, so the round trip stays byte-exact.
+		if (!fragment.lastChild) {
+			fragment.appendChild(document.createTextNode(''));
+		}
+
 		const badge = document.createElement('span');
 		badge.dataset.mentionBadge = 'true';
 		badge.dataset.mentionName = token.name;
@@ -225,6 +233,89 @@ export function buildFragment(tokens: ContentToken[]): DocumentFragment {
 	}
 
 	return fragment;
+}
+
+const WORD_CHAR_RE = /[\p{L}\p{N}_]/u;
+
+/**
+ * Word-jump target (Option+Arrow / Ctrl+Arrow) in source offsets, or
+ * null when the jump crosses no badge and native word movement should
+ * handle it. Badge spans are masked to word characters and act as
+ * hard word-run boundaries, so a badge counts as exactly one word:
+ * native word iteration treats the non-editable badge element
+ * inconsistently and overshoots it by a full word in either direction.
+ */
+export function badgeAwareWordJump(
+	source: string,
+	offset: number,
+	direction: 'forward' | 'backward'
+): number | null {
+	let masked = '';
+	const badgeSpans: Array<[number, number]> = [];
+
+	for (const token of tokenizeContent(source)) {
+		const len =
+			token.kind === 'badge' ? badgeSourceLength(token.name, token.path) : token.text.length;
+		if (token.kind === 'badge') badgeSpans.push([masked.length, masked.length + len]);
+		masked += token.kind === 'badge' ? 'a'.repeat(len) : token.text;
+	}
+
+	if (badgeSpans.length === 0) return null;
+
+	const isWord = (index: number) => WORD_CHAR_RE.test(masked[index]);
+	const spanStartingAt = (index: number) => badgeSpans.find(([start]) => start === index);
+	const spanEndingAt = (index: number) => badgeSpans.find(([, end]) => end === index);
+	const n = masked.length;
+	let i = offset;
+
+	if (direction === 'forward') {
+		// Skip non-word run when starting outside a word, then skip the
+		// word run itself. Entering a badge completes the word phase at
+		// the badge's end edge.
+		if (!(i < n && isWord(i))) {
+			while (i < n && !isWord(i)) i++;
+		}
+		while (i < n && isWord(i)) {
+			const span = spanStartingAt(i);
+			if (span) {
+				i = span[1];
+				break;
+			}
+			i++;
+		}
+	} else {
+		if (!(i > 0 && isWord(i - 1))) {
+			while (i > 0 && !isWord(i - 1)) i--;
+		}
+		while (i > 0 && isWord(i - 1)) {
+			const span = spanEndingAt(i);
+			if (span) {
+				i = span[0];
+				break;
+			}
+			i--;
+		}
+	}
+
+	if (i === offset) return null;
+
+	const lo = Math.min(offset, i);
+	const hi = Math.max(offset, i);
+	return badgeSpans.some(([start, end]) => start < hi && end > lo) ? i : null;
+}
+
+/**
+ * Returns 0 when `caret` sits exactly at a leading badge's end edge,
+ * null otherwise. Plain ArrowLeft at that spot has no native previous
+ * position (the buffer starts with a non-editable element), so the
+ * host snaps the caret to the buffer start manually. Covers post-edit
+ * states where the leading pad from `buildFragment` is gone (e.g. the
+ * user deleted the text before a mid-text badge).
+ */
+export function leadingBadgeEdgeOffset(source: string, caret: number): number | null {
+	const [first] = tokenizeContent(source);
+	if (!first || first.kind !== 'badge') return null;
+	return caret === badgeSourceLength(first.name, first.path) ? 0 : null;
 }
 
 /**

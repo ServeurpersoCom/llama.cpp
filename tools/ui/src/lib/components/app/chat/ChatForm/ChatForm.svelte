@@ -577,10 +577,17 @@
 		onUploadedFilesChange?.(uploadedFiles);
 	}
 
+	// Refocus the chat input after a picker closes. Deferred so the
+	// closing popover's focus scope tears down first - bits-ui yanks a
+	// synchronous focus() back into the still-mounted popover.
+	function refocusInput() {
+		queueMicrotask(() => inputRef?.focus());
+	}
+
 	function handlePromptPickerClose() {
 		isPromptPickerOpen = false;
 		promptSearchQuery = '';
-		inputRef?.focus();
+		refocusInput();
 	}
 
 	/**
@@ -597,6 +604,7 @@
 		}
 		isMentionPickerOpen = false;
 		mentionQuery = '';
+		refocusInput();
 	}
 
 	/**
@@ -638,6 +646,16 @@
 
 		value = newValue;
 		onValueChange?.(newValue);
+
+		// Already in contenteditable mode: this insert does not flip the
+		// renderer, so the swap effect's focus/caret restore never runs.
+		if (useContenteditable) {
+			queueMicrotask(() => {
+				inputRef?.focus();
+				inputRef?.setCaretOffset(pendingCaretOffset);
+				caretOffsetPinned = false;
+			});
+		}
 	}
 
 	async function handleMicClick() {
@@ -690,6 +708,7 @@
 		scopePath={mentionScopePath}
 		onPromptPickerClose={handlePromptPickerClose}
 		onMentionPickerClose={handleMentionPickerClose}
+		onMentionOpened={() => inputRef?.focus()}
 		onMentionSelect={handleMentionSelect}
 		onPromptLoadStart={handlePromptLoadStart}
 		onPromptLoadComplete={handlePromptLoadComplete}
@@ -788,6 +807,7 @@
 	<ChatFormWorkingDirectory
 		directory={workingDirectory}
 		onChange={handleWorkingDirectoryChange}
+		onClose={refocusInput}
 		{disabled}
 	/>
 </form>

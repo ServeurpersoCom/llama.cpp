@@ -39,6 +39,14 @@
 		scopePath?: string | null;
 		onClose: () => void;
 		onSelect: (entry: ApiFilesystemSearchEntry) => void;
+		/**
+		 * Fired when `isOpen` becomes true. The chat textarea is the
+		 * picker's "search input", so the host focuses it here to keep
+		 * the chain `typed @ -> picker open -> still typing` continuous
+		 * even if focus drifted (e.g. closed via outside-click on the
+		 * chip trigger the next time the picker re-opens).
+		 */
+		onOpened?: () => void;
 	}
 
 	let {
@@ -48,7 +56,8 @@
 		customAnchor = null,
 		scopePath = null,
 		onClose,
-		onSelect
+		onSelect,
+		onOpened
 	}: Props = $props();
 
 	let queryResults = $state<ApiFilesystemSearchEntry[]>([]);
@@ -133,6 +142,15 @@
 		if (isOpen) {
 			hoveredIndex = 0;
 		}
+	});
+
+	// Fire `onOpened()` whenever the picker transitions to open. Keeps
+	// focus on the chat form textarea so typing after `@` flows naturally;
+	// reading only `isOpen` makes `onOpened` itself opaque to the
+	// reactive system, so hover / query churn cannot cause re-focus
+	// storms while the picker is already open.
+	$effect(() => {
+		if (isOpen) onOpened?.();
 	});
 
 	$effect(() => {
@@ -307,6 +325,7 @@
 		{customAnchor}
 		onkeydown={handleKeydown}
 		onOpenAutoFocus={(event) => event.preventDefault()}
+		onCloseAutoFocus={(event) => event.preventDefault()}
 		class={[
 			'w-[var(--bits-popover-anchor-width)] max-w-none rounded-xl border-border/50 p-0 shadow-xl',
 			className

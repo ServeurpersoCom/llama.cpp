@@ -2,7 +2,9 @@
 	import { onMount, untrack } from 'svelte';
 	import { isMobile } from '$lib/stores/viewport.svelte';
 	import {
+		badgeAwareWordJump,
 		buildFragment,
+		leadingBadgeEdgeOffset,
 		rangeToTextOffset,
 		serializeContent,
 		tokenizeContent,
@@ -98,12 +100,22 @@
 		return range;
 	}
 
-	function restoreCaret(offset: number) {
+	function restoreCaret(offset: number, extend = false) {
 		if (!rootElement) return;
 
 		const target = textOffsetToRange(rootElement, offset);
 		const selection = window.getSelection();
 		if (!selection) return;
+
+		if (extend && selection.anchorNode) {
+			selection.setBaseAndExtent(
+				selection.anchorNode,
+				selection.anchorOffset,
+				target.startContainer,
+				target.startOffset
+			);
+			return;
+		}
 
 		selection.removeAllRanges();
 		selection.addRange(target);
@@ -164,12 +176,40 @@
 	 *
 	 * Tab is intercepted locally so focus order is predictable
 	 * without escaping the form area.
+	 *
+	 * ArrowLeft/ArrowRight around mention badges are repaired locally
+	 * because the badge is a non-editable island: plain ArrowLeft
+	 * exactly after a leading badge has no native previous position,
+	 * and word jumps (macOS Option+Arrow, Windows/Linux Ctrl+Arrow)
+	 * overshoot the badge by a word. Targets are computed in source
+	 * offsets where each badge counts as exactly one word.
 	 */
 	function handleKeydown(event: KeyboardEvent) {
 		if (event.key === 'Tab') {
 			event.preventDefault();
 			return;
 		}
+
+		if (rootElement && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+			const isWordJump = (event.altKey || event.ctrlKey) && !event.metaKey;
+			const isPlainLeft =
+				event.key === 'ArrowLeft' && !event.altKey && !event.ctrlKey && !event.metaKey;
+
+			if (isWordJump || isPlainLeft) {
+				const source = serializeContent(rootElement);
+				const caret = rangeToTextOffset(rootElement, safeRange());
+				const target = isWordJump
+					? badgeAwareWordJump(source, caret, event.key === 'ArrowRight' ? 'forward' : 'backward')
+					: leadingBadgeEdgeOffset(source, caret);
+
+				if (target !== null) {
+					event.preventDefault();
+					restoreCaret(target, event.shiftKey);
+					return;
+				}
+			}
+		}
+
 		onKeydown?.(event);
 	}
 
@@ -189,7 +229,25 @@
 		const pasted = event.clipboardData?.getData('text/plain');
 		if (pasted && pasted.length > 0) {
 			event.preventDefault();
+
+			// Snap a collapsed caret through the offset mapping so the
+			// insertion point is a real text position: at element-
+			// boundary carets (e.g. right before a badge) Chromium's
+			// insertText can drop the preceding text node's trailing
+			// whitespace.
+			const range = safeRange();
+			if (rootElement && range && range.collapsed) {
+				restoreCaret(rangeToTextOffset(rootElement, range));
+			}
+
 			document.execCommand('insertText', false, pasted);
+
+			// insertText fires `input` synchronously, so the new source
+			// is already emitted. Rebuild when the pasted text contains
+			// mention links so they render as badges right away.
+			if (rootElement && tokenizeContent(pasted).some((token) => token.kind === 'badge')) {
+				renderTokens(tokenizeContent(serializeContent(rootElement)));
+			}
 		}
 	}
 
@@ -205,6 +263,51 @@
 		if (!event.defaultPrevented) {
 			handlePasteEvent(event);
 		}
+	}
+
+	/**
+	 * Copy/cut expose the markdown SOURCE of the selection: offsets
+	 * are measured in the serialized source where each badge
+	 * contributes its full `[name](file://...)` link, so the
+	 * clipboard carries raw markdown and pasting back re-renders the
+	 * badges via the paste path above. Returns null for collapsed or
+	 * outside selections - native clipboard behavior is fine there.
+	 */
+	function selectionSourceSlice(): { text: string; range: Range } | null {
+		if (!rootElement) return null;
+
+		const range = safeRange();
+		if (!range || range.collapsed) return null;
+
+		const startRange = range.cloneRange();
+		startRange.collapse(true);
+
+		const source = serializeContent(rootElement);
+		const start = rangeToTextOffset(rootElement, startRange);
+		const end = rangeToTextOffset(rootElement, range);
+
+		return { text: source.slice(start, end), range };
+	}
+
+	function handleCopy(event: ClipboardEvent) {
+		const slice = selectionSourceSlice();
+		if (!slice) return;
+
+		event.clipboardData?.setData('text/plain', slice.text);
+		event.preventDefault();
+	}
+
+	function handleCut(event: ClipboardEvent) {
+		const slice = selectionSourceSlice();
+		if (!slice) return;
+
+		event.clipboardData?.setData('text/plain', slice.text);
+		event.preventDefault();
+
+		// preventDefault suppresses the native deletion, so remove the
+		// selection manually and re-emit the resulting source.
+		slice.range.deleteContents();
+		handleInput();
 	}
 
 	onMount(() => {
@@ -298,6 +401,8 @@
 		oninput={handleInput}
 		onkeydown={handleKeydown}
 		onpaste={handlePaste}
+		oncopy={handleCopy}
+		oncut={handleCut}
 	></div>
 </div>
 

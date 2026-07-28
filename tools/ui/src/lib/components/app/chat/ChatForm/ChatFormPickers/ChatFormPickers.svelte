@@ -12,6 +12,7 @@
 		scopePath?: string | null;
 		onPromptPickerClose?: () => void;
 		onMentionPickerClose?: () => void;
+		onMentionOpened?: () => void;
 		onMentionSelect?: (entry: ApiFilesystemSearchEntry) => void;
 		onPromptLoadStart?: (
 			placeholderId: string,
@@ -31,6 +32,7 @@
 		scopePath,
 		onPromptPickerClose,
 		onMentionPickerClose,
+		onMentionOpened,
 		onMentionSelect,
 		onPromptLoadStart,
 		onPromptLoadComplete,
@@ -85,5 +87,6 @@
 	customAnchor={mentionAnchor}
 	scopePath={scopePath ?? null}
 	onClose={onMentionPickerClose ?? (() => {})}
+	onOpened={onMentionOpened}
 	onSelect={handleMentionSelect}
 />
