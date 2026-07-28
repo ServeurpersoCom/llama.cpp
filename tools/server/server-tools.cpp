@@ -1,5 +1,6 @@
 #include "server-tools.h"
 
+#include "server-fs.h"
 #include "subproc.h"
 
 #include <filesystem>
@@ -71,7 +72,7 @@ public:
     explicit tools_io_basic(const std::string & base = "") : base_dir(absolute_of(base)) {}
 
     std::string resolve_path(const std::string & path) const override {
-        fs::path p(expand_home(path));
+        fs::path p(server_fs::expand_home(path));
         std::error_code ec;
         if (p.is_absolute() || base_dir.empty()) {
             return fs::absolute(p, ec).string();
@@ -220,49 +221,15 @@ public:
         return res;
     }
 
-    // expand a leading "~" or "~/" to the user's home directory; leaves "~user" forms unchanged
-    static std::string expand_home(const std::string & path) {
-        if (path.empty() || path[0] != '~') return path;
-        if (path.size() > 1 && path[1] != '/' && path[1] != '\\') return path;
-
-        const char * home = std::getenv(
-#ifdef _WIN32
-            "USERPROFILE"
-#else
-            "HOME"
-#endif
-        );
-        if (!home || !*home) return path;
-        return std::string(home) + path.substr(1);
-    }
-
     static std::string absolute_of(const std::string & path) {
         if (path.empty()) return "";
         std::error_code ec;
-        std::string abs = fs::absolute(expand_home(path), ec).string();
+        std::string abs = fs::absolute(server_fs::expand_home(path), ec).string();
         return ec ? path : abs;
     }
 
 private:
     std::string base_dir;
-
-    static std::vector<char *> to_cstr_vec(const std::vector<std::string> & v) {
-        std::vector<char *> r;
-        r.reserve(v.size() + 1);
-        for (const auto & s : v) {
-            r.push_back(const_cast<char *>(s.c_str()));
-        }
-        r.push_back(nullptr);
-        return r;
-    }
-
-    static const std::unordered_set<std::string> & junk_dir_names() {
-        static const std::unordered_set<std::string> names = {
-            ".git", ".svn", ".hg", "node_modules", "__pycache__",
-            ".venv", "venv", "dist", "build", "target", ".cache", ".idea", ".vscode",
-        };
-        return names;
-    }
 
     std::vector<std::string> list_files_fallback(const std::string & base) const {
         std::vector<std::string> result;
@@ -280,7 +247,7 @@ private:
                 std::string fname = entry.path().filename().string();
                 std::error_code tec;
                 if (entry.is_directory(tec)) {
-                    if (junk_dir_names().count(fname) > 0) continue;
+                    if (server_fs::junk_dir_names().count(fname) > 0) continue;
                     stack.emplace_back(entry.path(), rel_dir / fname);
                 } else if (entry.is_regular_file(tec)) {
                     std::string rel = (rel_dir / fname).string();
@@ -427,6 +394,7 @@ struct server_tool_file_glob_search : server_tool {
                         {"path",    {{"type", "string"}, {"description", "Base directory to search in"}}},
                         {"include", {{"type", "string"}, {"description", "Glob pattern for files to include (e.g. \"*.cpp\" or \"src/**/*.cpp\"). Default: **"}}},
                         {"exclude", {{"type", "string"}, {"description", "Glob pattern for files to exclude"}}},
+                        {"working_directory", {{"type", "string"}, {"description", "If set, resolve the search path against this directory; absolute paths are unchanged"}}},
                     }},
                     {"required", json::array({"path"})},
                 }},
@@ -439,7 +407,7 @@ struct server_tool_file_glob_search : server_tool {
         std::string include = json_value(params, "include", std::string("**"));
         std::string exclude = json_value(params, "exclude", std::string(""));
 
-        auto io = make_tools_io("");
+        auto io = make_tools_io(json_value(params, "working_directory", std::string()));
         std::string err;
         auto files = io->list_files(base, err);
         if (!err.empty()) {
@@ -671,7 +639,7 @@ struct server_tool_exec_shell_command : server_tool {
 
         // expand leading "~" before quoting; otherwise `cd '~/x'` fails.
         if (!working_directory.empty() && working_directory[0] == '~') {
-            working_directory = tools_io_basic::expand_home(working_directory);
+            working_directory = server_fs::expand_home(working_directory);
         }
 
         if (!working_directory.empty()) {

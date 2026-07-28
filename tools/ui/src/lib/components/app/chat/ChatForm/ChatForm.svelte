@@ -689,7 +689,7 @@
 <ChatFormFileInputInvisible bind:this={fileInputRef} onFileSelect={handleFileSelect} />
 
 <form
-	class="relative {className}"
+	class="relative grid {className}"
 	onsubmit={(event) => {
 		event.preventDefault();
 

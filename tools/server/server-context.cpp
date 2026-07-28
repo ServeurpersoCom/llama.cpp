@@ -5055,22 +5055,33 @@ void server_routes::init_routes() {
         return res;
     };
 
-    this->post_filesystem_search = [this](const server_http_req & req) {
-        auto res = create_response();
-        if (params.server_tools.empty()) {
+    // filesystem endpoints share one roots list and enablement gate, resolved once here;
+    // handlers outlive this scope, so both are captured by value
+    const bool fs_enabled = !params.server_tools.empty();
+    std::string fs_roots_err;
+    const std::vector<std::string> fs_roots = server_fs::effective_roots(params.filesystem_browse_roots, fs_roots_err);
+    auto check_fs = [fs_enabled, fs_roots_err, fs_roots_empty = fs_roots.empty()](std::unique_ptr<server_res_generator> & res) {
+        if (!fs_enabled) {
             res->error(format_error_response(
-                    "Filesystem search endpoint is not enabled. Start the server with `--tools ...` or `--agent`",
+                    "Filesystem endpoints are not enabled. Start the server with `--tools ...` or `--agent`",
                     ERROR_TYPE_NOT_SUPPORTED));
+            return false;
+        }
+        if (fs_roots_empty) {
+            res->error(format_error_response(fs_roots_err, ERROR_TYPE_SERVER));
+            return false;
+        }
+        return true;
+    };
+
+    this->post_filesystem_search = [this, check_fs, fs_roots](const server_http_req & req) {
+        auto res = create_response();
+        if (!check_fs(res)) {
             return res;
         }
+        const auto & roots = fs_roots;
 
         std::string err;
-        std::vector<std::string> roots = server_fs::effective_roots(params.filesystem_browse_roots, err);
-        if (roots.empty()) {
-            res->error(format_error_response(err, ERROR_TYPE_SERVER));
-            return res;
-        }
-
         json body;
         try {
             body = json::parse(req.body);
@@ -5140,12 +5151,10 @@ void server_routes::init_routes() {
                 {"path",     e.path},
                 {"parent",   e.parent},
                 {"type",     e.type},
+                {"modified", e.modified},
             };
             if (e.type == "file") {
-                item["size"]     = e.size;
-                item["modified"] = e.modified;
-            } else {
-                item["modified"] = e.modified;
+                item["size"] = e.size;
             }
             results.push_back(std::move(item));
         }
@@ -5154,21 +5163,12 @@ void server_routes::init_routes() {
         return res;
     };
 
-    this->get_filesystem_roots = [this](const server_http_req &) {
+    this->get_filesystem_roots = [this, check_fs, fs_roots](const server_http_req &) {
         auto res = create_response();
-        if (params.server_tools.empty()) {
-            res->error(format_error_response(
-                    "Filesystem search endpoint is not enabled. Start the server with `--tools ...` or `--agent`",
-                    ERROR_TYPE_NOT_SUPPORTED));
+        if (!check_fs(res)) {
             return res;
         }
-
-        std::string err;
-        std::vector<std::string> roots = server_fs::effective_roots(params.filesystem_browse_roots, err);
-        if (roots.empty()) {
-            res->error(format_error_response(err, ERROR_TYPE_SERVER));
-            return res;
-        }
+        const auto & roots = fs_roots;
 
         json arr = json::array();
         for (size_t i = 0; i < roots.size(); ++i) {
@@ -5182,22 +5182,14 @@ void server_routes::init_routes() {
         return res;
     };
 
-    this->post_filesystem_git = [this](const server_http_req & req) {
+    this->post_filesystem_git = [this, check_fs, fs_roots](const server_http_req & req) {
         auto res = create_response();
-        if (params.server_tools.empty()) {
-            res->error(format_error_response(
-                    "Filesystem git endpoint is not enabled. Start the server with `--tools ...` or `--agent`",
-                    ERROR_TYPE_NOT_SUPPORTED));
+        if (!check_fs(res)) {
             return res;
         }
+        const auto & roots = fs_roots;
 
         std::string err;
-        std::vector<std::string> roots = server_fs::effective_roots(params.filesystem_browse_roots, err);
-        if (roots.empty()) {
-            res->error(format_error_response(err, ERROR_TYPE_SERVER));
-            return res;
-        }
-
         json body;
         try {
             body = json::parse(req.body);
@@ -5211,12 +5203,7 @@ void server_routes::init_routes() {
         }
 
         const std::string path = json_value(body, "path", std::string());
-        std::string resolved;
-        if (!path.empty()) {
-            resolved = server_fs::resolve_path(path, roots, err);
-        } else {
-            resolved = server_fs::resolve_path(std::string(), roots, err);
-        }
+        const std::string resolved = server_fs::resolve_path(path, roots, err);
         if (resolved.empty()) {
             res->error(format_error_response(err, ERROR_TYPE_INVALID_REQUEST));
             return res;
@@ -5232,7 +5219,6 @@ void server_routes::init_routes() {
                 {"is_repo", false},
                 {"root",    std::string()},
                 {"branch",  std::string()},
-                {"sha",     std::string()},
             });
             return res;
         }
@@ -5241,7 +5227,6 @@ void server_routes::init_routes() {
             {"is_repo", info.is_repo},
             {"root",    info.root},
             {"branch",  info.branch},
-            {"sha",     info.sha},
         });
         return res;
     };

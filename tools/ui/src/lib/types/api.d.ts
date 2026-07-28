@@ -610,6 +610,4 @@ export interface ApiFilesystemGitResponse {
 	root: string;
 	/** Branch name, "detached", "submodule", or empty when not a repo. */
 	branch: string;
-	/** Current HEAD sha when available, otherwise empty. */
-	sha: string;
 }

@@ -417,14 +417,15 @@
 	const gitBranchLabel = $derived(gitInfo && gitInfo.is_repo ? gitInfo.branch : '');
 </script>
 
-<div class={['flex min-w-0 items-center gap-1 pt-2.5 px-2', className]}>
+<div class={['justify-self-start flex min-w-0 w-auto items-center gap-1 mt-1.5 py-1 px-2 backdrop-blur-2xl rounded-md', className, isOpen && 'w-full']}>
 	<div
 		bind:this={popoverAnchor}
 		class="pointer-events-none absolute top-0 right-0 left-0 h-px"
 		aria-hidden="true"
 	></div>
+
 	<Popover.Root bind:open={isOpen} onOpenChange={handleOpenChange}>
-		<Popover.Trigger {disabled} class="w-full flex justify-start">
+		<Popover.Trigger {disabled} class="flex justify-start">
 			<span
 				class="text-muted-foreground inline-flex items-center gap-1 text-xs group"
 				class:text-foreground={directory}
@@ -477,16 +478,20 @@
 				</div>
 
 				{#if directory}
-					<ActionIcon
-						icon={X}
-						tooltip="Reset working directory"
-						ariaLabel="Reset working directory"
-						{disabled}
-						onclick={handleDismiss}
-						iconSize="h-3 w-3"
-						stopPropagationOnClick
-						class="!h-4 !w-4 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-					/>
+					<div
+						class="w-0 overflow-hidden opacity-0 transition-[width,opacity] duration-200 ease-out group-hover:w-auto group-hover:opacity-100"
+					>
+						<ActionIcon
+							icon={X}
+							tooltip="Reset working directory"
+							ariaLabel="Reset working directory"
+							{disabled}
+							onclick={handleDismiss}
+							iconSize="h-3 w-3"
+							stopPropagationOnClick
+							class="!h-4 !w-4 shrink-0 text-muted-foreground hover:text-foreground"
+						/>
+					</div>
 				{/if}
 			</span>
 		</Popover.Trigger>
@@ -494,8 +499,8 @@
 		<Popover.Content
 			side="top"
 			align="start"
-			sideOffset={12}
-			class="w-[var(--bits-popover-anchor-width)] max-w-none rounded-xl border-border/50 p-0 shadow-xl"
+			sideOffset={4}
+			class="w-[var(--bits-popover-anchor-width)] min-w-md max-w-none rounded-xl border-border/50 p-0 shadow-xl"
 			onkeydown={handleKeydown}
 			onOpenAutoFocus={(event) => event.preventDefault()}
 			onCloseAutoFocus={(event) => event.preventDefault()}
@@ -573,7 +578,7 @@
 					{#if pickerSupported}
 						<button
 							type="button"
-							class="-mt-1 flex w-full cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
+							class="-mt-1 flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
 							onclick={browseNative}
 						>
 							<FolderOpen class="size-4 shrink-0 text-muted-foreground" />
