@@ -57,13 +57,6 @@
 	const currentConfig = $derived(config());
 	const isActivelyProcessing = $derived(isLastUserMessage && isLoading());
 
-	let showRawOutput = $state(false);
-
-	const renderUserContentAsRawText = $derived(Boolean(currentConfig.renderUserContentAsRawText));
-	const showRawOutputSwitch = $derived(
-		Boolean(currentConfig.showRawOutputSwitch) && !renderUserContentAsRawText
-	);
-
 	// For agentic turns, prefer the cumulative agentic.llm totals over per-call timings.
 	let storedReadingStats = $derived.by(() => {
 		const timings = nextAssistantMessage?.timings;
@@ -99,8 +92,6 @@
 >
 	{#if editCtx.isEditing}
 		<ChatMessageEditForm />
-	{:else if showRawOutput}
-		<pre class="user-raw-output">{message.content}</pre>
 	{:else}
 		<ChatMessageUserBubble
 			content={message.content}
@@ -139,41 +130,24 @@
 			{/if}
 		{/if}
 
-		{#if message.timestamp}
-			<div class="max-w-[80%]">
-				<ChatMessageActionIcons
-					actionsPosition="right"
-					{deletionInfo}
-					justify="end"
-					{onConfirmDelete}
-					{onCopy}
-					{onDelete}
-					{onEdit}
-					{onForkConversation}
-					{onNavigateToSibling}
-					{onShowDeleteDialogChange}
-					{siblingInfo}
-					{showDeleteDialog}
-					role={MessageRole.USER}
-					{showRawOutputSwitch}
-					rawOutputEnabled={showRawOutput}
-					onRawOutputToggle={(enabled) => (showRawOutput = enabled)}
-				/>
-			</div>
-		{/if}
+	{#if message.timestamp}
+		<div class="max-w-[80%]">
+			<ChatMessageActionIcons
+				actionsPosition="right"
+				{deletionInfo}
+				justify="end"
+				{onConfirmDelete}
+				{onCopy}
+				{onDelete}
+				{onEdit}
+				{onForkConversation}
+				{onNavigateToSibling}
+				{onShowDeleteDialogChange}
+				{siblingInfo}
+				{showDeleteDialog}
+				role={MessageRole.USER}
+			/>
+		</div>
+	{/if}
 	{/if}
 </div>
-
-<style>
-	.user-raw-output {
-		max-width: 80%;
-		padding: 1rem 1.25rem;
-		border-radius: 1rem;
-		background: hsl(var(--muted) / 0.3);
-		color: var(--foreground);
-		font-size: 0.875rem;
-		line-height: 1.6;
-		white-space: pre-wrap;
-		word-break: break-word;
-	}
-</style>

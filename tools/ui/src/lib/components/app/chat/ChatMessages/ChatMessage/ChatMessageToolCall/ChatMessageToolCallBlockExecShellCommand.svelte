@@ -201,27 +201,25 @@
 </script>
 
 {#snippet execShellTitle()}
-	{#if execShellDefaultRoot && execShellMeta?.workingDirectory === execShellDefaultRoot}
-		<span class="font-mono text-[12px] mr-1">~</span>
-	{/if}
-
-	<span class="font-mono text-[12px] mr-1">$</span>
-
-	{#if highlightedCommandHtml}
-		<span class="font-mono text-[12px]">{@html highlightedCommandHtml}</span>
-	{:else if execShellMeta?.command}
-		<span class="font-mono text-[12px]">{execShellMeta.command}</span>
-	{/if}
-{/snippet}
-
-{#snippet execShellPrefix()}
 	{#if execShellMeta?.workingDirectory}
 		<span
-			class="text-[12px]! tracking-6! min-h-0! h-5.5! p-0! wd-prefix font-mono items-center flex"
+			class="text-[12px] font-mono"
+			style="color: color-mix(in oklch, var(--muted-foreground) 70%, transparent);"
 			data-testid="exec-shell-working-directory"
 		>
 			{execShellWdDisplay}
 		</span>
+		<span class="text-[12px] font-mono mr-1"> </span>
+	{/if}
+	{#if execShellDefaultRoot && execShellMeta?.workingDirectory === execShellDefaultRoot}
+		<span class="font-mono text-[12px] mr-1">~</span>
+	{:else}
+		<span class="font-mono text-[12px] mr-1">$</span>
+	{/if}
+	{#if highlightedCommandHtml}
+		<span class="font-mono text-[12px]">{@html highlightedCommandHtml}</span>
+	{:else if execShellMeta?.command}
+		<span class="font-mono text-[12px]">{execShellMeta.command}</span>
 	{/if}
 {/snippet}
 
@@ -233,7 +231,6 @@
 	wrapper={CollapsibleTerminalBlock}
 	extraLiveStreaming={isLive}
 	spinIconWhenActive={true}
-	prefixSnippet={execShellPrefix}
 	{onToggle}
 >
 	{#snippet titleSnippet()}
@@ -305,15 +302,7 @@
 		padding-right: 0.25rem;
 	}
 
-	.wd-prefix {
-		font-size: 12px;
-		line-height: 1rem;
-		color: color-mix(in oklch, var(--muted-foreground) 70%, transparent);
-		max-width: 14rem;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		padding-top: 0.125rem;
-	}
+
 
 	.exit-badge {
 		display: inline-flex;
