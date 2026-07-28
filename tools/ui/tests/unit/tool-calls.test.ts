@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { AgenticSectionType, BuiltInTool } from '$lib/enums';
 import type { AgenticSection } from '$lib/utils';
-import {
-	lastPathSegment,
-	parseToolArgs
-} from '$lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/_shared';
+import { parseToolArgs } from '$lib/components/app/chat/ChatMessages/ChatMessage/ChatMessageToolCall/parsers/_shared';
+import { lastPathSegment } from '$lib/utils';
 import {
 	parseWriteFileMeta,
 	type WriteFileMeta
@@ -30,7 +28,7 @@ function makeSection(
 	};
 }
 
-describe('lastPathSegment (shared)', () => {
+describe('lastPathSegment', () => {
 	it('returns the last segment of an absolute path', () => {
 		expect(lastPathSegment('/Users/me/code/my-project')).toBe('my-project');
 	});

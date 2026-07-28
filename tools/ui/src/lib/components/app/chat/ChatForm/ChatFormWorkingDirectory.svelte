@@ -3,15 +3,15 @@
 	import { Folder, FolderOpen, GitBranch, X } from '@lucide/svelte';
 	import { FilesystemService } from '$lib/services';
 	import { abbreviateWorkingDir, ApiError } from '$lib/utils';
-	import { debounce } from '$lib/utils/debounce';
 	import {
 		browseRoots,
 		browseRootsError,
 		defaultBrowseRootPath,
 		ensureBrowseRoots,
-		isBrowseEndpointDisabled,
-		markBrowseEndpointDisabled
+		isBrowseEndpointDisabled
 	} from '$lib/stores/browse-roots.svelte';
+	import { createFilesystemSearch } from '$lib/stores/filesystem-search.svelte';
+	import { isMobile } from '$lib/stores/viewport.svelte';
 	import * as Popover from '$lib/components/ui/popover';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import HighlightedMatch from '$lib/components/app/forms/HighlightedMatch.svelte';
@@ -42,6 +42,9 @@
 		onClose
 	}: Props = $props();
 
+	// Widths vary per row so the placeholder reads as a list of directories.
+	const SKELETON_WIDTHS = ['w-3/5', 'w-4/5', 'w-2/5', 'w-3/4', 'w-1/2', 'w-5/6', 'w-3/4', 'w-4/5'];
+
 	// File System Access API is opt-in: when available (Chrome / Edge / Opera) the popover
 	// exposes a "Browse" button that opens the native folder picker. When unavailable the
 	// popover still works via the text input - no alerts, no upload semantics.
@@ -54,18 +57,11 @@
 	let inputValue = $state('');
 	let searchInputRef: HTMLInputElement | null = $state(null);
 
-	// Search / autocomplete state
-	let queryResults = $state<ApiFilesystemSearchEntry[]>([]);
-	let isSearching = $state(false);
-	let searchError = $state<string | null>(null);
 	let hoveredIndex = $state(-1);
 	// Bumped only by ArrowUp/ArrowDown handlers; the list's
 	// ChatFormPickerList uses this to scroll the picked row into view
 	// without scrolling on mouse hover.
 	let scrollTrigger = $state(0);
-	// Browse roots live in the shared browse-roots store; both this component
-	// and the file-mention picker (Phase B) read from it. defaultRootPath is
-	// a derived view used to scope server-side search calls.
 
 	// Invisible anchor for popover positioning - sits at the top edge of the
 	// chat form so the popover floats above the box (matching the MCP picker
@@ -129,12 +125,6 @@
 			});
 	});
 
-	// AbortController + sequence counter to discard stale responses when the user
-	// keeps typing; a newer call aborts the previous one. The sequence counter
-	// also covers the gap between abort and the catch handler.
-	let searchController: AbortController | null = null;
-	let searchSeq = 0;
-
 	// Auto-focus the search input when the popover opens.
 	// HTML `autofocus` is unreliable on dynamically shown elements, so we
 	// use a microtask (0ms setTimeout) after the effect flushes.
@@ -143,78 +133,27 @@
 		setTimeout(() => searchInputRef?.focus(), 0);
 	});
 
-	const runSearch = debounce((query: string) => {
-		void doSearch(query);
-	}, 180);
-
-	// Local 501 handler removed; the search endpoint is gated by the same
-	// server flag as the roots endpoint, so a 501 on /search implies the
-	// whole browsing feature is off - markBrowseEndpointDisabled() tells
-	// the shared store so other consumers see the same state.
+	// Auto-highlight the first row once results land so a fresh query is
+	// immediately commit-able via Enter.
+	const search = createFilesystemSearch({
+		params: () => ({
+			type: 'directory',
+			path: defaultRootPath ?? undefined,
+			limit: 20,
+			max_depth: 6,
+			show_hidden: true
+		}),
+		onResults: (entries) => {
+			hoveredIndex = entries.length > 0 ? 0 : -1;
+		}
+	});
 
 	// Load browse roots eagerly on mount so the trigger can advertise the
-	// default browse scope before the user opens the picker. ensureBrowseRoots()
-	// is idempotent and promise-cached, so the call from handleOpenChange
-	// stays a no-op once resolved.
+	// default browse scope before the user opens the picker.
 	$effect(() => {
 		if (typeof window === 'undefined') return;
 		void ensureBrowseRoots();
 	});
-
-	function cancelSearch() {
-		searchController?.abort();
-		searchSeq++;
-		isSearching = false;
-	}
-
-	async function doSearch(query: string) {
-		// The inputValue $effect handles empty queries synchronously
-		// before scheduling this fetch; doSearch is never called with
-		// empty input, so an empty-input guard here would be dead
-		// code. Trim is taken once at the top and reused.
-
-		const trimmed = query.trim();
-		cancelSearch();
-		const controller = new AbortController();
-		searchController = controller;
-		const mySeq = ++searchSeq;
-
-		isSearching = true;
-		try {
-			const response = await FilesystemService.search(
-				{
-					query: trimmed,
-					type: 'directory',
-					path: defaultRootPath ?? '',
-					limit: 20,
-					max_depth: 6,
-					show_hidden: true
-				},
-				controller.signal
-			);
-			if (mySeq !== searchSeq) return;
-			queryResults = response.results;
-			// Auto-highlight the first row once results land so a fresh
-			// query is immediately commit-able via Enter. Reset to -1
-			// when the query returned nothing so the empty-state owns
-			// the visual cue.
-			hoveredIndex = queryResults.length > 0 ? 0 : -1;
-			searchError = null;
-		} catch (err) {
-			if (mySeq !== searchSeq) return;
-			queryResults = [];
-			hoveredIndex = -1;
-			if (controller.signal.aborted) return;
-			if (err instanceof ApiError && err.status === 501) {
-				markBrowseEndpointDisabled();
-				searchError = null;
-			} else {
-				searchError = err instanceof Error ? err.message : String(err);
-			}
-		} finally {
-			if (mySeq === searchSeq) isSearching = false;
-		}
-	}
 
 	// Single funnel for every local close so the host refocus fires
 	// regardless of which commit/dismiss path ended the interaction.
@@ -242,16 +181,13 @@
 	async function resolveNativeName(name: string): Promise<string> {
 		if (isBrowseEndpointDisabled() || !defaultRootPath) return name;
 		try {
-			const res = await FilesystemService.search(
-				{
-					query: name,
-					type: 'directory',
-					path: defaultRootPath,
-					limit: 1,
-					max_depth: 4
-				},
-				new AbortController().signal
-			);
+			const res = await FilesystemService.search({
+				query: name,
+				type: 'directory',
+				path: defaultRootPath,
+				limit: 1,
+				max_depth: 4
+			});
 			const match = res.results[0];
 			return match && match.name === name ? match.path : name;
 		} catch {
@@ -291,68 +227,35 @@
 			// selected first row after results landed). Fall back to
 			// the raw input only when the query returned no matches,
 			// so the user can still type a known absolute path.
-			if (hoveredIndex >= 0 && queryResults[hoveredIndex]) {
-				commit(queryResults[hoveredIndex]);
-			} else if (queryResults.length === 0) {
+			if (hoveredIndex >= 0 && search.results[hoveredIndex]) {
+				commit(search.results[hoveredIndex]);
+			} else if (search.results.length === 0) {
 				handleSubmit();
 			}
 		} else if (event.key === 'ArrowDown') {
-			if (queryResults.length > 0) {
+			if (search.results.length > 0) {
 				event.preventDefault();
-				hoveredIndex = (hoveredIndex + 1) % queryResults.length;
+				hoveredIndex = (hoveredIndex + 1) % search.results.length;
 				scrollTrigger++;
 			}
 		} else if (event.key === 'ArrowUp') {
-			if (queryResults.length > 0) {
+			if (search.results.length > 0) {
 				event.preventDefault();
-				hoveredIndex = hoveredIndex <= 0 ? queryResults.length - 1 : hoveredIndex - 1;
+				hoveredIndex = hoveredIndex <= 0 ? search.results.length - 1 : hoveredIndex - 1;
 				scrollTrigger++;
 			}
 		}
 	}
 
-	// Drive the search from `inputValue` itself — the picker binds its
-	// header input to `inputValue`, so user typing in the search head
-	// (and the seeded value on open) both pick up the same debounced
-	// fetch without needing a side-channel onInput callback.
-	//
-	// Synchronously reflects the correct state during the 180ms
-	// debounce window so the picker never flashes the "API responded
-	// with no matches" empty-state for a query that hasn't actually
-	// been sent yet. Active query → skeleton immediately; empty
-	// query → clears state and renders nothing; API-returned-empty →
-	// renders the "No matching folders" message (recorded only by
-	// doSearch).
+	// The picker's header input binds to `inputValue`; typing (and the
+	// seeded value on open) drives the debounced fetch.
 	$effect(() => {
-		const q = inputValue;
-		if (!isOpen) {
-			cancelSearch();
+		const q = inputValue.trim();
+		if (!isOpen || isBrowseEndpointDisabled() || !q) {
+			search.reset();
 			return;
 		}
-		if (isBrowseEndpointDisabled()) {
-			cancelSearch();
-			queryResults = [];
-			isSearching = false;
-			searchError = null;
-			hoveredIndex = -1;
-			return;
-		}
-		const trimmed = q.trim();
-		if (!trimmed) {
-			cancelSearch();
-			queryResults = [];
-			isSearching = false;
-			searchError = null;
-			hoveredIndex = -1;
-			return;
-		}
-		// Active query — cancel any in-flight stale request and show
-		// the skeleton synchronously so the picker doesn't sit on
-		// previously-returned empty data while debouncing the new
-		// request.
-		cancelSearch();
-		isSearching = true;
-		runSearch(q);
+		search.schedule(q);
 	});
 
 	function clearDirectory(event?: MouseEvent) {
@@ -383,32 +286,19 @@
 			// (or hit Enter to confirm / clear via the X icon).
 			inputValue = directory ?? '';
 			hoveredIndex = -1;
-			queryResults = [];
-			searchError = null;
-			// The inputValue $effect picks up the seeded search automatically,
-			// but it would only run after browse roots resolve; warm the cache
-			// here so the first request is not gated on the initial fetch.
+			search.reset();
 			void ensureBrowseRoots();
 		} else {
-			cancelSearch();
+			search.reset();
 			// bits-ui-initiated close (Escape on the content, outside-click,
 			// trigger toggle) - the only path that bypasses closePicker().
 			onClose?.();
 		}
 	}
 
-	// Imperative API: opens the picker without requiring the chip's own
-	// trigger to be clicked. Used by ChatForm so picking the "Working
-	// Directory" item from the Add dropdown reveals the chip and instantly
-	// drops the user into the picker.
-	export function openPicker() {
-		isOpen = true;
-	}
-
 	// Tooltips only on wider viewports - hover surfaces get in the way on
 	// touch / narrow layouts. Mirrors the gate used in ActionIcon.
-	let innerWidth = $state(0);
-	const showTooltip = $derived(innerWidth > 768);
+	const showTooltip = $derived(!isMobile.current);
 
 	// Branch label resolved down to a string so the chip's two branches
 	// (with / without Tooltip) don't have to re-narrow `gitInfo` inside
@@ -417,7 +307,13 @@
 	const gitBranchLabel = $derived(gitInfo && gitInfo.is_repo ? gitInfo.branch : '');
 </script>
 
-<div class={['justify-self-start flex min-w-0 w-auto items-center gap-1 mt-1.5 py-1 px-2 backdrop-blur-2xl rounded-md', className, isOpen && 'w-full']}>
+<div
+	class={[
+		'justify-self-start flex min-w-0 w-auto items-center gap-1 mt-1.5 py-1 px-2 backdrop-blur-2xl rounded-md',
+		className,
+		isOpen && 'w-full'
+	]}
+>
 	<div
 		bind:this={popoverAnchor}
 		class="pointer-events-none absolute top-0 right-0 left-0 h-px"
@@ -516,8 +412,8 @@
 				</div>
 			{:else}
 				<ChatFormPickerList
-					items={queryResults}
-					isLoading={isSearching}
+					items={search.results}
+					isLoading={search.isLoading}
 					selectedIndex={hoveredIndex}
 					showSearchInput={true}
 					bind:searchQuery={inputValue}
@@ -525,33 +421,21 @@
 					autofocus={true}
 					onSearchClose={closePicker}
 					searchPlaceholder="Choose working directory"
-					emptyMessage={searchError
-						? `Search failed - ${searchError}`
-						: inputValue.trim() ? 'No matching folders' : undefined}
+					emptyMessage={search.error
+						? `Search failed - ${search.error}`
+						: inputValue.trim()
+							? 'No matching folders'
+							: undefined}
 					itemKey={(entry) => entry.path}
 					{scrollTrigger}
 				>
-					<!--
-						Skeleton rows mirror the real row layout (folder
-						icon + a single truncating monospace path bar).
-						Widths vary per index so the placeholder reads as
-						a list of directories, not six identical boxes;
-						that swap-in is the only thing standing between the
-						search request and any visible layout shift.
-					-->
 					{#snippet skeleton()}
 						<div aria-busy="true" aria-live="polite" class="flex flex-col">
 							{#each { length: 8 } as _, rowIndex (rowIndex)}
-								{@const widths = ['w-3/5', 'w-4/5', 'w-2/5', 'w-3/4', 'w-1/2', 'w-5/6', 'w-3/4', 'w-4/5']}
-								{@const widthClass = widths[rowIndex % widths.length]}
+								{@const widthClass = SKELETON_WIDTHS[rowIndex % SKELETON_WIDTHS.length]}
 								<div class="flex items-start gap-2 rounded-lg px-3 py-2">
 									<div class="mt-1 size-4 shrink-0 rounded-md bg-muted/60"></div>
-									<div
-										class={[
-											'h-4 mt-1 animate-pulse rounded-sm bg-muted/60',
-											widthClass
-										]}
-									></div>
+									<div class={['h-4 mt-1 animate-pulse rounded-sm bg-muted/60', widthClass]}></div>
 								</div>
 							{/each}
 						</div>
@@ -559,7 +443,7 @@
 
 					{#snippet item(entry, index, isSelected)}
 						<ChatFormPickerListItem
-						    class="gap-2!"
+							class="gap-2!"
 							dataIndex={index}
 							{isSelected}
 							onclick={() => commit(entry)}
@@ -623,5 +507,3 @@
 		</Popover.Content>
 	</Popover.Root>
 </div>
-
-<svelte:window bind:innerWidth />

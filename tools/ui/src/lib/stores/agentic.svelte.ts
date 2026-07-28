@@ -1001,26 +1001,14 @@ class AgenticStore {
 
 	private normalizeToolCalls(toolCalls: ApiChatCompletionToolCall[]): AgenticToolCallList {
 		if (!toolCalls) return [];
-		const wd = conversationsStore.activeConversation?.workingDirectory;
-		return toolCalls.map((call, index) => {
-			const name = call?.function?.name ?? '';
-			const argsIn = call?.function?.arguments ?? '';
-			let argsOut = argsIn;
-			if (wd && name && toolsStore.getToolSource(name) === ToolSource.BUILTIN) {
-				try {
-					const obj = JSON.parse(argsIn) as Record<string, unknown>;
-					if (typeof obj.working_directory !== 'string') {
-						obj.working_directory = wd;
-						argsOut = JSON.stringify(obj);
-					}
-				} catch { /* unparseable args; leave as-is */ }
+		return toolCalls.map((call, index) => ({
+			id: call?.id ?? `tool_${index}`,
+			type: (call?.type as ToolCallType.FUNCTION) ?? ToolCallType.FUNCTION,
+			function: {
+				name: call?.function?.name ?? '',
+				arguments: call?.function?.arguments ?? ''
 			}
-			return {
-				id: call?.id ?? `tool_${index}`,
-				type: (call?.type as ToolCallType.FUNCTION) ?? ToolCallType.FUNCTION,
-				function: { name, arguments: argsOut }
-			};
-		});
+		}));
 	}
 
 	private extractBase64Attachments(result: string): {

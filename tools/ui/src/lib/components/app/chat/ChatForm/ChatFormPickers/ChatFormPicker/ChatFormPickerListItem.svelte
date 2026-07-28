@@ -10,7 +10,14 @@
 		class?: string;
 	}
 
-	let { class: className = '', isSelected = false, onclick, onmouseenter, dataIndex, children }: Props = $props();
+	let {
+		class: className = '',
+		isSelected = false,
+		onclick,
+		onmouseenter,
+		dataIndex,
+		children
+	}: Props = $props();
 </script>
 
 <button

@@ -244,57 +244,38 @@
 	);
 	let canSubmit = $derived(value.trim().length > 0 || hasAttachments);
 
-	// Capture the caret offset before a swap from textarea to
-	// contenteditable happens, so we can restore it after the new
-	// component mounts. We capture on the `false` -> `true` edge
-	// only (see the promotion $effect below).
-	//
-	// Callers that mutate `value` themselves (e.g. the mention picker
-	// splicing in `[name](file://path)`) pin this BEFORE the value
-	// assignment so the post-swap caret restore uses their target.
-	// The promotion $effect falls back to the current caret only
-	// when no caller has pinned an explicit offset.
+	// Caret offset restored after a renderer swap. Callers that mutate `value`
+	// themselves (e.g. the mention picker splicing in `[name](file://path)`)
+	// pin the target offset BEFORE the value assignment; otherwise the swap
+	// effect snapshots the current caret.
 	let pendingCaretOffset = 0;
 	let caretOffsetPinned = false;
 
-	// Render-mode selector: promote to the contenteditable when the
-	// value carries a `file://`-mention link, demote to the plain
-	// textarea when it doesn't any longer. Both transitions share
-	// the caret handling below so the cursor position survives the
-	// mode swap.
-	$effect(() => {
-		const wantContenteditable = containsFileMentionLink(value ?? '');
-		if (useContenteditable === wantContenteditable) return;
-
-		// Pin (set by the mention picker) wins; otherwise snapshot the
-		// current caret from whatever renderer is mounted. Source-text
-		// and UTF-16 coordinates agree on mention-badge lengths
-		// (`[name](file://path)` per badge), so a caret captured on
-		// the contenteditable maps cleanly onto the textarea's
-		// selectionStart.
-		if (!caretOffsetPinned) {
-			pendingCaretOffset = inputRef?.getCaretOffset() ?? (value ?? '').length;
-		}
-
-		useContenteditable = wantContenteditable;
-	});
-
-	// Caret-restore: fires whenever useContenteditable actually flips.
-	// Skip the initial baseline run so freshly-mounted forms don't
-	// queue a redundant caret set against an already-focused input
-	// (the textarea's onMount already focuses).
-	let sawTransition = false;
-	$effect(() => {
-		void useContenteditable;
-		if (!sawTransition) {
-			sawTransition = true;
-			return;
-		}
+	// Runs after the renderer swap settles so the caret lands in the
+	// newly-mounted input.
+	function queueCaretRestore() {
 		queueMicrotask(() => {
 			inputRef?.focus();
 			inputRef?.setCaretOffset(pendingCaretOffset);
 			caretOffsetPinned = false;
 		});
+	}
+
+	// Render-mode selector: promote to the contenteditable when the
+	// value carries a `file://`-mention link, demote to the plain
+	// textarea when it doesn't any longer.
+	$effect(() => {
+		const wantContenteditable = containsFileMentionLink(value ?? '');
+		if (useContenteditable === wantContenteditable) return;
+
+		// Pin (set by the mention picker) wins; otherwise snapshot the
+		// current caret from whatever renderer is mounted.
+		if (!caretOffsetPinned) {
+			pendingCaretOffset = inputRef?.getCaretOffset() ?? (value ?? '').length;
+		}
+
+		useContenteditable = wantContenteditable;
+		queueCaretRestore();
 	});
 
 	onMount(() => {
@@ -371,7 +352,7 @@
 					// picked at least one file/folder (recents surface). A
 					// bare `@` with no recents is a no-op - re-typing into
 					// the token would otherwise flash an empty "start
-					// typing…" hint before the user types anything.
+					// typing..." hint before the user types anything.
 					const haveRecents = recentMentionsStore.value.length > 0;
 					const haveQuery = token.query.length > 0;
 
@@ -648,13 +629,9 @@
 		onValueChange?.(newValue);
 
 		// Already in contenteditable mode: this insert does not flip the
-		// renderer, so the swap effect's focus/caret restore never runs.
+		// renderer, so the swap effect's caret restore never runs.
 		if (useContenteditable) {
-			queueMicrotask(() => {
-				inputRef?.focus();
-				inputRef?.setCaretOffset(pendingCaretOffset);
-				caretOffsetPinned = false;
-			});
+			queueCaretRestore();
 		}
 	}
 

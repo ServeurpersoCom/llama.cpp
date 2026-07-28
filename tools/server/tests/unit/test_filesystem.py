@@ -142,6 +142,18 @@ def test_search_pathlike_query():
     assert "main.cpp" in names
 
 
+def test_search_absolute_path_query():
+    server = _start_server()
+    # pasting a full path under the root matches like the relative form
+    res = _search(
+        server,
+        query=os.path.join(os.path.realpath(server.browse_root), "project-alpha", "src", "main.cpp"),
+    )
+    assert res.status_code == 200
+    names = [r["name"] for r in res.body["results"]]
+    assert "main.cpp" in names
+
+
 def test_search_limit():
     server = _start_server()
     res = _search(server, query="project", limit=1)

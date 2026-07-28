@@ -11,16 +11,7 @@
 		searchQuery: string;
 		showSearchInput: boolean;
 		searchPlaceholder?: string;
-		/**
-		 * Shown only when the API has responded with empty data. The
-		 * default is `undefined` so that pickers which need to
-		 * distinguish "haven't searched yet" from "search returned
-		 * nothing" can pass `undefined` and silence the message.
-		 * Svelte treats `undefined` as missing for prop defaults, so
-		 * any picker that does NOT want an empty-state message must
-		 * pass it explicitly (or omit it) and not rely on the
-		 * defaulting behaviour falling through.
-		 */
+		// omit to distinguish "haven't searched yet" from "search returned nothing"
 		emptyMessage?: string;
 		autofocus?: boolean;
 		inputRef?: HTMLInputElement | null;
@@ -30,17 +21,8 @@
 		skeleton?: Snippet;
 		skeletonCount?: number;
 		footer?: Snippet;
-		/**
-		 * Monotonically-increasing counter the picker bumps when the
-		 * user navigates the list via keyboard. When the counter
-		 * changes the list scrolls the selected row into view; mouse
-		 * hover bumps the index without bumping the counter, so hover
-		 * never moves the scroll position. `undefined` disables auto
-		 * scroll entirely. Mount and reactively-driven selection
-		 * changes (typing in the search input) leave the counter
-		 * untouched, so the list stays put while the result set
-		 * replaces itself.
-		 */
+		// counter bumped by the picker on keyboard nav; scrolls the selected row
+		// into view without scrolling on mouse hover or result replacement
 		scrollTrigger?: number;
 	}
 
@@ -65,28 +47,14 @@
 
 	let listContainer = $state<HTMLDivElement | null>(null);
 
-	// Track the previous scrollTrigger so the very first mount-render
-	// pass doesn't fire a scroll — the picker starts with the counter
-	// at 0 and no user keyboard nav has happened yet.
+	let listPaddingTop = $derived(
+		showSearchInput ? (isLoading || items.length > 0 ? 'pt-13' : 'pt-10') : ''
+	);
+
 	let lastScrollTrigger: number | null = null;
 
-	/**
-	 * Snap the keyboard-selected row into view without disturbing the
-	 * scroll position on mouse hover.
-	 *
-	 * Only `scrollTrigger` is a reactive dependency here. Reads of
-	 * `selectedIndex`/`items.length` happen inside `untrack` so the
-	 * effect does not re-run when those mutate elsewhere (e.g. on
-	 * `onmouseenter` rewriting `hoveredIndex`). Without untracking,
-	 * every cursor twitch would re-fire `scrollIntoView` even though
-	 * the `scrollTrigger === undefined` gate passes (the parent sets
-	 * the counter to `0`, not `undefined`, on first render); near-edge
-	 * rows in long result sets would visibly drift on each hover.
-	 *
-	 * Mouse hover, search-driven result replacement, and the initial
-	 * mount therefore never scroll. Keyboard `ArrowUp`/`ArrowDown` is
-	 * the only path that bumps the trigger and scrolls.
-	 */
+	// selectedIndex/items.length are untracked so hover and result replacement
+	// never re-fire the scroll; keyboard nav is the only path that bumps the trigger
 	$effect(() => {
 		if (scrollTrigger === undefined || scrollTrigger === lastScrollTrigger) return;
 		lastScrollTrigger = scrollTrigger;
@@ -114,10 +82,7 @@
 		</div>
 	{/if}
 
-	<div
-		bind:this={listContainer}
-		class={[`${CHAT_FORM_POPOVER_MAX_HEIGHT} p-2`, showSearchInput && (isLoading || items.length > 0) ? 'pt-13' : showSearchInput ? 'pt-10' : '']}
-	>
+	<div bind:this={listContainer} class={[`${CHAT_FORM_POPOVER_MAX_HEIGHT} p-2`, listPaddingTop]}>
 		{#if isLoading}
 			{#if skeleton}
 				{@render skeleton()}

@@ -130,24 +130,24 @@
 			{/if}
 		{/if}
 
-	{#if message.timestamp}
-		<div class="max-w-[80%]">
-			<ChatMessageActionIcons
-				actionsPosition="right"
-				{deletionInfo}
-				justify="end"
-				{onConfirmDelete}
-				{onCopy}
-				{onDelete}
-				{onEdit}
-				{onForkConversation}
-				{onNavigateToSibling}
-				{onShowDeleteDialogChange}
-				{siblingInfo}
-				{showDeleteDialog}
-				role={MessageRole.USER}
-			/>
-		</div>
-	{/if}
+		{#if message.timestamp}
+			<div class="max-w-[80%]">
+				<ChatMessageActionIcons
+					actionsPosition="right"
+					{deletionInfo}
+					justify="end"
+					{onConfirmDelete}
+					{onCopy}
+					{onDelete}
+					{onEdit}
+					{onForkConversation}
+					{onNavigateToSibling}
+					{onShowDeleteDialogChange}
+					{siblingInfo}
+					{showDeleteDialog}
+					role={MessageRole.USER}
+				/>
+			</div>
+		{/if}
 	{/if}
 </div>

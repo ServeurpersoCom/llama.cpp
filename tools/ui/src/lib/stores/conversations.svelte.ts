@@ -887,7 +887,7 @@ class ConversationsStore {
 	async setWorkingDirectory(value: string | null): Promise<void> {
 		const trimmed = value?.trim() || undefined;
 
-		// No chat yet — buffer for the first chat the user creates.
+		// No chat yet - buffer for the first chat the user creates.
 		if (!this.activeConversation) {
 			this.pendingWorkingDirectory = trimmed ?? null;
 			return;

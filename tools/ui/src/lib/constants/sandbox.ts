@@ -61,13 +61,7 @@ export function buildSandboxToolDefinition(includeSymbolicMath: boolean): OpenAI
 /** @deprecated Use {@link buildSandboxToolDefinition} instead. Kept for backward compatibility. */
 export const SANDBOX_TOOL_DEFINITION = buildSandboxToolDefinition(true);
 
-/**
- * Build the OpenAI-compatible tool definition for the browser-only
- * `set_working_directory` frontend tool. This tool writes the supplied
- * path into the active conversation's IndexedDB row (via
- * `conversationsStore.setWorkingDirectory`) so that subsequent server-side
- * file operations use it as their base directory.
- */
+/** Build the tool definition for the browser-only `set_working_directory` frontend tool. */
 export function buildSetWorkingDirectoryToolDefinition(): OpenAIToolDefinition {
 	return {
 		type: ToolCallType.FUNCTION,
@@ -80,7 +74,8 @@ export function buildSetWorkingDirectoryToolDefinition(): OpenAIToolDefinition {
 				properties: {
 					path: {
 						type: JsonSchemaType.STRING,
-						description: 'Absolute path to set as the working directory. Pass an empty string to clear it.'
+						description:
+							'Absolute path to set as the working directory. Pass an empty string to clear it.'
 					}
 				},
 				required: ['path']

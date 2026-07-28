@@ -23,7 +23,7 @@ export const SETTINGS_KEYS = {
 	SHOW_AGENTIC_TURN_STATS: 'showAgenticTurnStats',
 	SHOW_THOUGHT_IN_PROGRESS: 'showThoughtInProgress',
 	AUTO_MIC_ON_EMPTY: 'autoMicOnEmpty',
-	RENDER_USER_CONTENT_AS_RAW_TEXT: 'renderUserContentAsRawText',
+	RENDER_USER_CONTENT_AS_MARKDOWN: 'renderUserContentAsMarkdown',
 	DISABLE_AUTO_SCROLL: 'disableAutoScroll',
 	ALWAYS_SHOW_SIDEBAR_ON_DESKTOP: 'alwaysShowSidebarOnDesktop',
 	FULL_HEIGHT_CODE_BLOCKS: 'fullHeightCodeBlocks',
@@ -32,6 +32,7 @@ export const SETTINGS_KEYS = {
 	SHOW_MODEL_TAGS: 'showModelTags',
 	SHOW_BUILD_VERSION: 'showBuildVersion',
 	SHOW_SYSTEM_MESSAGE: 'showSystemMessage',
+	RENDER_THINKING_AS_MARKDOWN: 'renderThinkingAsMarkdown',
 	// Sampling
 	TEMPERATURE: 'temperature',
 	DYNATEMP_RANGE: 'dynatemp_range',
@@ -59,7 +60,6 @@ export const SETTINGS_KEYS = {
 	MCP_REQUEST_TIMEOUT_SECONDS: 'mcpRequestTimeoutSeconds',
 	AGENTIC_MAX_TURNS: 'agenticMaxTurns',
 	ALWAYS_SHOW_TOOL_CALL_CONTENT: 'alwaysShowToolCallContent',
-	MENTION_SEARCH_MAX_DEPTH: 'mentionSearchMaxDepth',
 	// Performance
 	PRE_ENCODE_CONVERSATION: 'preEncodeConversation',
 	// Developer

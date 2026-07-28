@@ -370,7 +370,21 @@ bool search(
     }
     const std::vector<walk_entry> & entries = g_walk_cache.entries;
 
-    const std::vector<std::string> q_segs = split_query_on_slash(opts.query);
+    std::vector<std::string> q_segs = split_query_on_slash(opts.query);
+
+    // Absolute path-like query ("/Users/foo/proj"): strip the root prefix so
+    // pasting a full path under the root matches like the relative form.
+    if (!opts.query.empty() && (opts.query[0] == '/' || opts.query[0] == '\\')) {
+        const std::vector<std::string> root_segs = split_query_on_slash(root);
+        const bool under_root = q_segs.size() >= root_segs.size() &&
+            std::equal(root_segs.begin(), root_segs.end(), q_segs.begin(),
+                [](const std::string & a, const std::string & b) {
+                    return a.size() == b.size() && starts_with_ci(a, b);
+                });
+        if (under_root) {
+            q_segs.erase(q_segs.begin(), q_segs.begin() + (ptrdiff_t) root_segs.size());
+        }
+    }
 
     struct scored {
         int tier;

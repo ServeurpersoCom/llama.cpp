@@ -1,15 +1,14 @@
 <script lang="ts">
 	import { File, Folder } from '@lucide/svelte';
-	import { FilesystemService } from '$lib/services';
-	import { abbreviateWorkingDir, debounce, lastPathSegment } from '$lib/utils';
+	import { abbreviateWorkingDir, lastPathSegment } from '$lib/utils';
 	import {
 		browseRoots,
 		ensureBrowseRoots,
 		isBrowseEndpointDisabled
 	} from '$lib/stores/browse-roots.svelte';
+	import { createFilesystemSearch } from '$lib/stores/filesystem-search.svelte';
+	import { isMobile } from '$lib/stores/viewport.svelte';
 	import { recentMentionsStore } from '$lib/stores/recent-mentions.svelte';
-	import { config } from '$lib/stores/settings.svelte';
-	import { SETTINGS_KEYS } from '$lib/constants';
 	import * as Popover from '$lib/components/ui/popover';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 	import HighlightedMatch from '$lib/components/app/forms/HighlightedMatch.svelte';
@@ -60,14 +59,21 @@
 		onOpened
 	}: Props = $props();
 
-	let queryResults = $state<ApiFilesystemSearchEntry[]>([]);
-	let isLoading = $state(false);
-	let searchError = $state<string | null>(null);
 	let hoveredIndex = $state(0);
 	// Bump on ArrowUp/ArrowDown only; mouse hover does NOT change this,
 	// so the list's auto-scroll never fires on hover (see
 	// `scrollTrigger` prop on ChatFormPickerList).
 	let scrollTrigger = $state(0);
+
+	const search = createFilesystemSearch({
+		params: () => ({
+			type: 'any',
+			path: scopePath ?? undefined,
+			limit: 50,
+			max_depth: 16,
+			show_hidden: true
+		})
+	});
 
 	// Most-recently-picked entries (deduped, capped, persisted to
 	// localStorage). Surfaced when the user opens the picker with no
@@ -79,7 +85,7 @@
 	// typed anything after `@`, live search results otherwise.
 	const trimmedQuery = $derived((query ?? '').trim());
 	const isShowingRecents = $derived(trimmedQuery === '');
-	const displayedItems = $derived(isShowingRecents ? recentMentions : queryResults);
+	const displayedItems = $derived(isShowingRecents ? recentMentions : search.results);
 
 	// Empty-message policy:
 	//  - recents empty -> nudge them to start typing
@@ -88,35 +94,16 @@
 	const emptyMessage = $derived(
 		isShowingRecents
 			? 'Start typing to search files and folders'
-			: searchError
-				? `Search failed - ${searchError}`
+			: search.error
+				? `Search failed - ${search.error}`
 				: 'No matching files or folders'
 	);
 
-	// Drop stale responses when the user keeps typing; both an AbortController
-	// (cancels the network) and a sequence counter (covers the gap between
-	// abort and the catch handler) guard against letting older results paint
-	// over newer state.
-	let searchController: AbortController | null = null;
-	let searchSeq = 0;
-
 	// Tooltips only on wider viewports - hover surfaces get in the way on
 	// touch / narrow layouts. Same gate used elsewhere (ActionIcon, WD chip).
-	let innerWidth = $state(0);
-	const showTooltip = $derived(innerWidth > 768);
+	const showTooltip = $derived(!isMobile.current);
 
 	const endpointDisabled = $derived(isBrowseEndpointDisabled());
-
-	// Search depth configured by the user in the Agentic settings section.
-	// Falls back to 16 when no value is set; clamped to [1, 32] matching the
-	// server-side validation range so a stale localStorage value cannot push
-	// the request into the rejection path.
-	const maxDepth = $derived.by(() => {
-		const raw = Number(config()[SETTINGS_KEYS.MENTION_SEARCH_MAX_DEPTH]);
-		const fallback = 16;
-		const n = Number.isFinite(raw) && raw > 0 ? Math.round(raw) : fallback;
-		return Math.min(32, Math.max(1, n));
-	});
 
 	// Reactive subscription to the shared browse-roots cache so the path
 	// abbreviation re-renders once the roots resolve.
@@ -153,96 +140,17 @@
 		if (isOpen) onOpened?.();
 	});
 
+	// The chat textarea is the search surface: `query` (what the user typed
+	// after `@`) drives the debounced fetch directly. Empty query shows the
+	// recents panel instead of searching.
 	$effect(() => {
-		// Re-run whenever the search string changes (textarea reflects into
-		// `query` directly - no internal picker header input).
-		//
-		// Skeleton policy: the instant `q.trim()` has at least one
-		// character we flip `isLoading` to true synchronously, so the
-		// list renders the skeleton placeholder instead of the
-		// stale `queryResults` from a prior query (or the empty-state
-		// message). The empty-state is reserved for "API responded
-		// with no matches" once the request settles.
-		const q = query ?? '';
-		if (!isOpen) {
-			cancelSearch();
+		const q = (query ?? '').trim();
+		if (!isOpen || endpointDisabled || !q) {
+			search.reset();
 			return;
 		}
-		if (endpointDisabled) {
-			cancelSearch();
-			queryResults = [];
-			isLoading = false;
-			searchError = null;
-			return;
-		}
-		const trimmed = q.trim();
-		if (!trimmed) {
-			// Empty query -> recents panel; nothing to fetch.
-			cancelSearch();
-			queryResults = [];
-			isLoading = false;
-			searchError = null;
-			return;
-		}
-		// Active query: skeleton appears instantly while the
-		// debounced request is in flight. Stale items from a prior
-		// query are cleared so the skeleton slots in cleanly.
-		cancelSearch();
-		queryResults = [];
-		isLoading = true;
-		searchError = null;
-		runSearch(q);
+		search.schedule(q);
 	});
-
-	const runSearch = debounce((q: string) => {
-		void doSearch(q);
-	}, 180);
-
-	function cancelSearch() {
-		searchController?.abort();
-		searchSeq++;
-		isLoading = false;
-	}
-
-	async function doSearch(q: string) {
-		const trimmed = q.trim();
-		if (!trimmed) {
-			queryResults = [];
-			isLoading = false;
-			searchError = null;
-			return;
-		}
-
-		cancelSearch();
-		const controller = new AbortController();
-		searchController = controller;
-		const mySeq = ++searchSeq;
-
-		isLoading = true;
-		try {
-			const response = await FilesystemService.search(
-				{
-					query: trimmed,
-					type: 'any',
-					path: scopePath ?? undefined,
-					limit: 50,
-					max_depth: maxDepth,
-					show_hidden: true
-				},
-				controller.signal
-			);
-			if (mySeq !== searchSeq) return;
-			queryResults = response.results;
-			searchError = null;
-		} catch (err) {
-			if (mySeq !== searchSeq) return;
-			queryResults = [];
-			if (controller.signal.aborted) return;
-			searchError = err instanceof Error ? err.message : String(err);
-		} finally {
-			if (mySeq === searchSeq) isLoading = false;
-		}
-	}
 
 	function handleSelect(entry: ApiFilesystemSearchEntry) {
 		// Bump to the front of the recent-mentions list before handing
@@ -296,8 +204,6 @@
 	}
 </script>
 
-<svelte:window bind:innerWidth />
-
 <Popover.Root
 	open={isOpen}
 	onOpenChange={(open) => {
@@ -350,7 +256,7 @@
 
 			<ChatFormPickerList
 				items={displayedItems}
-				isLoading={isShowingRecents ? false : isLoading}
+				isLoading={isShowingRecents ? false : search.isLoading}
 				selectedIndex={hoveredIndex}
 				showSearchInput={false}
 				searchQuery={query ?? ''}

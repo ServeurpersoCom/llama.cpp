@@ -13,12 +13,9 @@
  *    text) must NEVER be observed as input source. The badge's
  *    inner text length is NOT the badge's source length; a chip
  *    labelled "chat" can represent `[chat](file://long/path)` in
- *    the source. An earlier version of `serializeContent` walked
- *    the badge's subtree and emitted the inner label AS PART OF
- *    the source, producing a `[chip ChatForm.svelte] ChatForm.svelte`
- *    leak in the read-only user bubble. The current impl iterates
- *    `root.childNodes` only and treats each badge as one opaque
- *    contribution.
+ *    the source. Iterating a badge's subtree would leak the label
+ *    into the source; only `root.childNodes` is walked and each
+ *    badge is one opaque contribution.
  *
  * 2. Anything inside a badge subtree is invisible to source/diff
  *    math. The badge root contributes `[name](file://path)` and
@@ -37,7 +34,9 @@ import {
 	getMentionBadgeIconPaths
 } from './mention-badge';
 
-export type ContentToken = { kind: 'text'; text: string } | { kind: 'badge'; name: string; path: string };
+export type ContentToken =
+	| { kind: 'text'; text: string }
+	| { kind: 'badge'; name: string; path: string };
 
 /**
  * Recognize completed `[name](file://path)` insertions across the buffer.
@@ -98,8 +97,7 @@ export function tokenizeContent(input: string): ContentToken[] {
  * Serialize a contenteditable subtree back to markdown source form.
  *
  * Iterates `root.childNodes` directly so a badge is one opaque
- * contribution: its descendants are NEVER walked. This is the
- * primitive guarantee that fixes the duplication bug. Text nodes
+ * contribution: its descendants are NEVER walked. Text nodes
  * (direct children) contribute their textContent verbatim. Any
  * non-text, non-badge element is skipped (defensive - the
  * contenteditable root should not contain anything else by

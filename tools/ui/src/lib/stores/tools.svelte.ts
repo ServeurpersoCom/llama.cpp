@@ -3,6 +3,7 @@ import { ToolsService } from '$lib/services/tools.service';
 import { mcpStore } from '$lib/stores/mcp.svelte';
 import { HealthCheckStatus, JsonSchemaType, ToolCallType, ToolSource } from '$lib/enums';
 import { config } from '$lib/stores/settings.svelte';
+import { isBrowseEndpointDisabled } from '$lib/stores/browse-roots.svelte';
 import {
 	DISABLED_TOOL_KEYS_LOCALSTORAGE_KEY,
 	buildSandboxToolDefinition,
@@ -144,7 +145,12 @@ class ToolsStore {
 	}
 
 	get frontendTools(): OpenAIToolDefinition[] {
-		const tools: OpenAIToolDefinition[] = [buildSetWorkingDirectoryToolDefinition()];
+		const tools: OpenAIToolDefinition[] = [];
+		// set_working_directory is only useful when the server exposes the
+		// filesystem endpoints (started with --tools / --agent)
+		if (!isBrowseEndpointDisabled()) {
+			tools.push(buildSetWorkingDirectoryToolDefinition());
+		}
 		if (config().jsSandboxEnabled) {
 			tools.push(buildSandboxToolDefinition(!!config().symbolicMathEnabled));
 		}

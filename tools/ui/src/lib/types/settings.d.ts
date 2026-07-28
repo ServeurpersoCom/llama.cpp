@@ -31,9 +31,6 @@ export interface SettingsEntry {
 	radioOptions?: Array<{ value: string; label: string; key: string; isExperimental?: boolean }>;
 	isExperimental?: boolean;
 	isPositiveInteger?: boolean;
-	placeholder?: string;
-	min?: number;
-	max?: number;
 	dependsOn?: string;
 	sync?: {
 		serverKey: string;
@@ -55,9 +52,6 @@ export interface SettingsFieldConfig {
 	type: SettingsFieldType;
 	isExperimental?: boolean;
 	isPositiveInteger?: boolean;
-	placeholder?: string;
-	min?: number;
-	max?: number;
 	dependsOn?: string;
 	help?: string;
 	options?: Array<{ value: string; label: string; icon?: typeof Icon }>;

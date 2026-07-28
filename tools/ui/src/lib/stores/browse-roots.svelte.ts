@@ -5,7 +5,7 @@ import type { ApiFilesystemRoot } from '$lib/types';
 /**
  * Single-source-of-truth for the server's browse-roots endpoint.
  *
- * Both the working-directory picker and the file-mention picker (Phase B)
+ * Both the working-directory picker and the file-mention picker
  * need the same data: which directories the server is willing to let the
  * client walk into, and which one the user hasn't overridden. Without
  * sharing, each picker would otherwise re-issue the fetch on its own

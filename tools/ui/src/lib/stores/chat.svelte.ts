@@ -914,11 +914,6 @@ class ChatStore {
 	 * them in its context. Branches off the active conversation's current
 	 * leaf (or `parentIdOverride` when supplied, e.g. when injecting a
 	 * setup call after the system message on the first send).
-	 *
-	 * For setter-style calls (`set_working_directory` today), if the
-	 * current leaf is already an assistant+tool pair whose last tool call
-	 * bears the same name, mutate it in place rather than appending a new
-	 * pair - cwd is a state, not a history.
 	 */
 	async recordUserToolCall(
 		toolName: string,
@@ -928,15 +923,6 @@ class ChatStore {
 	): Promise<{ assistantId: string; toolMessageId: string } | null> {
 		const activeConv = conversationsStore.activeConversation;
 		if (!activeConv) return null;
-
-		if (!parentIdOverride) {
-			const replaced = await this.replaceLastUserToolCallIfMatching(
-				toolName,
-				args,
-				result
-			);
-			if (replaced) return replaced;
-		}
 
 		let parentId: string;
 		if (parentIdOverride) {
@@ -996,83 +982,6 @@ class ChatStore {
 		conversationsStore.updateConversationTimestamp();
 
 		return { assistantId: assistantMsg.id, toolMessageId: toolMsg.id };
-	}
-
-	/**
-	 * If the active conversation ends with an assistant tool call whose
-	 * last entry is the same tool we're about to record, followed by the
-	 * matching tool result, mutate those two messages in place to carry
-	 * the new args/result instead of appending a redundant pair. Returns
-	 * the ids if a replacement happened; null otherwise (which lets the
-	 * caller fall through to the append path).
-	 *
-	 * Strict shape required: the assistant message must be at
-	 * `messages.length - 2` and the matching tool result at the tail; any
-	 * later activity means the user has already moved on, and we keep
-	 * the prior setter record untouched.
-	 */
-	private async replaceLastUserToolCallIfMatching(
-		toolName: string,
-		args: Record<string, unknown>,
-		result: { content: string; isError: boolean }
-	): Promise<{ assistantId: string; toolMessageId: string } | null> {
-		const activeConv = conversationsStore.activeConversation;
-		if (!activeConv) return null;
-		const messages = conversationsStore.activeMessages;
-		if (messages.length < 2) return null;
-
-		const idx = messages.length - 2;
-		const assistant = messages[idx];
-		const tool = messages[idx + 1];
-		if (
-			!assistant ||
-			assistant.role !== MessageRole.ASSISTANT ||
-			!assistant.toolCalls ||
-			!tool ||
-			tool.role !== MessageRole.TOOL
-		) {
-			return null;
-		}
-
-		let calls: Array<{
-			id?: string;
-			type?: string;
-			function?: { name?: string; arguments?: string };
-		}>;
-		try {
-			calls = JSON.parse(assistant.toolCalls);
-		} catch {
-			return null;
-		}
-		if (!Array.isArray(calls) || calls.length === 0) return null;
-
-		const lastCall = calls[calls.length - 1];
-		if (!lastCall || lastCall.function?.name !== toolName) return null;
-		if (!lastCall.id || tool.toolCallId !== lastCall.id) return null;
-
-		const newArgsJson = JSON.stringify(args);
-		calls[calls.length - 1] = {
-			...calls[calls.length - 1],
-			function: { ...(calls[calls.length - 1].function ?? {}), arguments: newArgsJson }
-		};
-		const updatedToolCallsJson = JSON.stringify(calls);
-
-		const assistantUpdates: Partial<DatabaseMessage> = {
-			toolCalls: updatedToolCallsJson,
-			timestamp: Date.now()
-		};
-		const toolUpdates: Partial<DatabaseMessage> = {
-			content: result.content,
-			timestamp: Date.now()
-		};
-
-		await DatabaseService.updateMessage(assistant.id, assistantUpdates);
-		conversationsStore.updateMessageAtIndex(idx, assistantUpdates);
-		await DatabaseService.updateMessage(tool.id, toolUpdates);
-		conversationsStore.updateMessageAtIndex(idx + 1, toolUpdates);
-		conversationsStore.updateConversationTimestamp();
-
-		return { assistantId: assistant.id, toolMessageId: tool.id };
 	}
 
 	async addSystemPrompt(): Promise<void> {

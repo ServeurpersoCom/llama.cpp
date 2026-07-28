@@ -12,7 +12,9 @@ export type SetWorkingDirectoryMeta = {
 	errorMessage?: string;
 };
 
-export function parseSetWorkingDirectoryMeta(section: AgenticSection): SetWorkingDirectoryMeta | null {
+export function parseSetWorkingDirectoryMeta(
+	section: AgenticSection
+): SetWorkingDirectoryMeta | null {
 	const args = parseToolArgs(BuiltInTool.SET_WORKING_DIRECTORY, section);
 	if (!args) return null;
 
@@ -22,7 +24,7 @@ export function parseSetWorkingDirectoryMeta(section: AgenticSection): SetWorkin
 	let errorMessage: string | undefined;
 	const toolResultString = section.toolResult;
 	if (toolResultString) {
-		// Try JSON first — the service may wrap the result.
+		// Try JSON first - the service may wrap the result.
 		let parsedObject: Record<string, unknown> | null = null;
 		try {
 			const parsed: unknown = JSON.parse(toolResultString);
@@ -34,10 +36,13 @@ export function parseSetWorkingDirectoryMeta(section: AgenticSection): SetWorkin
 		}
 		if (typeof parsedObject?.error === 'string') {
 			errorMessage = parsedObject.error;
-		} else if (typeof parsedObject?.content === 'string' && parsedObject.content.startsWith('Error:')) {
+		} else if (
+			typeof parsedObject?.content === 'string' &&
+			parsedObject.content.startsWith('Error:')
+		) {
 			errorMessage = parsedObject.content.slice('Error:'.length).trim();
 		} else if (!parsedObject) {
-			// Not JSON — scan raw lines for the `Error:` prefix.
+			// Not JSON - scan raw lines for the `Error:` prefix.
 			const errorLine = toolResultString
 				.split('\n')
 				.map((line) => line.trim())

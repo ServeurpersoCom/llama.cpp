@@ -10,6 +10,7 @@
 		section: AgenticSection;
 		open: boolean;
 		isStreaming: boolean;
+		renderThinkingAsMarkdown: boolean;
 		hasReasoningError?: boolean;
 		attachments?: DatabaseMessageExtra[];
 		onToggle?: () => void;
@@ -19,6 +20,7 @@
 		section,
 		open,
 		isStreaming,
+		renderThinkingAsMarkdown,
 		hasReasoningError = false,
 		attachments,
 		onToggle
@@ -126,7 +128,15 @@
 		class:is-streaming={isPending}
 		onscroll={handleScrollEvent}
 	>
-		<MarkdownContent content={section.content} class="text-muted-foreground" {attachments} />
+		{#if renderThinkingAsMarkdown}
+			<MarkdownContent content={section.content} class="text-muted-foreground" {attachments} />
+		{:else}
+			<div
+				class="text-[13px] leading-relaxed wrap-break-word whitespace-pre-wrap text-muted-foreground"
+			>
+				{section.content}
+			</div>
+		{/if}
 	</div>
 </CollapsibleContentBlock>
 

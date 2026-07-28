@@ -46,8 +46,7 @@
 	function syncEmptyState() {
 		if (!rootElement) return;
 		const text = rootElement.textContent ?? '';
-		const onlyBr =
-			rootElement.childNodes.length === 1 && rootElement.firstChild?.nodeName === 'BR';
+		const onlyBr = rootElement.childNodes.length === 1 && rootElement.firstChild?.nodeName === 'BR';
 		const isEmpty = text.trim().length === 0 && onlyBr;
 		rootElement.dataset.empty = isEmpty ? 'true' : 'false';
 	}

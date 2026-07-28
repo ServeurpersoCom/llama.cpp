@@ -1,9 +1,8 @@
 <script lang="ts">
 	import { Folder, FolderX, Loader2 } from '@lucide/svelte';
 	import { AgenticSectionType } from '$lib/enums';
-	import { FilesystemService } from '$lib/services';
-	import { abbreviateWorkingDir, ApiError, type AgenticSection } from '$lib/utils';
-	import type { ApiFilesystemRoot } from '$lib/types';
+	import { browseRoots, ensureBrowseRoots } from '$lib/stores/browse-roots.svelte';
+	import { abbreviateWorkingDir, type AgenticSection } from '$lib/utils';
 	import { parseSetWorkingDirectoryMeta } from './parsers/set-working-directory';
 
 	interface Props {
@@ -19,29 +18,11 @@
 
 	const meta = $derived(parseSetWorkingDirectoryMeta(section));
 
-	// Fetch browse roots so the working-directory display can be
-	// abbreviated to `~` / `~/...` against the default root. Mirrors
-	// the exec shell prefix and the picker chip - same shared utility.
-	let browseRoots = $state<ApiFilesystemRoot[] | null>(null);
-
-	async function loadBrowseRoots() {
-		if (browseRoots !== null) return;
-		try {
-			const res = await FilesystemService.getRoots();
-			browseRoots = res.roots;
-		} catch (err) {
-			if (!(err instanceof ApiError && err.status === 501)) {
-				console.error('[SetWorkingDirectory] getRoots failed:', err);
-			}
-			browseRoots = [];
-		}
-	}
-
 	$effect(() => {
-		if (meta?.path) void loadBrowseRoots();
+		if (meta?.path) void ensureBrowseRoots();
 	});
 
-	const setWorkingDirDisplay = $derived(abbreviateWorkingDir(meta?.path, browseRoots));
+	const setWorkingDirDisplay = $derived(abbreviateWorkingDir(meta?.path, browseRoots()));
 </script>
 
 <div class="text-muted-foreground flex items-center gap-2 py-1.5">

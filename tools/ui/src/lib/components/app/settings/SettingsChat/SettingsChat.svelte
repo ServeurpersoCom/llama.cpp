@@ -98,12 +98,7 @@
 				const numValue = Number(processedConfig[field]);
 				if (!isNaN(numValue)) {
 					if ((POSITIVE_INTEGER_FIELDS as readonly string[]).includes(field)) {
-						const entryByMinMax = SETTINGS_CHAT_SECTIONS
-							.flatMap((section) => section.fields ?? [])
-							.find((entry) => entry.key === field);
-						const lo = entryByMinMax?.min ?? 1;
-						const hi = entryByMinMax?.max ?? Number.POSITIVE_INFINITY;
-						processedConfig[field] = Math.max(lo, Math.min(hi, Math.round(numValue)));
+						processedConfig[field] = Math.max(1, Math.round(numValue));
 					} else {
 						processedConfig[field] = numValue;
 					}

@@ -13,12 +13,12 @@
 	import { chatStore, isLoading, isChatStreaming } from '$lib/stores/chat.svelte';
 	import { modelLoadProgressText } from '$lib/utils';
 	import { MessageRole } from '$lib/enums';
-	import { BuiltInTool, AgenticSectionType } from '$lib/enums';
+	import { BuiltInTool } from '$lib/enums';
 	import { config } from '$lib/stores/settings.svelte';
 	import { isRouterMode } from '$lib/stores/server.svelte';
 	import { modelsStore } from '$lib/stores/models.svelte';
 
-	import { hasAgenticContent, deriveAgenticSections } from '$lib/utils';
+	import { hasAgenticContent } from '$lib/utils';
 
 	interface Props {
 		class?: string;
@@ -71,37 +71,28 @@
 	const isAgentic = $derived(hasAgenticContent(message, toolMessages));
 	const processingState = useProcessingState();
 
-	/**
-	 * The chat-form triggers a `set_working_directory` tool call when the
-	 * user picks a directory. It produces an assistant message whose
-	 * entire agentic content is just that single tool section - no
-	 * reasoning, no prose. For messages like this the full Copy / Edit /
-	 * Regenerate / Continue toolbar is noise (there's nothing useful to
-	 * copy or continue from), so we collapse it down to Fork + Delete.
-	 *
-	 * The check intentionally looks at ALL sections rather than `sections[0]`
-	 * so a mixed message (real text + set_working_directory side call) keeps
-	 * the full toolbar.
-	 */
+	// A `set_working_directory` picker pick produces an assistant message whose
+	// only content is that single tool call; collapse the toolbar to Fork +
+	// Delete for those (nothing to copy or continue from).
 	const isMinimalSetWorkingDirectoryMessage = $derived.by(() => {
 		if (message.role !== MessageRole.ASSISTANT) return false;
+		if (message.reasoningContent || message.content?.trim()) return false;
+		if (toolMessages.some((m) => m.role === MessageRole.ASSISTANT)) return false;
+		if (!message.toolCalls) return false;
 
-		const streamingToolCalls = isChatStreaming() ? (message.toolCalls ?? []) : [];
-		const sections = deriveAgenticSections(
-			message,
-			toolMessages,
-			streamingToolCalls,
-			isChatStreaming()
-		);
-		if (sections.length === 0) return false;
-
-		return sections.every(
-			(section) =>
-				(section.type === AgenticSectionType.TOOL_CALL ||
-					section.type === AgenticSectionType.TOOL_CALL_PENDING ||
-					section.type === AgenticSectionType.TOOL_CALL_STREAMING) &&
-				section.toolName === BuiltInTool.SET_WORKING_DIRECTORY
-		);
+		try {
+			const calls: unknown = JSON.parse(message.toolCalls);
+			return (
+				Array.isArray(calls) &&
+				calls.length > 0 &&
+				calls.every(
+					(c) =>
+						(c as ApiChatCompletionToolCall)?.function?.name === BuiltInTool.SET_WORKING_DIRECTORY
+				)
+			);
+		} catch {
+			return false;
+		}
 	});
 
 	let currentConfig = $derived(config());

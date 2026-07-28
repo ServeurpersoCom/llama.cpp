@@ -12,7 +12,6 @@
 	import { config } from '$lib/stores/settings.svelte';
 	import { TOOL_RUNTIME_SCROLL_AT_BOTTOM_THRESHOLD_PX } from '$lib/constants/auto-scroll';
 	import {
-		ApiError,
 		abbreviateWorkingDir,
 		highlightCode,
 		isExitCodeSummaryLine,
@@ -23,9 +22,13 @@
 		type ExecShellExitStatus,
 		type ToolResultLine
 	} from '$lib/utils';
-	import { FilesystemService } from '$lib/services';
+	import {
+		browseRoots,
+		defaultBrowseRootPath,
+		ensureBrowseRoots
+	} from '$lib/stores/browse-roots.svelte';
 	import { parseExecShellCommandMeta } from './parsers/exec-shell-command';
-	import type { ApiFilesystemRoot, DatabaseMessageExtra } from '$lib/types';
+	import type { DatabaseMessageExtra } from '$lib/types';
 	import ToolCallBlock from './ToolCallBlock.svelte';
 
 	interface Props {
@@ -78,43 +81,18 @@
 		execShellMeta ? highlightCode(execShellMeta.command, 'bash') : ''
 	);
 
-	// Fetch browse roots so we can abbreviate the working directory to
-	// `~`/`~/...` via the shared utility. Settles to `[]` on failure -
-	// chrome 501 / network errors - so `abbreviateWorkingDir` cleanly
-	// falls back to the basename.
-	let browseRoots = $state<ApiFilesystemRoot[] | null>(null);
-
-	async function loadBrowseRoots() {
-		if (browseRoots !== null) return;
-		try {
-			const res = await FilesystemService.getRoots();
-			browseRoots = res.roots;
-		} catch (err) {
-			if (!(err instanceof ApiError && err.status === 501)) {
-				console.error('[ExecShell] getRoots failed:', err);
-			}
-			browseRoots = [];
-		}
-	}
-
 	$effect(() => {
-		if (execShellMeta?.workingDirectory) void loadBrowseRoots();
+		if (execShellMeta?.workingDirectory) void ensureBrowseRoots();
 	});
 
-	// Default browse root mirrors the picker logic: prefer the entry
-	// flagged `default`, otherwise the first. `null` while loading.
-	const execShellDefaultRoot = $derived.by(() => {
-		if (!browseRoots || browseRoots.length === 0) return null;
-		const def = browseRoots.find((r) => r.default);
-		return def?.path ?? browseRoots[0].path;
-	});
+	const execShellDefaultRoot = $derived(defaultBrowseRootPath());
 
 	// Display string for the prefix chip. Delegates to the shared
 	// utility so the picker chip and this title prefix render HOME
 	// identically (matches `~/...` against the default browse root,
 	// falls back to the basename otherwise).
 	const execShellWdDisplay = $derived(
-		abbreviateWorkingDir(execShellMeta?.workingDirectory, browseRoots)
+		abbreviateWorkingDir(execShellMeta?.workingDirectory, browseRoots())
 	);
 
 	const exitBadgeClass = $derived(
@@ -301,8 +279,6 @@
 		scrollbar-gutter: stable;
 		padding-right: 0.25rem;
 	}
-
-
 
 	.exit-badge {
 		display: inline-flex;

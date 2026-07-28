@@ -97,10 +97,8 @@
 		<div
 			class="pointer-events-auto inset-0 flex items-center gap-1 opacity-100 transition-all duration-150"
 		>
-			<!-- Default mode: full toolbar (copy / edit / regenerate / continue).
-			     Minimal mode (used by non-contributing tool calls like
-			     set_working_directory) drops them and leaves only fork + delete,
-			     since the message carries no user-facing prose to copy or continue. -->
+			<!-- Minimal mode keeps only fork + delete, for messages with no prose
+			     to copy or continue (set_working_directory tool calls). -->
 			{#if mode === 'default'}
 				<ActionIcon icon={Copy} tooltip="Copy" onclick={onCopy} />
 
