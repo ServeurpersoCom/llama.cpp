@@ -8,6 +8,7 @@
 	} from '$lib/stores/browse-roots.svelte';
 	import { createFilesystemSearch } from '$lib/stores/filesystem-search.svelte';
 	import { isMobile } from '$lib/stores/viewport.svelte';
+	import { config } from '$lib/stores/settings.svelte';
 	import { recentMentionsStore } from '$lib/stores/recent-mentions.svelte';
 	import * as Popover from '$lib/components/ui/popover';
 	import * as Tooltip from '$lib/components/ui/tooltip';
@@ -70,7 +71,7 @@
 			type: 'any',
 			path: scopePath ?? undefined,
 			limit: 50,
-			max_depth: 16,
+			max_depth: (config().mentionSearchMaxDepth as number | undefined) ?? 16,
 			show_hidden: true
 		})
 	});
