@@ -15,8 +15,8 @@
 
 import {
 	MENTION_BADGE_CLASSNAME,
-	MENTION_BADGE_FOLDER_D,
-	MENTION_BADGE_ICON_CLASSNAME
+	MENTION_BADGE_ICON_CLASSNAME,
+	getMentionBadgeIconPaths
 } from '$lib/utils';
 import type { Plugin } from 'unified';
 import type { Root, Element } from 'hast';
@@ -35,11 +35,15 @@ function labelFromFileUrl(href: string): string {
 }
 
 /**
- * Build the inline folder icon as a hast `<svg>` element tree.
- * Mirrors `lucide-svelte`'s `<Folder />` glyph so the Svelte-rendered
- * and DOM-built paths produce visually identical output.
+ * Build the inline icon as a hast `<svg>` element tree. Mirrors the
+ * lucide component picked by `MentionBadge.svelte` so the Svelte-
+ * rendered and DOM-built paths produce visually identical output.
+ *
+ * @param href - The `file://` link target; a trailing `/` marks a
+ * directory and selects the folder icon, matching the convention
+ * the mention picker uses when it inserts the badge.
  */
-function folderIconElement(): Element {
+function iconElement(href: string): Element {
 	return {
 		type: 'element',
 		tagName: 'svg',
@@ -54,14 +58,12 @@ function folderIconElement(): Element {
 			'aria-hidden': 'true',
 			className: MENTION_BADGE_ICON_CLASSNAME.split(' ').filter(Boolean)
 		},
-		children: [
-			{
-				type: 'element',
-				tagName: 'path',
-				properties: { d: MENTION_BADGE_FOLDER_D },
-				children: []
-			}
-		]
+		children: getMentionBadgeIconPaths(href).map((d) => ({
+			type: 'element',
+			tagName: 'path',
+			properties: { d },
+			children: []
+		}))
 	};
 }
 
@@ -87,7 +89,7 @@ export const rehypeFileBadge: Plugin<[], Root> = () => {
 				title: titleAttr
 			};
 			node.children = [
-				folderIconElement(),
+				iconElement(href),
 				{
 					type: 'element',
 					tagName: 'span',

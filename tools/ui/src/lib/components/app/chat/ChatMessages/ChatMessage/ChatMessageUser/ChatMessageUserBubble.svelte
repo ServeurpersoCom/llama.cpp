@@ -24,7 +24,7 @@
 
 	let isMultiline = $state(false);
 	let messageElement: HTMLElement | undefined = $state();
-	const currentConfig = config();
+	const currentConfig = $derived(config());
 
 	$effect(() => {
 		if (!messageElement || !content.trim()) return;
@@ -63,7 +63,7 @@
 		data-multiline={isMultiline ? '' : undefined}
 		style="{maxHeightStyle} overflow-wrap: anywhere; word-break: break-word;"
 	>
-		{#if renderMarkdown && currentConfig.renderUserContentAsMarkdown}
+		{#if renderMarkdown && !currentConfig.renderUserContentAsRawText}
 			<div bind:this={messageElement}>
 				<MarkdownContent class="markdown-user-content" {content} />
 			</div>

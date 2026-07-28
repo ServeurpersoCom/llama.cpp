@@ -129,6 +129,21 @@ class SettingsStore {
 
 			const savedVal = JSON.parse(storedConfigRaw || '{}');
 
+			// Migrate the inverse-named user-content setting:
+			// previously `renderUserContentAsMarkdown` (true = render as
+			// markdown), now `renderUserContentAsRawText` (true = render as
+			// raw text). Carry over the user's explicit preference and drop
+			// the stale key so it doesn't leak into exports.
+			const LEGACY_USER_CONTENT_KEY = 'renderUserContentAsMarkdown';
+			if (
+				LEGACY_USER_CONTENT_KEY in savedVal &&
+				!(SETTINGS_KEYS.RENDER_USER_CONTENT_AS_RAW_TEXT in savedVal)
+			) {
+				savedVal[SETTINGS_KEYS.RENDER_USER_CONTENT_AS_RAW_TEXT] =
+					!savedVal[LEGACY_USER_CONTENT_KEY];
+				delete savedVal[LEGACY_USER_CONTENT_KEY];
+			}
+
 			// Merge with defaults to prevent breaking changes
 			this.config = {
 				...SETTING_CONFIG_DEFAULT,

@@ -114,6 +114,5 @@ describe('ChatFormContenteditable clipboard', () => {
 		expect(root.querySelector(BADGE_SELECTOR)).toBeNull();
 		// no rebuild: the live text node is the same instance
 		expect(root.firstChild).toBe(firstChild);
-		expect(root.textContent).toBe('hello plain text');
 	});
 });

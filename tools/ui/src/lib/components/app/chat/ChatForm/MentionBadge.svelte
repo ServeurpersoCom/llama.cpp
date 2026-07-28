@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Folder } from '@lucide/svelte';
+	import { File, Folder } from '@lucide/svelte';
 
 	interface Props {
 		class?: string;
@@ -9,6 +9,12 @@
 	}
 
 	let { class: className = '', href, name, path }: Props = $props();
+
+	// The mention picker encodes directories with a trailing `/` in
+	// the `file://` link target; we use that to pick the icon. The
+	// convention survives copy/paste so the icon stays correct when
+	// a badge is reconstructed from a pasted markdown source.
+	const Icon = $derived(path.endsWith('/') ? Folder : File);
 </script>
 
 {#if href}
@@ -23,7 +29,7 @@
 			className
 		]}
 	>
-		<Folder class="h-3 w-3 shrink-0" aria-hidden="true" />
+		<Icon class="h-3 w-3 shrink-0" aria-hidden="true" />
 		<span class="shrink-0 truncate">{name}</span>
 	</a>
 {:else}
@@ -37,7 +43,7 @@
 			className
 		]}
 	>
-		<Folder class="h-3 w-3 shrink-0" aria-hidden="true" />
+		<Icon class="h-3 w-3 shrink-0" aria-hidden="true" />
 		<span class="shrink-0 truncate">{name}</span>
 	</span>
 {/if}

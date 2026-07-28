@@ -33,8 +33,8 @@
 
 import {
 	MENTION_BADGE_CLASSNAME,
-	MENTION_BADGE_FOLDER_D,
-	MENTION_BADGE_ICON_CLASSNAME
+	MENTION_BADGE_ICON_CLASSNAME,
+	getMentionBadgeIconPaths
 } from './mention-badge';
 
 export type ContentToken = { kind: 'text'; text: string } | { kind: 'badge'; name: string; path: string };
@@ -204,8 +204,8 @@ export function buildFragment(tokens: ContentToken[]): DocumentFragment {
 		badge.className = MENTION_BADGE_CLASSNAME;
 		badge.contentEditable = 'false';
 
-		// Folder icon - matches lucide-svelte's `<Folder />` so the
-		// DOM-built badge is visually identical to MentionBadge.svelte.
+		// Icon - matches the lucide component picked by MentionBadge.svelte
+		// so the DOM-built badge is visually identical.
 		const SVG_NS = 'http://www.w3.org/2000/svg';
 		const svg = document.createElementNS(SVG_NS, 'svg');
 		svg.setAttribute('viewBox', '0 0 24 24');
@@ -219,9 +219,11 @@ export function buildFragment(tokens: ContentToken[]): DocumentFragment {
 			svg.classList.add(cls);
 		}
 
-		const path = document.createElementNS(SVG_NS, 'path');
-		path.setAttribute('d', MENTION_BADGE_FOLDER_D);
-		svg.appendChild(path);
+		for (const d of getMentionBadgeIconPaths(token.path)) {
+			const path = document.createElementNS(SVG_NS, 'path');
+			path.setAttribute('d', d);
+			svg.appendChild(path);
+		}
 
 		const label = document.createElement('span');
 		label.classList.add('shrink-0', 'truncate');

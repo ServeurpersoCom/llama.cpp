@@ -189,7 +189,9 @@ export {
 	containsFileMentionLink,
 	MENTION_BADGE_CLASSNAME,
 	MENTION_BADGE_ICON_CLASSNAME,
-	MENTION_BADGE_FOLDER_D
+	MENTION_BADGE_FILE_ICON_PATHS,
+	MENTION_BADGE_FOLDER_ICON_PATHS,
+	getMentionBadgeIconPaths
 } from './mention-badge';
 
 // Agentic content utilities (structured section derivation)
