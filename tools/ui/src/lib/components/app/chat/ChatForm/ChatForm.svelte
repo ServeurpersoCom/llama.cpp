@@ -719,7 +719,7 @@
 		>
 			{#if useContenteditable}
 				<ChatFormContenteditable
-					class="px-5 py-1.5 md:pt-0"
+					class="px-5 py-1.5 md:pt-0 mb-0.5"
 					bind:this={inputRef}
 					bind:value
 					onKeydown={handleKeydown}
