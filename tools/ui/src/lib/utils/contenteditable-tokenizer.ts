@@ -1,11 +1,12 @@
 /**
  * Tokenizer for the chat-form contenteditable input.
  *
- * The chat input renders some user-typed segments as plain text and
+ * The chat input renders some user-typed segments as plain text,
  * others (`[name](file://...)` markdown links produced by the @
- * picker) as inline badge chips. This module owns the two-way
- * mapping between the underlying markdown source string and a flat
- * token stream the DOM is built from.
+ * picker) as inline badge chips, and complete `code` spans (inline
+ * and fenced blocks) with the markdown code look. This module owns
+ * the two-way mapping between the underlying markdown source string
+ * and a flat token stream the DOM is built from.
  *
  * Hard rules that the invariants below rely on:
  *
@@ -26,6 +27,11 @@
  *    (the badge is `contenteditable=false`). We collapse to the
  *    nearest editable edge (`setStartBefore` / `setStartAfter`)
  *    so the user-visible caret lands cleanly.
+ *
+ * 4. Code spans (`<code data-code-token>`) are EDITABLE, unlike
+ *    badges: they carry the full source segment (backtick fences
+ *    included) as their text, so their textContent serializes
+ *    verbatim and source offsets map 1:1 to text offsets.
  */
 
 import {
@@ -36,7 +42,9 @@ import {
 
 export type ContentToken =
 	| { kind: 'text'; text: string }
-	| { kind: 'badge'; name: string; path: string };
+	| { kind: 'badge'; name: string; path: string }
+	| { kind: 'inlineCode'; text: string }
+	| { kind: 'codeBlock'; text: string };
 
 /**
  * Recognize completed `[name](file://path)` insertions across the buffer.
@@ -67,13 +75,65 @@ function badgeSourceLength(name: string, path: string): number {
 }
 
 /**
+ * Recognize complete code spans. Fenced blocks (triple backticks,
+ * optional language, possibly multiline) take priority over inline
+ * spans (single backticks, single line, non-empty). Only CLOSED
+ * spans match: an unclosed fence stays plain text until the closing
+ * backticks land. The match includes the fences so the token's
+ * source length equals its rendered text length.
+ */
+const CODE_SPAN_RE = /(```[\s\S]*?```)|(`[^`\n]+`)/g;
+
+/**
+ * Cheap gate check for `ChatForm`: does the buffer contain a
+ * complete code span (inline or fenced)? Used to promote the plain
+ * textarea to the contenteditable renderer.
+ */
+export function containsCodeSpan(value: string): boolean {
+	CODE_SPAN_RE.lastIndex = 0;
+	return CODE_SPAN_RE.test(value);
+}
+
+/**
  * Tokenize a markdown source value into the segments the
- * contenteditable will render. Plain text and badges interleave in
- * source order. Any whitespace after a badge stays in a plain
- * text token so the round trip is byte-exact.
+ * contenteditable will render. Code spans are carved out first
+ * (their content is literal - a `file://` link inside backticks
+ * must NOT render as a badge), then plain text and badges
+ * interleave in the remaining gaps. Any whitespace after a badge
+ * stays in a plain text token so the round trip is byte-exact.
  */
 export function tokenizeContent(input: string): ContentToken[] {
 	const tokens: ContentToken[] = [];
+	let cursor = 0;
+	CODE_SPAN_RE.lastIndex = 0;
+
+	let match: RegExpExecArray | null;
+	while ((match = CODE_SPAN_RE.exec(input)) !== null) {
+		const start = match.index;
+
+		if (start > cursor) {
+			pushTextAndBadgeTokens(input.slice(cursor, start), tokens);
+		}
+
+		tokens.push(
+			match[1] !== undefined
+				? { kind: 'codeBlock', text: match[1] }
+				: { kind: 'inlineCode', text: match[2] }
+		);
+		cursor = start + match[0].length;
+	}
+
+	if (cursor < input.length) {
+		pushTextAndBadgeTokens(input.slice(cursor), tokens);
+	}
+
+	return tokens;
+}
+
+/**
+ * Tokenize a code-free segment into text and badge tokens.
+ */
+function pushTextAndBadgeTokens(input: string, tokens: ContentToken[]) {
 	let cursor = 0;
 	MENTION_BADGE_RE.lastIndex = 0;
 
@@ -93,18 +153,17 @@ export function tokenizeContent(input: string): ContentToken[] {
 	if (cursor < input.length) {
 		tokens.push({ kind: 'text', text: input.slice(cursor) });
 	}
-
-	return tokens;
 }
 
 /**
  * Serialize a contenteditable subtree back to markdown source form.
  *
  * Iterates `root.childNodes` directly so a badge is one opaque
- * contribution: its descendants are NEVER walked. Text nodes
- * (direct children) contribute their textContent verbatim. Any
- * non-text, non-badge element is skipped (defensive - the
- * contenteditable root should not contain anything else by
+ * contribution: its descendants are NEVER walked. Code spans
+ * contribute their textContent verbatim (fences included). Text
+ * nodes (direct children) contribute their textContent verbatim.
+ * Any non-text, non-badge, non-code element is skipped (defensive -
+ * the contenteditable root should not contain anything else by
  * construction, but browsers can inject wrappers in some edit
  * scenarios and we don't want those to leak into the source).
  */
@@ -120,6 +179,14 @@ export function serializeContent(root: HTMLElement): string {
 		if (child.nodeType !== Node.ELEMENT_NODE) continue;
 
 		const el = child as HTMLElement;
+
+		// Code spans serialize verbatim: their textContent IS the source
+		// segment, backtick fences included.
+		if (el.dataset.codeToken !== undefined) {
+			out += el.textContent ?? '';
+			continue;
+		}
+
 		if (el.dataset.mentionBadge !== 'true') continue;
 
 		const name = el.dataset.mentionName ?? '';
@@ -130,6 +197,49 @@ export function serializeContent(root: HTMLElement): string {
 	}
 
 	return out;
+}
+
+/**
+ * Compare the live DOM's non-text structure against a token stream.
+ * Only element contributions are compared (badges by name/path, code
+ * spans by kind and source segment): text nodes are owned by the
+ * browser between rebuilds, so their split/merge state is irrelevant.
+ * A mismatch means token boundaries shifted (a code span was just
+ * completed or broken) and the DOM needs a rebuild to restyle.
+ */
+export function domMatchesTokens(root: HTMLElement, tokens: ContentToken[]): boolean {
+	const expected = tokens.filter((token) => token.kind !== 'text');
+	let index = 0;
+
+	for (const child of Array.from(root.childNodes)) {
+		if (child.nodeType !== Node.ELEMENT_NODE) continue;
+
+		const el = child as HTMLElement;
+		const isBadge = el.dataset.mentionBadge === 'true';
+		const isCode = el.dataset.codeToken !== undefined;
+		if (!isBadge && !isCode) continue;
+
+		const token = expected[index++];
+		if (!token) return false;
+
+		if (isBadge) {
+			if (token.kind !== 'badge') return false;
+			if (token.name !== (el.dataset.mentionName ?? '')) return false;
+			if (token.path !== (el.dataset.mentionPath ?? '')) return false;
+			continue;
+		}
+
+		const codeKind = el.dataset.codeToken === 'block' ? 'codeBlock' : 'inlineCode';
+		if (token.kind !== codeKind) return false;
+		if (
+			(token.kind === 'inlineCode' || token.kind === 'codeBlock') &&
+			token.text !== (el.textContent ?? '')
+		) {
+			return false;
+		}
+	}
+
+	return index === expected.length;
 }
 
 /**
@@ -164,6 +274,12 @@ export function rangeToTextOffset(root: HTMLElement, range: Range | null): numbe
 		if (child.nodeType !== Node.ELEMENT_NODE) continue;
 
 		const el = child as HTMLElement;
+
+		if (el.dataset.codeToken !== undefined) {
+			total += (el.textContent ?? '').length;
+			continue;
+		}
+
 		if (el.dataset.mentionBadge !== 'true') continue;
 
 		total += badgeSourceLength(el.dataset.mentionName ?? '', el.dataset.mentionPath ?? '');
@@ -187,6 +303,14 @@ export function buildFragment(tokens: ContentToken[]): DocumentFragment {
 	for (const token of tokens) {
 		if (token.kind === 'text') {
 			fragment.appendChild(document.createTextNode(token.text));
+			continue;
+		}
+
+		if (token.kind === 'inlineCode' || token.kind === 'codeBlock') {
+			const code = document.createElement('code');
+			code.dataset.codeToken = token.kind === 'codeBlock' ? 'block' : 'inline';
+			code.textContent = token.text;
+			fragment.appendChild(code);
 			continue;
 		}
 
@@ -352,6 +476,45 @@ export function textOffsetToRange(root: HTMLElement, offset: number): Range {
 		if (child.nodeType !== Node.ELEMENT_NODE) continue;
 
 		const el = child as HTMLElement;
+
+		if (el.dataset.codeToken !== undefined) {
+			const codeLen = (el.textContent ?? '').length;
+			if (remaining > codeLen) {
+				remaining -= codeLen;
+				continue;
+			}
+
+			// Boundary offsets land OUTSIDE the element so typing at a
+			// code span's edge extends the surrounding text, not the
+			// span. Interior offsets land in the element's text.
+			if (remaining === 0) {
+				range.setStartBefore(el);
+				range.setEndBefore(el);
+				return range;
+			}
+			if (remaining === codeLen) {
+				range.setStartAfter(el);
+				range.setEndAfter(el);
+				return range;
+			}
+
+			let rest = remaining;
+			for (const node of Array.from(el.childNodes)) {
+				if (node.nodeType !== Node.TEXT_NODE) continue;
+				const len = (node.textContent ?? '').length;
+				if (rest <= len) {
+					range.setStart(node, rest);
+					range.setEnd(node, rest);
+					return range;
+				}
+				rest -= len;
+			}
+
+			range.setStartAfter(el);
+			range.setEndAfter(el);
+			return range;
+		}
+
 		if (el.dataset.mentionBadge !== 'true') continue;
 
 		const badgeLen = badgeSourceLength(el.dataset.mentionName ?? '', el.dataset.mentionPath ?? '');

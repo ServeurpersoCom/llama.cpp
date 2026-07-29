@@ -169,10 +169,13 @@ export {
 } from './mention-token';
 
 // Tokenization for the chat-form contenteditable (renders `@`-picked
-// `[name](file://...)` links as inline badges inside the input while
-// keeping the markdown source unchanged).
+// `[name](file://...)` links as inline badges and complete code spans
+// with the markdown code look, while keeping the markdown source
+// unchanged).
 export {
 	tokenizeContent,
+	containsCodeSpan,
+	domMatchesTokens,
 	serializeContent,
 	buildFragment,
 	rangeToTextOffset,

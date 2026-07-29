@@ -4,6 +4,7 @@
 	import {
 		badgeAwareWordJump,
 		buildFragment,
+		domMatchesTokens,
 		leadingBadgeEdgeOffset,
 		rangeToTextOffset,
 		serializeContent,
@@ -131,7 +132,12 @@
 	}
 
 	/**
-	 * Re-emit the current markdown source value to the parent.
+	 * Re-emit the current markdown source value to the parent, then
+	 * reconcile the DOM against the token stream: when a code span
+	 * was just completed or broken, the token boundaries no longer
+	 * match the element structure and the DOM is rebuilt (caret
+	 * preserved through the source-offset mapping).
+	 *
 	 * Bails out when the DOM diff is below the threshold reported by
 	 * the browser (browser coalesces rapid IME keystrokes) - the
 	 * native event already fired, so let the parent react when
@@ -141,11 +147,21 @@
 		if (isComposing || !rootElement) return;
 
 		syncEmptyState();
+		resizeHeight();
 		const serialized = serializeContent(rootElement);
 		if (serialized === lastEmittedValue) return;
 
 		lastEmittedValue = serialized;
 		value = serialized;
+
+		// Rebuild when token boundaries shifted (a code span was just
+		// completed or broken) - the browser-owned text nodes cannot
+		// restyle themselves across element boundaries.
+		const tokens = tokenizeContent(serialized);
+		if (!domMatchesTokens(rootElement, tokens)) {
+			renderTokens(tokens);
+		}
+
 		onInput?.();
 	}
 
@@ -155,13 +171,7 @@
 
 	function handleCompositionEnd() {
 		isComposing = false;
-		if (!rootElement) return;
-		const serialized = serializeContent(rootElement);
-		if (serialized === lastEmittedValue) return;
-		lastEmittedValue = serialized;
-		value = serialized;
-		onInput?.();
-		syncEmptyState();
+		handleInput();
 	}
 
 	/**
@@ -211,9 +221,9 @@
 
 	/**
 	 * Plain-text paste (the parent's `handlePaste` already short-
-	 * circuits file/clipboard-quote cases) - feed the inserted
-	 * string through the tokenizer so newly pasted `[name](file://...)`
-	 * segments immediately render as inline badges.
+	 * circuits file/clipboard-quote cases). insertText fires `input`
+	 * synchronously, so `handleInput` re-tokenizes the buffer and
+	 * rebuilds when the pasted text carries badge or code tokens.
 	 *
 	 * Passing through event.preventDefault() + manual insertText
 	 * guarantees the browser does not produce stray HTML elements
@@ -237,13 +247,6 @@
 			}
 
 			document.execCommand('insertText', false, pasted);
-
-			// insertText fires `input` synchronously, so the new source
-			// is already emitted. Rebuild when the pasted text contains
-			// mention links so they render as badges right away.
-			if (rootElement && tokenizeContent(pasted).some((token) => token.kind === 'badge')) {
-				renderTokens(tokenizeContent(serializeContent(rootElement)));
-			}
 		}
 	}
 
@@ -407,5 +410,27 @@
 		content: attr(data-placeholder);
 		color: var(--muted-foreground);
 		pointer-events: none;
+	}
+
+	/* Inline code - mirrors markdown-content.css */
+	.chat-form-contenteditable :global(code[data-code-token='inline']) {
+		background: var(--muted);
+		color: var(--muted-foreground);
+		padding: 0.125rem 0.375rem;
+		border-radius: 0.375rem;
+		font-size: 0.875rem;
+	}
+
+	/* Fenced code block - mirrors .code-block-wrapper in markdown-content.css */
+	.chat-form-contenteditable :global(code[data-code-token='block']) {
+		display: block;
+		margin: 0.25rem 0;
+		padding: 0.75rem 1rem;
+		border: 1px solid color-mix(in oklch, var(--border) 30%, transparent);
+		border-radius: 0.75rem;
+		background: var(--code-background);
+		color: var(--code-foreground);
+		font-size: 0.875rem;
+		line-height: 1.3;
 	}
 </style>

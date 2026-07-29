@@ -49,6 +49,7 @@
 		PromptMessage
 	} from '$lib/types';
 	import {
+		containsCodeSpan,
 		containsFileMentionLink,
 		findMentionToken,
 		isIMEComposing,
@@ -133,11 +134,12 @@
 	let inputRef: ChatInputHandle | undefined = $state(undefined);
 
 	// One-way promotion gate: render the simple textarea by default,
-	// swap in the contenteditable once a `file://` markdown link lands
-	// in the buffer. The promotion is sticky for the lifetime of the
-	// composition - backspacing every file link out does NOT demote,
-	// preventing the swap-thrash that comes from a textarea tearing
-	// down and remounting mid-edit.
+	// swap in the contenteditable once a `file://` markdown link or a
+	// complete code span (inline or fenced) lands in the buffer. The
+	// promotion is sticky for the lifetime of the composition -
+	// backspacing every file link out does NOT demote, preventing the
+	// swap-thrash that comes from a textarea tearing down and
+	// remounting mid-edit.
 	let useContenteditable = $state(false);
 
 	// Audio Recording State
@@ -261,10 +263,11 @@
 	}
 
 	// Render-mode selector: promote to the contenteditable when the
-	// value carries a `file://`-mention link, demote to the plain
-	// textarea when it doesn't any longer.
+	// value carries a `file://`-mention link or a complete code span,
+	// demote to the plain textarea when it doesn't any longer.
 	$effect(() => {
-		const wantContenteditable = containsFileMentionLink(value ?? '');
+		const wantContenteditable =
+			containsFileMentionLink(value ?? '') || containsCodeSpan(value ?? '');
 		if (useContenteditable === wantContenteditable) return;
 
 		// Pin (set by the mention picker) wins; otherwise snapshot the

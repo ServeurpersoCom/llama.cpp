@@ -116,3 +116,63 @@ describe('ChatFormContenteditable clipboard', () => {
 		expect(root.firstChild).toBe(firstChild);
 	});
 });
+
+describe('ChatFormContenteditable code spans', () => {
+	it('renders inline code from the initial value', async () => {
+		const { container } = render(ChatFormContenteditable, { value: 'run `npm test` now' });
+		await tick();
+
+		const root = editableIn(container);
+		const code = root.querySelector('code[data-code-token="inline"]');
+		expect(code).not.toBeNull();
+		expect(code!.textContent).toBe('`npm test`');
+	});
+
+	it('renders a fenced code block with a language', async () => {
+		const source = 'before\n```js\nconst a = 1;\n```\nafter';
+		const { container } = render(ChatFormContenteditable, { value: source });
+		await tick();
+
+		const root = editableIn(container);
+		const code = root.querySelector('code[data-code-token="block"]');
+		expect(code).not.toBeNull();
+		expect(code!.textContent).toBe('```js\nconst a = 1;\n```');
+	});
+
+	it('copy exposes the markdown source of a selection spanning code', async () => {
+		const source = 'run `npm test` now';
+		const { container } = render(ChatFormContenteditable, { value: source });
+		await tick();
+
+		const root = editableIn(container);
+		setSelection(root, (range) => range.selectNodeContents(root));
+
+		const { event, data } = clipboardEvent('copy');
+		root.dispatchEvent(event);
+
+		expect(event.defaultPrevented).toBe(true);
+		expect(data.getData('text/plain')).toBe(source);
+	});
+
+	it('paste of a code span renders the styled element', async () => {
+		const { container } = render(ChatFormContenteditable, { value: 'run ' });
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+		setSelection(root, (range) => {
+			range.selectNodeContents(root);
+			range.collapse(false);
+		});
+
+		const { event } = clipboardEvent('paste', '`npm test` now');
+		root.dispatchEvent(event);
+		await tick();
+
+		expect(event.defaultPrevented).toBe(true);
+		const code = root.querySelector('code[data-code-token="inline"]');
+		expect(code).not.toBeNull();
+		expect(code!.textContent).toBe('`npm test`');
+		expect(root.textContent).toContain('now');
+	});
+});
