@@ -1,13 +1,20 @@
 <script lang="ts">
-	import { onMount, untrack } from 'svelte';
+	import { onDestroy, onMount, untrack } from 'svelte';
+	import { mode } from 'mode-watcher';
+	import githubDarkCss from 'highlight.js/styles/github-dark.css?inline';
+	import githubLightCss from 'highlight.js/styles/github.css?inline';
 	import { isMobile } from '$lib/stores/viewport.svelte';
+	import { ColorMode } from '$lib/enums';
+	import { TRIM_LEADING_PADDING_REGEX, TRIM_TRAILING_PADDING_REGEX } from '$lib/constants';
 	import {
 		badgeAwareWordJump,
 		buildFragment,
 		domMatchesTokens,
+		highlightCode,
 		leadingBadgeEdgeOffset,
 		rangeToTextOffset,
 		serializeContent,
+		syncCodeBlockHatches,
 		tokenizeContent,
 		textOffsetToRange
 	} from '$lib/utils';
@@ -71,10 +78,110 @@
 		// eslint-disable-next-line svelte/no-dom-manipulating -- the token layer is owned imperatively; Svelte renders only the contenteditable host, never its children
 		rootElement.replaceChildren(buildFragment(tokens));
 
+		syncCodeBlockHatches(rootElement);
+		highlightCodeBlocks(rootElement);
+
 		restoreCaret(caret);
 		resizeHeight();
 		syncEmptyState();
 	}
+
+	// Last highlighted source segment per block element - typing inside
+	// a block re-highlights only when the segment actually changed.
+	const highlightedSegments = new WeakMap<HTMLElement, string>();
+
+	const CODE_BLOCK_OPEN_RE = /^```([^\n`]*)\n/;
+
+	/**
+	 * Apply syntax highlighting to a code block element's CONTENT. The
+	 * fence lines stay plain text, and the blank padding that
+	 * `highlightCode` trims is re-added as plain text, so the element's
+	 * textContent stays byte-exact with the source segment. Replaces
+	 * the element's children - callers restore the caret afterwards.
+	 * Returns false when nothing changed.
+	 */
+	function highlightCodeBlockElement(el: HTMLElement): boolean {
+		const segment = el.textContent ?? '';
+		if (highlightedSegments.get(el) === segment) return false;
+
+		const open = CODE_BLOCK_OPEN_RE.exec(segment);
+		if (!open) return false;
+
+		const prefix = open[0];
+		const language = open[1].trim().split(/\s+/)[0] ?? '';
+		const content = segment.slice(prefix.length, -3);
+
+		const leading = content.match(TRIM_LEADING_PADDING_REGEX)?.[0] ?? '';
+		const trailing = content.match(TRIM_TRAILING_PADDING_REGEX)?.[0] ?? '';
+		const core = content.slice(leading.length, content.length - trailing.length);
+
+		// autoDetect off: re-guessing the language on every keystroke
+		// costs ~38ms a call and flickers while typing
+		const html = core ? highlightCode(core, language || 'text', false) : '';
+		const tpl = document.createElement('template');
+		tpl.innerHTML = html;
+
+		el.replaceChildren(
+			document.createTextNode(prefix + leading),
+			tpl.content.cloneNode(true),
+			document.createTextNode(trailing + '```')
+		);
+		highlightedSegments.set(el, segment);
+		return true;
+	}
+
+	function highlightCodeBlocks(root: HTMLElement) {
+		for (const el of root.querySelectorAll<HTMLElement>('code[data-code-token="block"]')) {
+			highlightCodeBlockElement(el);
+		}
+	}
+
+	/**
+	 * Re-highlight the code block the caret sits in after an edit.
+	 * Skipped when the block's segment is unchanged since its last
+	 * highlight, so edits outside blocks cost nothing.
+	 */
+	function rehighlightCaretCodeBlock() {
+		if (!rootElement) return;
+
+		const range = safeRange();
+		if (!range) return;
+
+		let node: Node | null = range.startContainer;
+		if (node === rootElement) {
+			node = rootElement.childNodes[range.startOffset - 1] ?? null;
+		}
+
+		while (node && node !== rootElement) {
+			if (node instanceof HTMLElement && node.dataset.codeToken === 'block') {
+				const caret = rangeToTextOffset(rootElement, range);
+				if (highlightCodeBlockElement(node)) {
+					restoreCaret(caret);
+				}
+				return;
+			}
+			node = node.parentNode;
+		}
+	}
+
+	/**
+	 * hljs theme for the highlighted code blocks. Mirrors
+	 * SyntaxHighlightedCode.svelte: one shared style element
+	 * (deduped via the data attribute) swapped on mode change.
+	 */
+	function loadHighlightTheme(isDark: boolean) {
+		document.querySelectorAll('style[data-highlight-theme-preview]').forEach((s) => s.remove());
+
+		const style = document.createElement('style');
+		style.setAttribute('data-highlight-theme-preview', 'true');
+		style.textContent = isDark ? githubDarkCss : githubLightCss;
+
+		document.head.appendChild(style);
+	}
+
+	$effect(() => {
+		loadHighlightTheme(mode.current === ColorMode.DARK);
+	});
 
 	/**
 	 * Pull a `Range` from the live selection. Returns `null` when
@@ -160,6 +267,9 @@
 		const tokens = tokenizeContent(serialized);
 		if (!domMatchesTokens(rootElement, tokens)) {
 			renderTokens(tokens);
+		} else {
+			syncCodeBlockHatches(rootElement);
+			rehighlightCaretCodeBlock();
 		}
 
 		onInput?.();
@@ -172,6 +282,70 @@
 	function handleCompositionEnd() {
 		isComposing = false;
 		handleInput();
+	}
+
+	/**
+	 * Arrow escape to the line BEFORE a leading code block. Native
+	 * caret movement has no position above a buffer-starting block,
+	 * so a transient `<br>` hatch is created on demand: it gives the
+	 * caret a visible line, is consumed by the first character typed
+	 * on it, and is removed again when the caret leaves (see
+	 * handleSelectionChange). Returns true when the caret was moved.
+	 */
+	function moveCaretBeforeLeadingCodeBlock(key: string, extend: boolean): boolean {
+		if (!rootElement) return false;
+
+		// a hatch already exists - native movement handles it
+		if (rootElement.firstChild?.nodeName === 'BR') return false;
+
+		const first = rootElement.firstChild;
+		if (!(first instanceof HTMLElement) || first.dataset.codeToken !== 'block') return false;
+
+		const range = safeRange();
+		if (!range || !range.collapsed) return false;
+
+		// the caret must sit inside the block: on its very first
+		// character for ArrowLeft, anywhere on its first line for
+		// ArrowUp
+		if (!first.contains(range.startContainer)) return false;
+
+		const caret = rangeToTextOffset(rootElement, range);
+		if (key === 'ArrowLeft') {
+			if (caret !== 0) return false;
+		} else {
+			const firstLineEnd = (first.textContent ?? '').indexOf('\n');
+			if (firstLineEnd !== -1 && caret > firstLineEnd) return false;
+		}
+
+		// eslint-disable-next-line svelte/no-dom-manipulating -- the token layer is owned imperatively; Svelte renders only the contenteditable host, never its children
+		rootElement.prepend(document.createElement('br'));
+		restoreCaret(0, extend);
+		return true;
+	}
+
+	/**
+	 * Remove the transient leading hatch once the caret leaves it.
+	 * The hatch only exists to give the caret a line above a leading
+	 * code block; with the caret anywhere else the empty line would
+	 * just be visual noise. Typing on the hatch line consumes it via
+	 * the stale-hatch removal in `syncCodeBlockHatches` instead (the
+	 * new text node takes its place before the block).
+	 */
+	function handleSelectionChange() {
+		if (!rootElement) return;
+
+		const first = rootElement.firstChild;
+		if (first?.nodeName !== 'BR') return;
+
+		const second = first.nextSibling;
+		if (!(second instanceof HTMLElement) || second.dataset.codeToken !== 'block') return;
+
+		const range = safeRange();
+		const onHatch =
+			range !== null && range.startContainer === rootElement && range.startOffset === 0;
+		if (!onHatch) {
+			first.remove();
+		}
 	}
 
 	/**
@@ -189,11 +363,27 @@
 	 * and word jumps (macOS Option+Arrow, Windows/Linux Ctrl+Arrow)
 	 * overshoot the badge by a word. Targets are computed in source
 	 * offsets where each badge counts as exactly one word.
+	 *
+	 * ArrowLeft/ArrowUp at the edge of a leading code block are
+	 * intercepted to create the transient before-block hatch.
 	 */
 	function handleKeydown(event: KeyboardEvent) {
 		if (event.key === 'Tab') {
 			event.preventDefault();
 			return;
+		}
+
+		if (
+			rootElement &&
+			(event.key === 'ArrowLeft' || event.key === 'ArrowUp') &&
+			!event.altKey &&
+			!event.ctrlKey &&
+			!event.metaKey
+		) {
+			if (moveCaretBeforeLeadingCodeBlock(event.key, event.shiftKey)) {
+				event.preventDefault();
+				return;
+			}
 		}
 
 		if (rootElement && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
@@ -317,9 +507,14 @@
 		lastEmittedValue = untrack(() => value ?? '');
 		resizeHeight();
 		syncEmptyState();
+		document.addEventListener('selectionchange', handleSelectionChange);
 		if (!isMobile.current) {
 			rootElement?.focus({ preventScroll: true });
 		}
+	});
+
+	onDestroy(() => {
+		document.removeEventListener('selectionchange', handleSelectionChange);
 	});
 
 	// External `value` updates (system-prompt insertion, two-way sync from
@@ -406,6 +601,12 @@
 </div>
 
 <style>
+	/* pre-wrap is load-bearing: without it Chromium collapses \n in
+	   text nodes and converts them to spaces while typing */
+	.chat-form-contenteditable {
+		white-space: pre-wrap;
+	}
+
 	.chat-form-contenteditable:global([data-empty='true'])::before {
 		content: attr(data-placeholder);
 		color: var(--muted-foreground);

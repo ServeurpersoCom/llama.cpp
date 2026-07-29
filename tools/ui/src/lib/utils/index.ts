@@ -176,6 +176,7 @@ export {
 	tokenizeContent,
 	containsCodeSpan,
 	domMatchesTokens,
+	syncCodeBlockHatches,
 	serializeContent,
 	buildFragment,
 	rangeToTextOffset,

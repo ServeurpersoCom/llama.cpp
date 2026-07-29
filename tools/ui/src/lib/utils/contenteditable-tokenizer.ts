@@ -363,6 +363,54 @@ export function buildFragment(tokens: ContentToken[]): DocumentFragment {
 	return fragment;
 }
 
+function isCodeBlockElement(node: Node | null): node is HTMLElement {
+	return node instanceof HTMLElement && node.dataset.codeToken === 'block';
+}
+
+// A sibling provides a reachable caret line when it is an element
+// (badge, another block, an existing hatch) or a non-empty text node.
+function hasLineBeside(node: Node | null): boolean {
+	if (!node) return false;
+	if (node.nodeType === Node.ELEMENT_NODE) return true;
+	return (node.textContent ?? '') !== '';
+}
+
+/**
+ * A code block at the END of the buffer needs an editable line after
+ * it: without one the caret cannot leave the block with
+ * ArrowDown/ArrowRight. A trailing `<br>` provides that line while
+ * staying transparent to serialization (skipped as a non-text,
+ * non-token element), and is removed again once real content takes
+ * its place.
+ *
+ * No hatch is added BEFORE a leading block: the empty line above it
+ * is transient and managed by the component (created when the caret
+ * arrows onto it, removed when the caret leaves). A transient
+ * leading hatch found here is kept; the browser's lone placeholder
+ * `<br>` in an empty root is left untouched.
+ */
+export function syncCodeBlockHatches(root: HTMLElement) {
+	for (const child of Array.from(root.childNodes)) {
+		if (child.nodeName !== 'BR') continue;
+
+		const isPlaceholder = root.childNodes.length === 1;
+		const isLeadingHatch = !child.previousSibling && isCodeBlockElement(child.nextSibling);
+		const isTrailingHatch = !child.nextSibling && isCodeBlockElement(child.previousSibling);
+
+		if (!isPlaceholder && !isLeadingHatch && !isTrailingHatch) {
+			child.remove();
+		}
+	}
+
+	for (const child of Array.from(root.childNodes)) {
+		if (!isCodeBlockElement(child)) continue;
+
+		if (!hasLineBeside(child.nextSibling)) {
+			child.after(document.createElement('br'));
+		}
+	}
+}
+
 const WORD_CHAR_RE = /[\p{L}\p{N}_]/u;
 
 /**
@@ -477,6 +525,18 @@ export function textOffsetToRange(root: HTMLElement, offset: number): Range {
 
 		const el = child as HTMLElement;
 
+		if (el.nodeName === 'BR') {
+			// Escape-hatch line around an edge code block: contributes no
+			// source length. Offset 0 lands before a leading hatch so
+			// text typed there takes its place.
+			if (remaining === 0) {
+				range.setStartBefore(el);
+				range.setEndBefore(el);
+				return range;
+			}
+			continue;
+		}
+
 		if (el.dataset.codeToken !== undefined) {
 			const codeLen = (el.textContent ?? '').length;
 			if (remaining > codeLen) {
@@ -498,9 +558,12 @@ export function textOffsetToRange(root: HTMLElement, offset: number): Range {
 				return range;
 			}
 
+			// Interior offsets land in the element's text. Descendants
+			// are walked with a TreeWalker because syntax highlighting
+			// nests the text inside token spans.
+			const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
 			let rest = remaining;
-			for (const node of Array.from(el.childNodes)) {
-				if (node.nodeType !== Node.TEXT_NODE) continue;
+			for (let node = walker.nextNode(); node; node = walker.nextNode()) {
 				const len = (node.textContent ?? '').length;
 				if (rest <= len) {
 					range.setStart(node, rest);
@@ -529,6 +592,15 @@ export function textOffsetToRange(root: HTMLElement, offset: number): Range {
 			return range;
 		}
 		remaining -= badgeLen;
+	}
+
+	// Out-of-range offsets clamp to the buffer end - before a
+	// trailing escape hatch, not after it.
+	const last = root.lastChild;
+	if (last && last.nodeName === 'BR') {
+		range.setStartBefore(last);
+		range.setEndBefore(last);
+		return range;
 	}
 
 	range.selectNodeContents(root);
