@@ -28,7 +28,7 @@
 	import { config } from '$lib/stores/settings.svelte';
 	import ContextGaugePopup from './ChatFormContextGauge/ContextGaugePopup.svelte';
 	import { modelOptions, selectedModelId } from '$lib/stores/models.svelte';
-	import { isRouterMode } from '$lib/stores/server.svelte';
+	import { isAgentMode, isRouterMode } from '$lib/stores/server.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
 	import { BuiltInTool } from '$lib/enums';
 	import { mcpStore } from '$lib/stores/mcp.svelte';
@@ -783,12 +783,14 @@
 
 	<ContextGaugePopup />
 
-	<ChatFormWorkingDirectory
-		directory={workingDirectory}
-		onChange={handleWorkingDirectoryChange}
-		onClose={refocusInput}
-		{disabled}
-	/>
+	{#if isAgentMode()}
+		<ChatFormWorkingDirectory
+			directory={workingDirectory}
+			onChange={handleWorkingDirectoryChange}
+			onClose={refocusInput}
+			{disabled}
+		/>
+	{/if}
 </form>
 
 <DialogMcpResourcesBrowser

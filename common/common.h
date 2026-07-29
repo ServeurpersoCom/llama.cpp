@@ -655,6 +655,7 @@ struct common_params {
     // UI configs
     bool ui = true;
     bool ui_mcp_proxy = false;
+    bool agent = false; // --agent was passed (enables all tools + CORS proxy)
     std::string ui_config_json;
 
     // "advanced" endpoints are disabled by default for better security

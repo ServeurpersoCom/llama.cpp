@@ -3319,6 +3319,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         "whether to enable CORS proxy and all built-in tools - do not enable in untrusted environments (default: disabled)\n"
         "note: for security reasons, this will limit --cors-origins to localhost by default",
         [](common_params & params, bool value) {
+            params.agent = value;
             if (value) {
                 params.server_tools = {"all"};
                 params.ui_mcp_proxy = true;

@@ -252,6 +252,7 @@ export interface ApiLlamaCppServerProps {
 	webui_settings?: Record<string, string | number | boolean>;
 	ui_settings?: Record<string, string | number | boolean>;
 	cors_proxy_enabled?: boolean;
+	agent_mode?: boolean;
 }
 
 export interface ApiChatCompletionRequest {
