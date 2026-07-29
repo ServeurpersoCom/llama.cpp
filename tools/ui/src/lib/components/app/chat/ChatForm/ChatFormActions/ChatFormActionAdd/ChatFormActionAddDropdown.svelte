@@ -117,7 +117,7 @@
 				<DropdownMenu.SubTrigger class="flex cursor-pointer items-center gap-2">
 					<File class={ICON_CLASS_DEFAULT} />
 
-					<span>Attach files</span>
+					<span>Add files</span>
 				</DropdownMenu.SubTrigger>
 
 				<DropdownMenu.SubContent class="w-48">
