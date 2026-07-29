@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { ICON_CLASS_DEFAULT } from '$lib/constants/css-classes';
 	import { Folder, FolderOpen, GitBranch, X } from '@lucide/svelte';
 	import { FilesystemService } from '$lib/services';
 	import { abbreviateWorkingDir, ApiError } from '$lib/utils';

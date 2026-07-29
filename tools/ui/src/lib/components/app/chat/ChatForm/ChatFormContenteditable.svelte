@@ -67,11 +67,8 @@
 
 		const caret = rangeToTextOffset(rootElement, safeRange());
 
-		while (rootElement.firstChild) {
-			rootElement.removeChild(rootElement.firstChild);
-		}
-
-		rootElement.appendChild(buildFragment(tokens));
+		// eslint-disable-next-line svelte/no-dom-manipulating -- the token layer is owned imperatively; Svelte renders only the contenteditable host, never its children
+		rootElement.replaceChildren(buildFragment(tokens));
 
 		restoreCaret(caret);
 		resizeHeight();

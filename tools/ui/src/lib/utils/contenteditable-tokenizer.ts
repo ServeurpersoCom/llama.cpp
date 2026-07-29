@@ -53,7 +53,7 @@ export type ContentToken =
  *   typed or pasted after stays in a separate text token so the
  *   round trip is byte-exact.
  */
-const MENTION_BADGE_RE = /\[([^\]\n]+?)\]\(file:\/\/((?:[^)\n]|\)(?![\s\[]))+)\)/g;
+const MENTION_BADGE_RE = /\[([^\]\n]+?)\]\(file:\/\/((?:[^)\n]|\)(?![\s[]))+)\)/g;
 
 /**
  * Compute the byte-length contribution of one badge in source form.
