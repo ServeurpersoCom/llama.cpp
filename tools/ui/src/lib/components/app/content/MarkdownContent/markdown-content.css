@@ -260,7 +260,6 @@ div.markdown-user-content :global(.table-wrapper) {
 	margin-bottom: 1rem;
 }
 
-
 .markdown-content:global(.dark) :global(.code-block-wrapper) {
 	border-color: color-mix(in oklch, var(--border) 20%, transparent);
 }

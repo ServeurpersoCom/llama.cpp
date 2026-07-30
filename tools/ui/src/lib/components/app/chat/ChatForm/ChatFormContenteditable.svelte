@@ -285,6 +285,38 @@
 			const caret = rangeToTextOffset(rootElement, safeRange());
 			if (stripBlockBoundaryLineBreaks(rootElement)) {
 				restoreCaret(caret);
+			} else {
+				const source = serializeContent(rootElement);
+				let end = caret;
+
+				// the caret must end up after the inserted \n; some browsers
+				// leave it before (stuck at the end of the old line). A
+				// preceding \n means it already sits past the break
+				// (Chromium's artificial trailing newline) - leave it.
+				if (source[end] === '\n' && source[end - 1] !== '\n') {
+					end += 1;
+					restoreCaret(end);
+				}
+
+				// a line break at the buffer end renders only with a second,
+				// artificial trailing \n: a lone trailing \n is collapsed, so
+				// the new line is invisible and the next typed character
+				// consumes it. Append it when missing - unless the trailing
+				// \n doubles as a block's separator line (source ends with
+				// \n\n) or sits inside a block element.
+				let last = rootElement.lastChild;
+				while (last && last.nodeName === 'BR') last = last.previousSibling;
+				if (
+					end === source.length &&
+					source.endsWith('\n') &&
+					source[source.length - 2] !== '\n' &&
+					last?.nodeType === Node.TEXT_NODE
+				) {
+					// eslint-disable-next-line svelte/no-dom-manipulating -- the token layer is owned imperatively; Svelte renders only the contenteditable host, never its children
+					rootElement.appendChild(document.createTextNode('\n'));
+					restoreCaret(source.length);
+					resizeHeight();
+				}
 			}
 		}
 
@@ -330,6 +362,71 @@
 	function handleCompositionEnd() {
 		isComposing = false;
 		processInput();
+	}
+
+	/**
+	 * Insert a line break at the caret MANUALLY. Native Shift+Enter at
+	 * the buffer end varies across browsers (a lone trailing \n that the
+	 * renderer collapses, or a <br> that the hatch sync strips), which
+	 * can leave the caret stuck on the old line; splitting the text node
+	 * ourselves keeps the DOM shape - and the caret - deterministic.
+	 * `processInput` then appends the artificial trailing \n when the
+	 * break lands at the buffer end.
+	 */
+	function insertLineBreak() {
+		if (!rootElement) return;
+
+		const range = safeRange();
+		if (!range) return;
+
+		if (!range.collapsed) {
+			range.deleteContents();
+		}
+
+		const container = range.startContainer;
+		const offset = range.startOffset;
+		const nl = document.createTextNode('\n');
+
+		// a break at the very end of a code block exits the block (the
+		// new line belongs below it, not inside)
+		let exitBlock: HTMLElement | null = null;
+		if (container.nodeType === Node.TEXT_NODE) {
+			let node: Node | null = container.parentNode;
+			while (node && node !== rootElement) {
+				if (node instanceof HTMLElement && node.dataset.codeToken === 'block') {
+					const tail = document.createRange();
+					tail.setStart(container, offset);
+					tail.setEnd(node, node.childNodes.length);
+					if (tail.toString().length === 0) exitBlock = node;
+					break;
+				}
+				node = node.parentNode;
+			}
+		}
+
+		if (exitBlock) {
+			exitBlock.after(nl);
+		} else if (container.nodeType === Node.TEXT_NODE) {
+			const text = container as Text;
+			if (offset === 0) {
+				text.before(nl);
+			} else if (offset === text.length) {
+				text.after(nl);
+			} else {
+				text.splitText(offset).before(nl);
+			}
+		} else {
+			container.insertBefore(nl, container.childNodes[offset] ?? null);
+		}
+
+		const selection = window.getSelection();
+		const after = document.createRange();
+		after.setStartAfter(nl);
+		after.collapse(true);
+		selection?.removeAllRanges();
+		selection?.addRange(after);
+
+		processInput('insertLineBreak');
 	}
 
 	/**
@@ -421,6 +518,25 @@
 	function handleKeydown(event: KeyboardEvent) {
 		if (event.key === 'Tab') {
 			event.preventDefault();
+			return;
+		}
+
+		if (
+			event.key === 'Enter' &&
+			event.shiftKey &&
+			!event.ctrlKey &&
+			!event.metaKey &&
+			!event.altKey &&
+			!isIMEComposing(event) &&
+			!disabled &&
+			!caretInCodeBlock() &&
+			safeRange()
+		) {
+			// Own the break outside code blocks: native end-of-buffer
+			// behavior varies across browsers and can leave the caret
+			// stuck on the old line (see insertLineBreak).
+			event.preventDefault();
+			insertLineBreak();
 			return;
 		}
 

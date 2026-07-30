@@ -376,6 +376,93 @@ describe('ChatFormContenteditable code block escape hatches', () => {
 		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\nx');
 	});
 
+	it('moves a caret stuck before the inserted newline onto the new line', async () => {
+		const { container } = render(ChatFormContenteditable, {
+			value: BLOCK_SOURCE + '\ntext after the code block'
+		});
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+
+		// post-break DOM some browsers produce: the inserted newline plus
+		// the artificial trailing one, with the caret stuck BEFORE the
+		// inserted one (visually at the end of the old line)
+		root.appendChild(document.createTextNode('\n'));
+		root.appendChild(document.createTextNode('\n'));
+		setSelection(root, (range) => {
+			range.setStart(root.childNodes[2], 0);
+			range.collapse(true);
+		});
+
+		root.dispatchEvent(new InputEvent('input', { inputType: 'insertLineBreak', bubbles: true }));
+		await tick();
+
+		const selection = window.getSelection();
+		expect(rangeToTextOffset(root, selection!.getRangeAt(0))).toBe(
+			(BLOCK_SOURCE + '\ntext after the code block\n').length
+		);
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\ntext after the code block\n\n');
+	});
+
+	it('appends the artificial trailing newline when the browser did not add one', async () => {
+		const { container } = render(ChatFormContenteditable, {
+			value: BLOCK_SOURCE + '\ntext after the code block'
+		});
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+
+		// post-break DOM some browsers produce: a lone trailing \n (or a
+		// <br> the hatch sync strips). Collapsed by the renderer, so the
+		// caret looks stuck on the old line and the next typed character
+		// would consume the newline.
+		root.appendChild(document.createTextNode('\n'));
+		setSelection(root, (range) => {
+			range.setStart(root.childNodes[2], 1);
+			range.collapse(true);
+		});
+
+		root.dispatchEvent(new InputEvent('input', { inputType: 'insertLineBreak', bubbles: true }));
+		await tick();
+
+		const selection = window.getSelection();
+		expect(rangeToTextOffset(root, selection!.getRangeAt(0))).toBe(
+			(BLOCK_SOURCE + '\ntext after the code block\n').length
+		);
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\ntext after the code block\n\n');
+	});
+
+	it('lands the caret on the new line with a single Shift+Enter after text below a block', async () => {
+		const { container } = render(ChatFormContenteditable, {
+			value: BLOCK_SOURCE + '\ntext after the code block'
+		});
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+		setSelection(root, (range) => {
+			const text = root.childNodes[1];
+			range.setStart(text, (text.textContent ?? '').length);
+			range.collapse(true);
+		});
+
+		await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
+		await tick();
+
+		const selection = window.getSelection();
+		expect(rangeToTextOffset(root, selection!.getRangeAt(0))).toBe(
+			(BLOCK_SOURCE + '\ntext after the code block\n').length
+		);
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\ntext after the code block\n\n');
+
+		// the next typed character lands on the new line
+		await userEvent.keyboard('x');
+		await tick();
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\ntext after the code block\nx');
+	});
+
 	it('lets Backspace at the text start move into the block without a source fight', async () => {
 		const { container } = render(ChatFormContenteditable, { value: BLOCK_SOURCE });
 		await tick();
