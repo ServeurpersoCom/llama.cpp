@@ -11,9 +11,12 @@
 		buildFragment,
 		domMatchesTokens,
 		highlightCode,
+		isIMEComposing,
+		isOffsetInCodeBlock,
 		leadingBadgeEdgeOffset,
 		rangeToTextOffset,
 		serializeContent,
+		stripBlockBoundaryLineBreaks,
 		syncCodeBlockHatches,
 		tokenizeContent,
 		textOffsetToRange
@@ -165,6 +168,24 @@
 	}
 
 	/**
+	 * Is the caret inside a fenced code block region? Source-level
+	 * (not DOM-level) so the still-OPEN fence counts too: while the
+	 * user is typing a block, no closing ``` exists yet and the
+	 * buffer is plain text with no block element to find. Root-level
+	 * caret positions right at a closed block's edge (escape
+	 * hatches, element boundaries restored by `textOffsetToRange`)
+	 * resolve past the closing fence, so they count as OUTSIDE.
+	 */
+	function caretInCodeBlock(): boolean {
+		if (!rootElement) return false;
+
+		return isOffsetInCodeBlock(
+			serializeContent(rootElement),
+			rangeToTextOffset(rootElement, safeRange())
+		);
+	}
+
+	/**
 	 * hljs theme for the highlighted code blocks. Mirrors
 	 * SyntaxHighlightedCode.svelte: one shared style element
 	 * (deduped via the data attribute) swapped on mode change.
@@ -250,11 +271,25 @@
 	 * native event already fired, so let the parent react when
 	 * `compositionend` finishes.
 	 */
-	function handleInput() {
+	function processInput(inputType?: string) {
 		if (isComposing || !rootElement) return;
 
 		syncEmptyState();
 		resizeHeight();
+
+		// Shift+Enter right after a code block leaves an all-newline
+		// text node (the fence's separator line plus Chromium's
+		// artificial end-of-buffer line break). Strip both so the caret
+		// lands on the line directly below the block.
+		if (inputType === 'insertLineBreak' || inputType === 'insertParagraph') {
+			const caret = rangeToTextOffset(rootElement, safeRange());
+			if (stripBlockBoundaryLineBreaks(rootElement)) {
+				restoreCaret(caret);
+			}
+		}
+
+		syncCodeBlockHatches(rootElement);
+
 		const serialized = serializeContent(rootElement);
 		if (serialized === lastEmittedValue) return;
 
@@ -267,12 +302,25 @@
 		const tokens = tokenizeContent(serialized);
 		if (!domMatchesTokens(rootElement, tokens)) {
 			renderTokens(tokens);
+
+			// The rebuild can re-shape the DOM in a way that changes the
+			// serialization (e.g. Chromium merged trailing text into the
+			// block element and the rebuild splits it back out, which
+			// synthesizes the separator newline) - keep value in sync.
+			const reserialized = serializeContent(rootElement);
+			if (reserialized !== serialized) {
+				lastEmittedValue = reserialized;
+				value = reserialized;
+			}
 		} else {
-			syncCodeBlockHatches(rootElement);
 			rehighlightCaretCodeBlock();
 		}
 
 		onInput?.();
+	}
+
+	function handleInput(event: Event) {
+		processInput((event as InputEvent).inputType);
 	}
 
 	function handleCompositionStart() {
@@ -281,7 +329,7 @@
 
 	function handleCompositionEnd() {
 		isComposing = false;
-		handleInput();
+		processInput();
 	}
 
 	/**
@@ -352,7 +400,10 @@
 	 * Native caret-keys that have to be forwarded by us: Enter and
 	 * Escape are consumed by `handleKeydown` to trigger submit /
 	 * picker-dismiss in `ChatForm`. We do not consume them here -
-	 * just expose the event to the parent.
+	 * just expose the event to the parent. The one exception is
+	 * plain Enter inside a fenced code block (closed, or still open
+	 * while being typed): there it acts as Shift+Enter and adds a
+	 * line instead of submitting.
 	 *
 	 * Tab is intercepted locally so focus order is predictable
 	 * without escaping the form area.
@@ -370,6 +421,25 @@
 	function handleKeydown(event: KeyboardEvent) {
 		if (event.key === 'Tab') {
 			event.preventDefault();
+			return;
+		}
+
+		if (
+			event.key === 'Enter' &&
+			!event.shiftKey &&
+			!event.ctrlKey &&
+			!event.metaKey &&
+			!event.altKey &&
+			!isIMEComposing(event) &&
+			caretInCodeBlock()
+		) {
+			// The native plain-Enter path must never run: it splits the
+			// buffer into `<div>` wrappers that `serializeContent` cannot
+			// see. `insertLineBreak` reproduces the Shift+Enter DOM (a `\n`
+			// text node) and fires `input` synchronously, so the usual
+			// re-tokenize/re-highlight follows.
+			event.preventDefault();
+			document.execCommand('insertLineBreak');
 			return;
 		}
 
@@ -496,7 +566,7 @@
 		// preventDefault suppresses the native deletion, so remove the
 		// selection manually and re-emit the resulting source.
 		slice.range.deleteContents();
-		handleInput();
+		processInput('deleteByCut');
 	}
 
 	onMount(() => {

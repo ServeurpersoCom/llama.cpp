@@ -6,7 +6,7 @@
 // and the mouse context menu, so covering the event handlers covers
 // all three entry points.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render } from 'vitest-browser-svelte';
 import { userEvent } from 'vitest/browser';
 import { tick } from 'svelte';
@@ -261,7 +261,11 @@ describe('ChatFormContenteditable code block escape hatches', () => {
 		await tick();
 
 		expect(blockIn(root).textContent).toBe(BLOCK_SOURCE);
+		// the DOM holds no separator newline (it would render as a
+		// phantom empty line); serialization synthesizes it so the
+		// markdown source keeps the text below the block
 		expect(root.textContent).toBe(BLOCK_SOURCE + 'x');
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\nx');
 		// the stale trailing hatch is removed once real text follows the block
 		expect(root.lastChild?.nodeName).not.toBe('BR');
 	});
@@ -284,6 +288,7 @@ describe('ChatFormContenteditable code block escape hatches', () => {
 
 		expect(blockIn(root).textContent).toBe(BLOCK_SOURCE);
 		expect(root.textContent).toBe('y' + BLOCK_SOURCE);
+		expect(serializeContent(root)).toBe('y\n' + BLOCK_SOURCE);
 		// the typed text consumed the hatch
 		expect(root.firstChild?.nodeName).not.toBe('BR');
 	});
@@ -335,6 +340,107 @@ describe('ChatFormContenteditable code block escape hatches', () => {
 		expect(blockIn(root).contains(selection!.getRangeAt(0).endContainer)).toBe(false);
 	});
 
+	it('line-separates text typed right after the closing fence', async () => {
+		const { container } = render(ChatFormContenteditable, { value: BLOCK_SOURCE });
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+		placeCaretInBlock(root, 'end');
+
+		// no arrow keys: the caret sits at the block's end edge, where the
+		// post-rebuild restore lands it, and the typed text renders on the
+		// line below the block
+		await userEvent.keyboard('x');
+		await tick();
+
+		// the text stays on the caret's line in the DOM (no phantom empty
+		// line); the source gets the separator newline
+		expect(root.textContent).toBe(BLOCK_SOURCE + 'x');
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\nx');
+	});
+
+	it('does not double the newline when Shift+Enter already added one', async () => {
+		const { container } = render(ChatFormContenteditable, { value: BLOCK_SOURCE });
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+		placeCaretInBlock(root, 'end');
+
+		await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
+		await userEvent.keyboard('x');
+		await tick();
+
+		expect(root.textContent).toBe(BLOCK_SOURCE + 'x');
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\nx');
+	});
+
+	it('lets Backspace at the text start move into the block without a source fight', async () => {
+		const { container } = render(ChatFormContenteditable, { value: BLOCK_SOURCE });
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+		placeCaretInBlock(root, 'end');
+
+		await userEvent.keyboard('{ArrowDown}');
+		await userEvent.keyboard('create');
+		await tick();
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\ncreate');
+
+		// Backspace at the start of the text line: the separator newline
+		// is structural (synthesized while text follows the block), so
+		// the caret just moves to the block's edge - nothing is re-added
+		await userEvent.keyboard('{Home}');
+		await userEvent.keyboard('{Backspace}');
+		await tick();
+
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\ncreate');
+		expect(caretContainer()).toBe(root);
+	});
+
+	it('lets forward Delete eat the text after a block normally', async () => {
+		const { container } = render(ChatFormContenteditable, { value: BLOCK_SOURCE });
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+		placeCaretInBlock(root, 'end');
+
+		await userEvent.keyboard('{ArrowDown}');
+		await userEvent.keyboard('create');
+		await tick();
+
+		await userEvent.keyboard('{Home}');
+		await userEvent.keyboard('{Delete}');
+		await tick();
+
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\nreate');
+	});
+
+	it('renders text after a block without a phantom empty line', async () => {
+		const { container } = render(ChatFormContenteditable, {
+			value: BLOCK_SOURCE + '\nhello'
+		});
+		await tick();
+
+		const root = editableIn(container);
+		expect(root.textContent).toBe(BLOCK_SOURCE + 'hello');
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\nhello');
+	});
+
+	it('keeps an intentional blank line after a block out of the separator', async () => {
+		const { container } = render(ChatFormContenteditable, {
+			value: BLOCK_SOURCE + '\n\nhello'
+		});
+		await tick();
+
+		const root = editableIn(container);
+		expect(root.textContent).toBe(BLOCK_SOURCE + '\nhello');
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE + '\n\nhello');
+	});
+
 	it('re-highlights while typing inside a block and keeps the caret', async () => {
 		const { container } = render(ChatFormContenteditable, { value: BLOCK_SOURCE });
 		await tick();
@@ -360,5 +466,152 @@ describe('ChatFormContenteditable code block escape hatches', () => {
 		const selection = window.getSelection();
 		expect(code.contains(selection!.getRangeAt(0).startContainer)).toBe(true);
 		expect(rangeToTextOffset(root, selection!.getRangeAt(0))).toBe(7);
+	});
+});
+
+describe('ChatFormContenteditable Enter in code blocks', () => {
+	const BLOCK_SOURCE = '```js\nconst a = 1;\n```';
+
+	it('adds a line instead of submitting on plain Enter inside a block', async () => {
+		const onKeydown = vi.fn();
+		const { container } = render(ChatFormContenteditable, {
+			value: BLOCK_SOURCE,
+			onKeydown
+		});
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+
+		// caret at the start of the block content (after the opening fence)
+		setSelection(root, (range) => {
+			const target = textOffsetToRange(root, 6);
+			range.setStart(target.startContainer, target.startOffset);
+			range.collapse(true);
+		});
+
+		await userEvent.keyboard('{Enter}');
+		await tick();
+
+		// consumed locally: the parent's submit handler never sees it
+		expect(onKeydown).not.toHaveBeenCalled();
+		expect(serializeContent(root)).toBe('```js\n\nconst a = 1;\n```');
+
+		const code = root.querySelector('code[data-code-token="block"]');
+		const selection = window.getSelection();
+		expect(code!.contains(selection!.getRangeAt(0).startContainer)).toBe(true);
+		expect(rangeToTextOffset(root, selection!.getRangeAt(0))).toBe(7);
+	});
+
+	it('adds a line after a still-open fence (no closing ``` yet)', async () => {
+		const onKeydown = vi.fn();
+		const { container } = render(ChatFormContenteditable, {
+			value: '```js\nconst a = 1;',
+			onKeydown
+		});
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+
+		// caret at the start of the block content (after the opening fence)
+		setSelection(root, (range) => {
+			const target = textOffsetToRange(root, 6);
+			range.setStart(target.startContainer, target.startOffset);
+			range.collapse(true);
+		});
+
+		await userEvent.keyboard('{Enter}');
+		await tick();
+
+		expect(onKeydown).not.toHaveBeenCalled();
+		expect(serializeContent(root)).toBe('```js\n\nconst a = 1;');
+	});
+
+	it('forwards plain Enter to the parent when the caret is outside a block', async () => {
+		const onKeydown = vi.fn();
+		const { container } = render(ChatFormContenteditable, {
+			value: BLOCK_SOURCE + '\nafter',
+			onKeydown
+		});
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+		setSelection(root, (range) => {
+			range.selectNodeContents(root);
+			range.collapse(false);
+		});
+
+		await userEvent.keyboard('{Enter}');
+
+		expect(onKeydown).toHaveBeenCalledTimes(1);
+		expect(onKeydown.mock.calls[0][0].defaultPrevented).toBe(false);
+	});
+
+	it('forwards plain Enter on the trailing hatch line after a block', async () => {
+		const onKeydown = vi.fn();
+		const { container } = render(ChatFormContenteditable, {
+			value: BLOCK_SOURCE,
+			onKeydown
+		});
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+		// root-level caret between the block and its trailing br hatch
+		setSelection(root, (range) => {
+			range.setStart(root, 1);
+			range.collapse(true);
+		});
+
+		await userEvent.keyboard('{Enter}');
+
+		expect(onKeydown).toHaveBeenCalledTimes(1);
+	});
+
+	it('forwards Ctrl+Enter inside a block so explicit submit survives', async () => {
+		const onKeydown = vi.fn();
+		const { container } = render(ChatFormContenteditable, {
+			value: BLOCK_SOURCE,
+			onKeydown
+		});
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+		setSelection(root, (range) => {
+			const target = textOffsetToRange(root, 6);
+			range.setStart(target.startContainer, target.startOffset);
+			range.collapse(true);
+		});
+
+		await userEvent.keyboard('{Control>}{Enter}{/Control}');
+
+		expect(onKeydown).toHaveBeenCalledWith(
+			expect.objectContaining({ key: 'Enter', ctrlKey: true })
+		);
+		expect(serializeContent(root)).toBe(BLOCK_SOURCE);
+	});
+
+	it('forwards Enter inside an inline code span', async () => {
+		const onKeydown = vi.fn();
+		const { container } = render(ChatFormContenteditable, {
+			value: 'run `npm test` now',
+			onKeydown
+		});
+		await tick();
+
+		const root = editableIn(container);
+		root.focus();
+		const code = root.querySelector('code[data-code-token="inline"]')!;
+		setSelection(root, (range) => {
+			range.setStart(code.firstChild!, 3);
+			range.collapse(true);
+		});
+
+		await userEvent.keyboard('{Enter}');
+
+		expect(onKeydown).toHaveBeenCalledTimes(1);
 	});
 });

@@ -32,6 +32,15 @@
  *    badges: they carry the full source segment (backtick fences
  *    included) as their text, so their textContent serializes
  *    verbatim and source offsets map 1:1 to text offsets.
+ *
+ * 5. The newline separating a fenced block from adjacent content is
+ *    a SOURCE-level concept, never stored in the DOM: the block is
+ *    display:block, so a leading `\n` in the following text node
+ *    would render as a phantom empty line. Serialization synthesizes
+ *    exactly one `\n` at every block boundary (see
+ *    `hasBlockBoundary`), and `buildFragment` strips it from text
+ *    tokens. A text node's own leading/trailing `\n` next to a block
+ *    is an ADDITIONAL blank line.
  */
 
 import {
@@ -92,6 +101,29 @@ const CODE_SPAN_RE = /(```[\s\S]*?```)|(`[^`\n]+`)/g;
 export function containsCodeSpan(value: string): boolean {
 	CODE_SPAN_RE.lastIndex = 0;
 	return CODE_SPAN_RE.test(value);
+}
+
+const CODE_FENCE_RE = /```/g;
+
+/**
+ * Is `offset` inside a fenced code block region? Toggle-based: an
+ * odd number of ``` fences before the offset means the position
+ * sits in block content. Unlike `containsCodeSpan` this also
+ * counts the still-OPEN fence while the user is typing a block
+ * (no closing ``` yet), so Enter can add a line instead of
+ * submitting the message.
+ */
+export function isOffsetInCodeBlock(source: string, offset: number): boolean {
+	let inside = false;
+	CODE_FENCE_RE.lastIndex = 0;
+
+	let match: RegExpExecArray | null;
+	while ((match = CODE_FENCE_RE.exec(source)) !== null) {
+		if (match.index + match[0].length > offset) break;
+		inside = !inside;
+	}
+
+	return inside;
 }
 
 /**
@@ -166,13 +198,23 @@ function pushTextAndBadgeTokens(input: string, tokens: ContentToken[]) {
  * the contenteditable root should not contain anything else by
  * construction, but browsers can inject wrappers in some edit
  * scenarios and we don't want those to leak into the source).
+ *
+ * One separator `\n` is synthesized at every fenced-block boundary
+ * (rule 5): the DOM never stores it, so the source keeps fences on
+ * their own lines without the form rendering a phantom empty line.
  */
 export function serializeContent(root: HTMLElement): string {
 	let out = '';
+	let prev: Node | null = null;
 
 	for (const child of Array.from(root.childNodes)) {
 		if (child.nodeType === Node.TEXT_NODE) {
-			out += child.textContent ?? '';
+			const text = child.textContent ?? '';
+			if (text.length === 0) continue;
+
+			if (hasBlockBoundary(prev, child)) out += '\n';
+			out += text;
+			prev = child;
 			continue;
 		}
 
@@ -183,7 +225,9 @@ export function serializeContent(root: HTMLElement): string {
 		// Code spans serialize verbatim: their textContent IS the source
 		// segment, backtick fences included.
 		if (el.dataset.codeToken !== undefined) {
+			if (hasBlockBoundary(prev, el)) out += '\n';
 			out += el.textContent ?? '';
+			prev = el;
 			continue;
 		}
 
@@ -192,7 +236,9 @@ export function serializeContent(root: HTMLElement): string {
 		const name = el.dataset.mentionName ?? '';
 		const path = el.dataset.mentionPath ?? '';
 		if (name && path) {
+			if (hasBlockBoundary(prev, el)) out += '\n';
 			out += `[${name}](file://${path})`;
+			prev = el;
 		}
 	}
 
@@ -265,9 +311,16 @@ export function rangeToTextOffset(root: HTMLElement, range: Range | null): numbe
 	tmp.appendChild(pre.cloneContents());
 
 	let total = 0;
+	let prev: Node | null = null;
+
 	for (const child of Array.from(tmp.childNodes)) {
 		if (child.nodeType === Node.TEXT_NODE) {
-			total += (child.textContent ?? '').length;
+			const text = child.textContent ?? '';
+			if (text.length === 0) continue;
+
+			if (hasBlockBoundary(prev, child)) total += 1;
+			total += text.length;
+			prev = child;
 			continue;
 		}
 
@@ -276,13 +329,17 @@ export function rangeToTextOffset(root: HTMLElement, range: Range | null): numbe
 		const el = child as HTMLElement;
 
 		if (el.dataset.codeToken !== undefined) {
+			if (hasBlockBoundary(prev, el)) total += 1;
 			total += (el.textContent ?? '').length;
+			prev = el;
 			continue;
 		}
 
 		if (el.dataset.mentionBadge !== 'true') continue;
 
+		if (hasBlockBoundary(prev, el)) total += 1;
 		total += badgeSourceLength(el.dataset.mentionName ?? '', el.dataset.mentionPath ?? '');
+		prev = el;
 	}
 
 	return total;
@@ -300,9 +357,24 @@ export function rangeToTextOffset(root: HTMLElement, range: Range | null): numbe
 export function buildFragment(tokens: ContentToken[]): DocumentFragment {
 	const fragment = document.createDocumentFragment();
 
-	for (const token of tokens) {
+	for (let index = 0; index < tokens.length; index++) {
+		const token = tokens[index];
+
 		if (token.kind === 'text') {
-			fragment.appendChild(document.createTextNode(token.text));
+			let text = token.text;
+
+			// The separator \n at a fenced-block boundary is synthesized
+			// at serialization time (rule 5); keeping it in the DOM would
+			// render a phantom empty line next to the block.
+			if (tokens[index - 1]?.kind === 'codeBlock' && text.startsWith('\n')) {
+				text = text.slice(1);
+			}
+			if (tokens[index + 1]?.kind === 'codeBlock' && text.endsWith('\n')) {
+				text = text.slice(0, -1);
+			}
+			if (text.length === 0) continue;
+
+			fragment.appendChild(document.createTextNode(text));
 			continue;
 		}
 
@@ -367,6 +439,31 @@ function isCodeBlockElement(node: Node | null): node is HTMLElement {
 	return node instanceof HTMLElement && node.dataset.codeToken === 'block';
 }
 
+function isContentElement(node: Node): node is HTMLElement {
+	return (
+		node instanceof HTMLElement &&
+		(node.dataset.codeToken !== undefined || node.dataset.mentionBadge === 'true')
+	);
+}
+
+/**
+ * Does the source carry a separator `\n` between two adjacent
+ * root-level content nodes? Exactly one side of the boundary must be
+ * a fenced block; the other side is a text node or any content
+ * element (code span, badge). Callers skip empty text nodes, so an
+ * element following a block through an empty text node still gets
+ * its separator.
+ */
+function hasBlockBoundary(prev: Node | null, next: Node): boolean {
+	if (isCodeBlockElement(prev)) {
+		return next.nodeType === Node.TEXT_NODE || isContentElement(next);
+	}
+
+	if (!isCodeBlockElement(next) || prev === null) return false;
+
+	return prev.nodeType === Node.TEXT_NODE || isContentElement(prev);
+}
+
 // A sibling provides a reachable caret line when it is an element
 // (badge, another block, an existing hatch) or a non-empty text node.
 function hasLineBeside(node: Node | null): boolean {
@@ -409,6 +506,43 @@ export function syncCodeBlockHatches(root: HTMLElement) {
 			child.after(document.createElement('br'));
 		}
 	}
+}
+
+/**
+ * Strip the separator and artificial newlines from an all-newline text
+ * node directly after a fenced block. Chromium's line break at the
+ * buffer end inserts an extra artificial `\n` so the new line has
+ * height, and the first `\n` after a block doubles as the fence's
+ * separator line (synthesized at serialization time, rule 5). Removing
+ * both makes Shift+Enter after a block land the caret on the line
+ * directly below the block, like a plain textarea would.
+ *
+ * Only all-newline text nodes are touched: a node with real content
+ * carries intentional blank lines and is left alone. Returns true when
+ * the DOM changed.
+ */
+export function stripBlockBoundaryLineBreaks(root: HTMLElement): boolean {
+	let changed = false;
+
+	for (const child of Array.from(root.childNodes)) {
+		if (child.nodeType !== Node.TEXT_NODE) continue;
+		if (!isCodeBlockElement(child.previousSibling)) continue;
+
+		let text = child.textContent ?? '';
+		if (!/^\n{2,}$/.test(text)) continue;
+
+		text = text.slice(1);
+
+		const atBufferEnd = !child.nextSibling || child.nextSibling.nodeName === 'BR';
+		if (atBufferEnd) {
+			text = text.slice(0, -1);
+		}
+
+		child.textContent = text;
+		changed = true;
+	}
+
+	return changed;
 }
 
 const WORD_CHAR_RE = /[\p{L}\p{N}_]/u;
@@ -508,16 +642,30 @@ export function leadingBadgeEdgeOffset(source: string, caret: number): number | 
 export function textOffsetToRange(root: HTMLElement, offset: number): Range {
 	const range = document.createRange();
 	let remaining = offset;
+	let prev: Node | null = null;
 
 	for (const child of Array.from(root.childNodes)) {
 		if (child.nodeType === Node.TEXT_NODE) {
 			const text = child.textContent ?? '';
+
+			// The synthetic separator position (rule 5) maps to the
+			// near edge of the content that follows the block.
+			if (text.length > 0 && hasBlockBoundary(prev, child)) {
+				if (remaining === 0) {
+					range.setStart(child, 0);
+					range.setEnd(child, 0);
+					return range;
+				}
+				remaining -= 1;
+			}
+
 			if (remaining <= text.length) {
 				range.setStart(child, remaining);
 				range.setEnd(child, remaining);
 				return range;
 			}
 			remaining -= text.length;
+			if (text.length > 0) prev = child;
 			continue;
 		}
 
@@ -538,9 +686,19 @@ export function textOffsetToRange(root: HTMLElement, offset: number): Range {
 		}
 
 		if (el.dataset.codeToken !== undefined) {
+			if (hasBlockBoundary(prev, el)) {
+				if (remaining === 0) {
+					range.setStartBefore(el);
+					range.setEndBefore(el);
+					return range;
+				}
+				remaining -= 1;
+			}
+
 			const codeLen = (el.textContent ?? '').length;
 			if (remaining > codeLen) {
 				remaining -= codeLen;
+				prev = el;
 				continue;
 			}
 
@@ -580,6 +738,15 @@ export function textOffsetToRange(root: HTMLElement, offset: number): Range {
 
 		if (el.dataset.mentionBadge !== 'true') continue;
 
+		if (hasBlockBoundary(prev, el)) {
+			if (remaining === 0) {
+				range.setStartBefore(el);
+				range.setEndBefore(el);
+				return range;
+			}
+			remaining -= 1;
+		}
+
 		const badgeLen = badgeSourceLength(el.dataset.mentionName ?? '', el.dataset.mentionPath ?? '');
 		if (remaining <= badgeLen) {
 			if (remaining === 0) {
@@ -592,6 +759,7 @@ export function textOffsetToRange(root: HTMLElement, offset: number): Range {
 			return range;
 		}
 		remaining -= badgeLen;
+		prev = el;
 	}
 
 	// Out-of-range offsets clamp to the buffer end - before a

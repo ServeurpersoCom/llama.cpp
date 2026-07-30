@@ -192,13 +192,14 @@
 		}
 
 		if (event.key === 'Enter') {
+			// Always consume Enter while the picker is open - even with no
+			// result yet (skeletons) or no matches - so the chat form's
+			// Enter-to-submit never fires mid-search.
+			event.preventDefault();
 			if (results[hoveredIndex]) {
-				event.preventDefault();
 				handleSelect(results[hoveredIndex]);
-				return true;
 			}
-			// No result selected - let the textarea's Enter-to-submit run.
-			return false;
+			return true;
 		}
 
 		return false;

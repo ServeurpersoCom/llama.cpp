@@ -53,6 +53,7 @@
 		containsFileMentionLink,
 		findMentionToken,
 		isIMEComposing,
+		isOffsetInCodeBlock,
 		lastPathSegment,
 		parseClipboardContent,
 		takeMentionDismissSnapshot,
@@ -396,6 +397,15 @@
 		if (event.key === KeyboardKey.ENTER && !event.shiftKey && !isIMEComposing(event)) {
 			const isModifier = event.ctrlKey || event.metaKey;
 			const sendOnEnter = currentConfig.sendOnEnter !== false;
+
+			// Caret inside a fenced code block (closed, or still open
+			// while being typed): Enter adds a line, never submits. The
+			// contenteditable consumes this case locally; this gate
+			// covers the plain textarea, where skipping submit lets the
+			// native newline through.
+			if (!isModifier && isOffsetInCodeBlock(value ?? '', inputRef?.getCaretOffset() ?? 0)) {
+				return;
+			}
 
 			if (sendOnEnter || isModifier) {
 				event.preventDefault();

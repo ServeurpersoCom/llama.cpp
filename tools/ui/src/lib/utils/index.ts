@@ -33,6 +33,7 @@ export {
 export {
 	highlightCode,
 	detectIncompleteCodeBlock,
+	splitGluedClosingCodeFences,
 	trimCodePadding,
 	type IncompleteCodeBlock
 } from './code';
@@ -175,8 +176,10 @@ export {
 export {
 	tokenizeContent,
 	containsCodeSpan,
+	isOffsetInCodeBlock,
 	domMatchesTokens,
 	syncCodeBlockHatches,
+	stripBlockBoundaryLineBreaks,
 	serializeContent,
 	buildFragment,
 	rangeToTextOffset,
