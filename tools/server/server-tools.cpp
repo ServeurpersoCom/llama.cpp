@@ -60,11 +60,13 @@ public:
     virtual std::string resolve_path(const std::string & path) const = 0;
     // on_chunk, if set, is called with each chunk of output as it is read (before truncation cuts in);
     // returning false terminates the process early (e.g. the client disconnected)
+    // cwd, if non-empty, is the child's working directory, set at spawn time
     virtual exec_result run(
             const std::vector<std::string> & args,
             size_t max_output,
             int timeout_secs,
-            const std::function<bool(const std::string &)> & on_chunk = nullptr) const = 0;
+            const std::function<bool(const std::string &)> & on_chunk = nullptr,
+            const std::string & cwd = "") const = 0;
 };
 
 class tools_io_basic : public tools_io {
@@ -152,7 +154,8 @@ public:
             const std::vector<std::string> & args,
             size_t max_output,
             int timeout_secs,
-            const std::function<bool(const std::string &)> & on_chunk = nullptr) const override {
+            const std::function<bool(const std::string &)> & on_chunk = nullptr,
+            const std::string & cwd = "") const override {
         exec_result res;
 
         common_subproc proc;
@@ -162,7 +165,7 @@ public:
                     | subprocess_option_inherit_environment
                     | subprocess_option_search_user_path;
 
-        if (!proc.create(args, options)) {
+        if (!proc.create(args, options, {}, cwd.empty() ? nullptr : cwd.c_str())) {
             res.output = "failed to spawn process";
             return res;
         }
@@ -637,28 +640,11 @@ struct server_tool_exec_shell_command : server_tool {
         timeout    = std::min(timeout,    SERVER_TOOL_EXEC_SHELL_COMMAND_MAX_TIMEOUT);
         max_output = std::min(max_output, SERVER_TOOL_EXEC_SHELL_COMMAND_MAX_OUTPUT_SIZE);
 
-        // expand leading "~" before quoting; otherwise `cd '~/x'` fails.
-        if (!working_directory.empty() && working_directory[0] == '~') {
-            working_directory = server_fs::expand_home(working_directory);
-        }
+        auto io = make_tools_io(working_directory);
 
-        if (!working_directory.empty()) {
-            std::string quoted;
-            quoted.reserve(working_directory.size() + 4);
-#ifdef _WIN32
-            for (char c : working_directory) {
-                if (c == '"') quoted += "\"\"";
-                else quoted += c;
-            }
-            command = "cd /D \"" + quoted + "\" && " + command;
-#else
-            for (char c : working_directory) {
-                if (c == '\'') quoted += "'\\''";
-                else quoted += c;
-            }
-            command = "cd '" + quoted + "' && " + command;
-#endif
-        }
+        // the child inherits the working directory at spawn time (chdir in the
+        // child), so the command runs verbatim with no shell prefix to quote
+        const std::string cwd = working_directory.empty() ? std::string() : io->resolve_path(working_directory);
 
 #ifdef _WIN32
         std::vector<std::string> args = {"cmd", "/c", command};
@@ -666,13 +652,11 @@ struct server_tool_exec_shell_command : server_tool {
         std::vector<std::string> args = {"sh", "-c", command};
 #endif
 
-        auto io = make_tools_io(working_directory);
-
         if (st) {
             auto res = io->run(args, max_output, timeout, [st](const std::string & chunk) {
                 st->push(chunk);
                 return !st->alive || st->alive();
-            });
+            }, cwd);
             if (st->alive && !st->alive()) {
                 return json();
             }
@@ -684,7 +668,7 @@ struct server_tool_exec_shell_command : server_tool {
             return json();
         }
 
-        auto res = io->run(args, max_output, timeout);
+        auto res = io->run(args, max_output, timeout, nullptr, cwd);
 
         std::string text_output = res.output;
         text_output += string_format("\n[exit code: %d]", res.exit_code);

@@ -301,7 +301,24 @@ void walk_root(
         if (ec) continue;
 
         for (const auto & entry : it) {
+            // check the deadline against every entry visited, not only the ones
+            // retained: a directory full of skipped entries (symlinks, junk,
+            // sockets) must not run the walk past its time budget unchecked
+            if (++since_clock_check >= 256) {
+                since_clock_check = 0;
+                if (std::chrono::steady_clock::now() >= deadline) {
+                    status = walk_status::time_capped;
+                    return;
+                }
+            }
+
             const std::string name = entry.path().filename().string();
+
+            // symlinks are never followed: a directory symlink pointing outside
+            // the walk root would let its target's paths surface under the root
+            // prefix and pass the is_child_of() confinement check
+            std::error_code sym_ec;
+            if (entry.is_symlink(sym_ec)) continue;
 
             std::error_code is_ec;
             const bool is_dir = entry.is_directory(is_ec);
@@ -337,14 +354,6 @@ void walk_root(
             if (!on_entry(out.back())) {
                 status = walk_status::match_capped;
                 return;
-            }
-
-            if (++since_clock_check >= 256) {
-                since_clock_check = 0;
-                if (std::chrono::steady_clock::now() >= deadline) {
-                    status = walk_status::time_capped;
-                    return;
-                }
             }
 
             if (is_dir && (int) frame.segs.size() + 1 < max_depth) {
