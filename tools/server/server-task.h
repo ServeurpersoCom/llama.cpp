@@ -169,6 +169,14 @@ struct server_task {
     };
     slot_action slot_action;
 
+    // used by disaggregated prefill
+    // prefill_attempted marks a task already dispatched to the prefill worker
+    // prefill_state and prefill_tokens carry the sequence state produced by the worker,
+    // applied to the slot before processing
+    bool prefill_attempted = false;
+    std::vector<uint8_t> prefill_state;
+    server_tokens        prefill_tokens;
+
     // used by SERVER_TASK_TYPE_METRICS
     bool metrics_reset_bucket = false;
 

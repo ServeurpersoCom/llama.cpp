@@ -17,6 +17,12 @@
 #include "mtmd.h"
 #include "mtmd-helper.h"
 
+#include "arg.h" // common_add_rpc_devices for the prefill worker
+
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
 #include <algorithm>
 #include <cstddef>
 #include <cinttypes>
@@ -690,6 +696,157 @@ struct server_slot {
     }
 };
 
+// dedicated prompt prefill context on an RPC node
+// one worker, one task at a time, produces the same task fields as the HTTP prefill path:
+// the sequence state at n - 1 tokens plus the matching tokens, applied by launch_slot_with_task
+struct server_prefill_worker {
+    using result_callback = std::function<void(server_task &&)>;
+
+    common_init_result_ptr llama_init;
+    llama_context * ctx = nullptr;
+
+    std::deque<server_task> tasks;
+    std::mutex mutex;
+    std::condition_variable condition;
+    std::thread thread;
+
+    result_callback callback;
+    bool running = false;
+
+    ~server_prefill_worker() {
+        stop();
+    }
+
+    bool init(common_params params, const std::string & endpoint, int32_t n_ctx_slot, result_callback callback_result) {
+        callback = std::move(callback_result);
+
+        try {
+            params.devices = common_add_rpc_devices(endpoint);
+        } catch (const std::exception & e) {
+            SRV_ERR("prefill worker failed to register node %s: %s\n", endpoint.c_str(), e.what());
+            return false;
+        }
+
+        // the worker holds a single sequence sized for one slot
+        params.n_parallel = 1;
+        params.n_ctx      = n_ctx_slot;
+        params.prefill_node.clear();
+        params.fit_params = false;
+        params.embedding  = false;
+        params.sampling.backend_sampling = false;
+        params.load_progress_callback = nullptr;
+        params.load_progress_callback_user_data = nullptr;
+
+        llama_init = common_init_from_params(params);
+        if (llama_init->model() == nullptr) {
+            SRV_ERR("prefill worker failed to load model '%s'\n", params.model.path.c_str());
+            return false;
+        }
+        ctx = llama_init->context();
+        if (ctx == nullptr) {
+            SRV_ERR("%s", "prefill worker failed to create context\n");
+            llama_init.reset();
+            return false;
+        }
+
+        running = true;
+        thread = std::thread([this]() { loop(); });
+
+        SRV_INF("prefill worker ready on %s, n_ctx = %d\n", endpoint.c_str(), n_ctx_slot);
+        return true;
+    }
+
+    void stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!running) {
+                return;
+            }
+            running = false;
+        }
+        condition.notify_all();
+        if (thread.joinable()) {
+            thread.join();
+        }
+        ctx = nullptr;
+        llama_init.reset();
+    }
+
+    bool submit(server_task && task) {
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!running) {
+                return false;
+            }
+            tasks.push_back(std::move(task));
+        }
+        condition.notify_one();
+        return true;
+    }
+
+private:
+    // processes n - 1 prompt tokens so the shipped state carries any recurrent state at the
+    // position preceding the final token, which the decode context computes itself
+    void process(server_task & task) {
+        const int32_t n_prefill = (int32_t) task.tokens.size() - 1;
+        const int32_t n_batch   = llama_n_batch(ctx);
+
+        llama_memory_seq_rm(llama_get_memory(ctx), 0, -1, -1);
+
+        llama_batch batch = llama_batch_init(std::min(n_prefill, n_batch), 0, 1);
+
+        bool ok = true;
+        for (int32_t i = 0; i < n_prefill && ok;) {
+            const int32_t n_cur = std::min(n_prefill - i, n_batch);
+            common_batch_clear(batch);
+            for (int32_t j = 0; j < n_cur; ++j) {
+                common_batch_add(batch, task.tokens[i + j], i + j, { 0 }, false);
+            }
+            const int ret = llama_decode(ctx, batch);
+            if (ret != 0) {
+                SRV_WRN("prefill worker decode failed with code %d, task %d runs locally\n", ret, task.id);
+                ok = false;
+            }
+            i += n_cur;
+        }
+        llama_batch_free(batch);
+
+        if (ok) {
+            const size_t size = llama_state_seq_get_size_ext(ctx, 0, LLAMA_STATE_SEQ_FLAGS_NONE);
+            task.prefill_state.resize(size);
+            const size_t n = llama_state_seq_get_data_ext(ctx, task.prefill_state.data(), size, 0, LLAMA_STATE_SEQ_FLAGS_NONE);
+            if (n == size) {
+                task.prefill_tokens = task.tokens.clone();
+                task.prefill_tokens.keep_first(n_prefill);
+            } else {
+                SRV_WRN("prefill worker state read failed (%zu / %zu), task %d runs locally\n", n, size, task.id);
+                task.prefill_state.clear();
+            }
+        } else {
+            llama_synchronize(ctx);
+        }
+
+        llama_memory_seq_rm(llama_get_memory(ctx), 0, -1, -1);
+    }
+
+    void loop() {
+        while (true) {
+            server_task task;
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                condition.wait(lock, [this]() { return !running || !tasks.empty(); });
+                if (!running) {
+                    return;
+                }
+                task = std::move(tasks.front());
+                tasks.pop_front();
+            }
+            process(task);
+            callback(std::move(task));
+        }
+    }
+};
+
 // returns 0 on success
 // caller need to update prompt.tokens after a successful call to keep track of the processing progress
 // note: this is not a member of server_slot because we want to run it inside yield_to_queue
@@ -836,6 +993,8 @@ private:
 
     common_speculative_init_result_ptr spec_init;
 
+    std::unique_ptr<server_prefill_worker> prefill_worker;
+
     common_context_seq_rm_type ctx_tgt_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
     common_context_seq_rm_type ctx_dft_seq_rm_type = COMMON_CONTEXT_SEQ_RM_TYPE_NO;
 
@@ -880,6 +1039,8 @@ private:
     int64_t t_last_load_progress_ms = 0;
 
     void destroy() {
+        prefill_worker.reset();
+
         spec.reset();
         spec_init.reset();
 
@@ -1242,6 +1403,32 @@ private:
             spec_init.reset();
             ctx_dft   = nullptr;
             model_dft = nullptr;
+        }
+
+        if (!params_base.prefill_node.empty()) {
+            if (spec) {
+                SRV_WRN("%s", "prefill node disabled, speculative decoding is enabled\n");
+            } else if (mctx != nullptr) {
+                SRV_WRN("%s", "prefill node disabled, multimodal is enabled\n");
+            } else if (!params_base.lora_adapters.empty()) {
+                SRV_WRN("%s", "prefill node disabled, LoRA adapters are loaded\n");
+            } else {
+                auto params_pfx = params_base;
+                params_pfx.n_batch  = llama_n_batch(ctx_tgt);
+                params_pfx.n_ubatch = llama_n_ubatch(ctx_tgt);
+
+                prefill_worker = std::make_unique<server_prefill_worker>();
+                if (!prefill_worker->init(
+                            std::move(params_pfx),
+                            params_base.prefill_node,
+                            n_ctx_slot,
+                            [this](server_task && task) {
+                                queue_tasks.post(std::move(task));
+                            })) {
+                    prefill_worker.reset();
+                    return false;
+                }
+            }
         }
 
         for (int i = 0; i < params_base.n_parallel; i++) {
@@ -1749,6 +1936,20 @@ private:
 
         // the per-request limit takes priority over the global one
         slot.n_predict_max = task.params.n_predict != -1 ? task.params.n_predict : params_base.n_predict;
+
+        if (!task.prefill_state.empty()) {
+            // the sequence state comes from the prefill worker, install it so prompt processing reuses it as cache
+            slot.prompt_clear();
+            const size_t n = llama_state_seq_set_data_ext(ctx_tgt, task.prefill_state.data(), task.prefill_state.size(), slot.id, 0);
+            if (n != task.prefill_state.size()) {
+                slot.prompt_clear();
+                send_error(task, "Failed to apply the prefill state, no available space in KV cache", ERROR_TYPE_SERVER);
+                return false;
+            }
+            slot.prompt.tokens = std::move(task.prefill_tokens);
+            SLT_INF(slot, "applied prefill state, n_tokens = %zu, size = %.3f MiB\n",
+                    slot.prompt.tokens.size(), task.prefill_state.size() / (1024.0 * 1024.0));
+        }
 
         slot.task = std::make_unique<const server_task>(std::move(task));
 
@@ -2289,6 +2490,52 @@ private:
     }
 
     // returns false to decline the task, it is offered again after the decode is done
+    // longest prompt prefix already available locally, in idle slots or the host prompt cache
+    int get_cached_prefix(const server_task & task) const {
+        if (!task.params.cache_prompt) {
+            return 0;
+        }
+        int n_cached = 0;
+        for (const auto & slot : slots) {
+            if (!slot.is_processing()) {
+                n_cached = std::max<int>(n_cached, slot.prompt.tokens.get_common_prefix(task.tokens));
+            }
+        }
+        if (prompt_cache) {
+            for (const auto & state : prompt_cache->states) {
+                n_cached = std::max<int>(n_cached, state.prompt.tokens.get_common_prefix(task.tokens));
+            }
+        }
+        return n_cached;
+    }
+
+    // sends a cold completion task to the prefill worker, it comes back through the queue
+    // carrying the sequence state and is then scheduled as usual
+    bool try_dispatch_prefill(server_task & task) {
+        if (!prefill_worker || task.prefill_attempted || task.type != SERVER_TASK_TYPE_COMPLETION) {
+            return false;
+        }
+        if (!task.prefill_state.empty() || task.tokens.has_mtmd) {
+            return false;
+        }
+        const int32_t n_tokens = (int32_t) task.tokens.size();
+        if (n_tokens < 2 || n_tokens > slots.front().n_ctx) {
+            return false;
+        }
+        if (get_cached_prefix(task) > 1) {
+            return false;
+        }
+
+        task.prefill_attempted = true;
+        const int id_task = task.id;
+        if (!prefill_worker->submit(std::move(task))) {
+            task.prefill_attempted = false;
+            return false;
+        }
+        SRV_DBG("delegated task %d to the prefill worker\n", id_task);
+        return true;
+    }
+
     bool process_single_task(server_task && task, bool is_yielding) {
         // while yielding, an encode / decode is running and only accessing metrics is safe
         if (is_yielding && task.type != SERVER_TASK_TYPE_METRICS) {
@@ -2311,6 +2558,10 @@ private:
                     }
 
                     const int id_task = task.id;
+
+                    if (try_dispatch_prefill(task)) {
+                        break;
+                    }
 
                     server_slot * slot = get_available_slot(task);
 
@@ -3252,7 +3503,7 @@ private:
                                     SLT_WRN(slot, "%s\n", st1.str().c_str());
                                 }
 
-                                if (pos_min >= pos_min_thold) {
+                                if (slot.task->prefill_state.empty() && pos_min >= pos_min_thold) {
                                     // search for a context checkpoint
                                     const auto it = std::find_if(
                                         slot.prompt.checkpoints.rbegin(),
