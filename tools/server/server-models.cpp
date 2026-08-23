@@ -41,6 +41,9 @@ extern char **environ;
 
 #define DEFAULT_STOP_TIMEOUT 10 // seconds
 
+// cadence at which a waiting request wakes up to re-check its cancellation flag
+#define WAIT_POLL_INTERVAL_MS 200
+
 #define CMD_ROUTER_TO_CHILD_EXIT  "cmd_router_to_child:exit"
 #define CMD_CHILD_TO_ROUTER_STATE "cmd_child_to_router:state:" // followed by json string
 
@@ -1382,6 +1385,29 @@ bool server_models::ensure_model_ready(const std::string & name, const std::func
     if (!meta.has_value()) {
         throw std::runtime_error("model name=" + name + " is not found");
     }
+    if (meta->status == SERVER_MODEL_STATUS_DOWNLOADING || meta->status == SERVER_MODEL_STATUS_DOWNLOADED) {
+        // an explicit download owns a transient entry that a normal one replaces once the
+        // transfer ends, so wait it out and resolve the model again
+        SRV_INF("waiting until model name=%s is downloaded...\n", name.c_str());
+        {
+            std::unique_lock<std::mutex> lk(mutex);
+            while (true) {
+                auto it = mapping.find(name);
+                if (it == mapping.end() || it->second.meta.status != SERVER_MODEL_STATUS_DOWNLOADING) {
+                    break;
+                }
+                if (should_stop && should_stop()) {
+                    throw std::runtime_error("request cancelled while downloading model name=" + name);
+                }
+                cv.wait_for(lk, std::chrono::milliseconds(WAIT_POLL_INTERVAL_MS));
+            }
+        }
+        // get_meta() runs the pending reload, which swaps in the entry holding the files
+        meta = get_meta(name);
+        if (!meta.has_value()) {
+            throw std::runtime_error("download of model name=" + name + " did not complete");
+        }
+    }
     if (meta->is_ready()) {
         return false; // ready for taking requests
     }
@@ -1443,9 +1469,6 @@ bool server_models::ensure_model_ready(const std::string & name, const std::func
             if (status == SERVER_MODEL_STATUS_LOADED || status == SERVER_MODEL_STATUS_SLEEPING) {
                 break;
             }
-            if (status == SERVER_MODEL_STATUS_DOWNLOADING || status == SERVER_MODEL_STATUS_DOWNLOADED) {
-                break; // do not wait on a download child
-            }
             if (status == SERVER_MODEL_STATUS_FETCHING || status == SERVER_MODEL_STATUS_LOADING) {
                 saw_loading = true;
             } else if (status == SERVER_MODEL_STATUS_UNLOADED) {
@@ -1487,7 +1510,7 @@ bool server_models::ensure_model_ready(const std::string & name, const std::func
                 continue;
             }
 
-            cv.wait_for(lk, std::chrono::milliseconds(200));
+            cv.wait_for(lk, std::chrono::milliseconds(WAIT_POLL_INTERVAL_MS));
         }
     } catch (...) {
         leave_queue();
