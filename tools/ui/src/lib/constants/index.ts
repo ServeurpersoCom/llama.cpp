@@ -6,6 +6,7 @@ export * from './api-endpoints.constants';
 export * from './app.constants';
 export * from './chat-tabs.constants';
 export * from './database.constants';
+export * from './hf.constants';
 export * from './reasoning-effort.constants';
 export * from './recommended-mcp-servers.constants';
 export * from './storage.constants';

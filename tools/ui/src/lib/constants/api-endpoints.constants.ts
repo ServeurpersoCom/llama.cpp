@@ -1,4 +1,5 @@
 export const API_MODELS = {
+	ADD: '/models',
 	LIST: '/v1/models',
 	LOAD: '/models/load',
 	SSE: '/models/sse',

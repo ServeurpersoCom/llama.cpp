@@ -109,3 +109,14 @@ export { default as ModelBadge } from './ModelBadge.svelte';
  * Respects the user's `showRawModelNames` setting.
  */
 export { default as ModelId } from './ModelId.svelte';
+
+/**
+ * **ModelsBrowser** - Hugging Face Hub model browser
+ *
+ * Full page surface behind the `#/models` route. Searches the Hub for
+ * repositories holding GGUF weights, lists the quantizations a repository
+ * offers with their transfer size, and registers the chosen one with the
+ * router. Download progress then arrives on the `/models/sse` feed and shows
+ * up on the model selector row.
+ */
+export { default as ModelsBrowser } from './ModelsBrowser.svelte';

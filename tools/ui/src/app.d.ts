@@ -21,10 +21,12 @@ import type {
 	ApiModelListResponse,
 	ApiModelLoadStage,
 	ApiModelsSseData,
+	ApiModelsSseDownloadProgress,
 	ApiModelsSseEvent,
 	ApiModelsSseProgress,
 	ApiProcessingState,
 	ApiRouterModelMeta,
+	ApiRouterModelsAddResponse,
 	ApiRouterModelsListResponse,
 	ApiRouterModelsLoadRequest,
 	ApiRouterModelsLoadResponse,
@@ -52,10 +54,12 @@ import type {
 	DatabaseMessageExtraVideoFile,
 	ExportedConversation,
 	ExportedConversations,
+	ModelDownloadProgress,
 	ModelLoadProgress,
 	// Model types
 	ModelModalities,
 	ModelOption,
+	ModelProgress,
 	// Settings types
 	SettingsChatServiceOptions,
 	SettingsConfigType,
@@ -99,6 +103,8 @@ declare global {
 		ApiRouterModelsListResponse,
 		ApiRouterModelsUnloadRequest,
 		ApiRouterModelsUnloadResponse,
+		ApiRouterModelsAddResponse,
+		ApiModelsSseDownloadProgress,
 		// Chat types
 		ChatAttachmentDisplayItem,
 		ChatMessagePromptProgress,
@@ -127,6 +133,8 @@ declare global {
 		ModelModalities,
 		ModelOption,
 		ModelLoadProgress,
+		ModelDownloadProgress,
+		ModelProgress,
 		// Settings types
 		SettingsChatServiceOptions,
 		SettingsConfigValue,

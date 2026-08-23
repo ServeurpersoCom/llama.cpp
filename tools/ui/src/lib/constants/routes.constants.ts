@@ -13,6 +13,8 @@ export const ROUTES = {
 	CHAT: '#/chat',
 	/** MCP servers. */
 	MCP_SERVERS: '#/mcp-servers',
+	/** Model browser — search the Hugging Face Hub and download weights. */
+	MODELS: '#/models',
 	/** Search — mobile-only full-page conversation search. */
 	SEARCH: '#/search',
 	/** Settings base — for dynamic settings URLs use RouterService. */

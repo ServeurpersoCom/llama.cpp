@@ -13,6 +13,7 @@ export enum ServerRole {
  * Used as the `value` field in the status object from /models endpoint
  */
 export enum ServerModelStatus {
+	DOWNLOADING = 'downloading',
 	FAILED = 'failed',
 	LOADED = 'loaded',
 	LOADING = 'loading',

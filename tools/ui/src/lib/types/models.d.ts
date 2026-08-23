@@ -1,3 +1,4 @@
+import type { ModelProgressKind } from '$lib/enums';
 import type { ApiModelDataEntry, ApiModelDetails, ApiModelLoadStage } from '$lib/types/api';
 
 export interface ModelModalities {
@@ -30,6 +31,22 @@ export interface ModelLoadProgress {
 	current: ApiModelLoadStage;
 	value: number;
 }
+
+export interface ModelDownloadProgress {
+	files: number;
+	downloaded: number;
+	total: number;
+	value: number | null;
+}
+
+/**
+ * Progress of a model on its way up, discriminated by the phase it is in.
+ * A model transfers its files first, then loads them, and each phase reports
+ * a different shape.
+ */
+export type ModelProgress =
+	| { kind: ModelProgressKind.DOWNLOAD; progress: ModelDownloadProgress }
+	| { kind: ModelProgressKind.LOAD; progress: ModelLoadProgress };
 
 export interface ParsedModelId {
 	raw: string;

@@ -129,12 +129,24 @@ export interface ApiModelsSseProgress {
 }
 
 /**
+ * Progress payload of a transfer, aggregated by the server across every file
+ * it downloads in parallel. `value` is null while a file size is still
+ * unknown, which happens for plain URLs but not for Hub repos.
+ */
+export interface ApiModelsSseDownloadProgress {
+	files: number;
+	downloaded: number;
+	total: number;
+	value: number | null;
+}
+
+/**
  * Status payload carried by a /models/sse envelope.
  * exit_code appears on unload.
  */
 export interface ApiModelsSseData {
 	status: ServerModelStatus;
-	progress?: ApiModelsSseProgress;
+	progress?: ApiModelsSseProgress | ApiModelsSseDownloadProgress;
 	exit_code?: number;
 }
 
@@ -520,6 +532,11 @@ export interface ApiRouterModelsUnloadRequest {
 /**
  * Response from unloading a model
  */
+export interface ApiRouterModelsAddResponse {
+	success: boolean;
+	error?: string;
+}
+
 export interface ApiRouterModelsUnloadResponse {
 	success: boolean;
 	error?: string;

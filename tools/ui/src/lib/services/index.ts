@@ -140,12 +140,23 @@ export { ConversationTransferService } from './conversation-transfer.service';
  *
  * **Endpoints:**
  * - `GET /v1/models` — OpenAI-compatible model list (both modes)
+ * - `POST /models` — Register a Hub model and start its download (ROUTER mode only)
  * - `POST /models/load` — Load a model (ROUTER mode only)
  * - `POST /models/unload` — Unload a model (ROUTER mode only)
  *
  * @see modelsStore in stores/models/index.svelte.ts — primary consumer for reactive model state
  */
 export { ModelsService } from './models.service';
+
+/**
+ * **HuggingFaceService** - Hugging Face Hub browsing
+ *
+ * Searches repos holding GGUF weights and folds their files into downloadable
+ * variants. Talks to the Hub directly from the browser, without credentials.
+ *
+ * @see DialogModelAddNew — primary consumer
+ */
+export { HuggingFaceService } from './hf.service';
 
 /**
  * **PropsService** - Server properties and capabilities retrieval

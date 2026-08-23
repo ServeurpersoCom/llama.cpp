@@ -23,13 +23,15 @@ export class ModelsService {
 	private static readonly SSE_RECONNECT_MS = 1000;
 
 	/**
-	 * Check if a model is loaded based on its metadata.
+	 * Register a Hub model and start its download (ROUTER mode only).
+	 * Sends POST request to `/models`. The endpoint returns as soon as the
+	 * download child is spawned, progress arrives on the `/models/sse` feed.
 	 *
-	 * @param model - Model data entry from the API response
-	 * @returns True if the model status is LOADED
+	 * @param modelId - repo identifier, optionally suffixed with a quant selector
+	 * @returns Add response from the server
 	 */
-	static isModelLoaded(model: ApiModelDataEntry): boolean {
-		return model.status.value === ServerModelStatus.LOADED;
+	static async add(modelId: string): Promise<ApiRouterModelsAddResponse> {
+		return apiPost<ApiRouterModelsAddResponse>(API_MODELS.ADD, { model: modelId });
 	}
 
 	/**
@@ -39,6 +41,16 @@ export class ModelsService {
 	 *
 	 *
 	 */
+
+	/**
+	 * Check if a model is loaded based on its metadata.
+	 *
+	 * @param model - Model data entry from the API response
+	 * @returns True if the model status is LOADED
+	 */
+	static isModelLoaded(model: ApiModelDataEntry): boolean {
+		return model.status.value === ServerModelStatus.LOADED;
+	}
 
 	/**
 	 * Check if a model is currently loading.

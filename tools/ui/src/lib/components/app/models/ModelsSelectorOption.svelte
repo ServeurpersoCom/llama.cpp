@@ -15,7 +15,7 @@
 	import { ServerModelStatus } from '$lib/enums';
 	import { modelsStore } from '$lib/stores';
 	import type { ModelOption } from '$lib/types/models';
-	import { modelLoadFraction, modelLoadProgressText } from '$lib/utils';
+	import { modelProgressFraction, modelProgressText } from '$lib/utils';
 
 	interface Props {
 		option: ModelOption;
@@ -54,10 +54,11 @@
 		(serverStatus === ServerModelStatus.LOADED || isSleeping) && !isOperationInProgress
 	);
 	let isLoading = $derived(serverStatus === ServerModelStatus.LOADING || isOperationInProgress);
+	let isDownloading = $derived(serverStatus === ServerModelStatus.DOWNLOADING);
 
-	let loadProgress = $derived(isLoading ? modelsStore.status.getLoadProgress(option.model) : null);
-	let loadPercent = $derived(Math.round(modelLoadFraction(loadProgress) * 100));
-	let loadTitle = $derived(modelLoadProgressText(loadProgress));
+	let progress = $derived(modelsStore.status.getProgress(option.model));
+	let loadPercent = $derived(Math.round(modelProgressFraction(progress) * 100));
+	let loadTitle = $derived(modelProgressText(progress));
 </script>
 
 <div
@@ -199,7 +200,7 @@
 		{/if}
 	</div>
 
-	{#if isLoading}
+	{#if isLoading || isDownloading}
 		<ModelLoadHighlight percent={loadPercent} />
 	{/if}
 </div>

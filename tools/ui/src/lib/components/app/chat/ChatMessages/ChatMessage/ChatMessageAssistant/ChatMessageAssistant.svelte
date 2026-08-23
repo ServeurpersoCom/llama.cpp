@@ -12,7 +12,7 @@
 	import { MessageRole } from '$lib/enums';
 	import { useProcessingState } from '$lib/hooks/use-processing-state.svelte';
 	import { chatStore, modelsStore, serverStore, settingsStore } from '$lib/stores';
-	import { modelLoadProgressText } from '$lib/utils';
+	import { modelProgressText } from '$lib/utils';
 	import { hasAgenticContent } from '$lib/utils';
 
 	interface Props {
@@ -58,10 +58,10 @@
 	let loadTargetModel = $derived(
 		message.model ?? chatStore.getResumeModel(message.convId) ?? modelsStore.selectedModelName
 	);
-	let modelLoadProgress = $derived(
-		isRouter && loadTargetModel ? modelsStore.status.getLoadProgress(loadTargetModel) : null
+	let modelProgress = $derived(
+		isRouter && loadTargetModel ? modelsStore.status.getProgress(loadTargetModel) : null
 	);
-	let modelLoadingText = $derived(modelLoadProgressText(modelLoadProgress));
+	let modelLoadingText = $derived(modelProgressText(modelProgress));
 
 	let showProcessingInfoTop = $derived(
 		message?.role === MessageRole.ASSISTANT &&

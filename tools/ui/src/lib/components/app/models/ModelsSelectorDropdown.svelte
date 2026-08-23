@@ -15,7 +15,7 @@
 	import { KeyboardKey, ServerModelStatus } from '$lib/enums';
 	import { useModelsSelector } from '$lib/hooks/use-models-selector.svelte';
 	import { modelsStore } from '$lib/stores';
-	import { modelLoadFraction } from '$lib/utils';
+	import { modelProgressFraction } from '$lib/utils';
 
 	interface Props {
 		class?: string;
@@ -174,9 +174,10 @@
 		{@const triggerLoading =
 			!!triggerModel &&
 			(triggerStatus === ServerModelStatus.LOADING ||
+				triggerStatus === ServerModelStatus.DOWNLOADING ||
 				modelsStore.status.isOperationInProgress(triggerModel))}
 		{@const triggerLoadPercent = triggerLoading
-			? Math.round(modelLoadFraction(modelsStore.status.getLoadProgress(triggerModel)) * 100)
+			? Math.round(modelProgressFraction(modelsStore.status.getProgress(triggerModel)) * 100)
 			: 0}
 
 		{#if ms.isRouter}

@@ -215,3 +215,6 @@ export type { ReasoningEffortLevel } from './reasoning';
 
 // Splash
 export type { SplashDimensions } from './splash';
+
+// Hugging Face Hub types
+export type { HfModelSummary, HfModelVariant, HfRepoFile } from './hf';

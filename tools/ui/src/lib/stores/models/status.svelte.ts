@@ -7,7 +7,7 @@
  * modelsStore; the host owns the router model rows the feed updates.
  */
 
-import { ServerModelsSseEventType, ServerModelStatus } from '$lib/enums';
+import { ModelProgressKind, ServerModelsSseEventType, ServerModelStatus } from '$lib/enums';
 import { ModelsService } from '$lib/services/models.service';
 import type { ModelPropsManager } from '$lib/stores/models/props.svelte';
 // direct imports between stores, not via the barrel, to avoid circular deps
@@ -25,12 +25,15 @@ export interface ModelStatusHost {
 	readonly props: ModelPropsManager;
 	/** Router model rows the status feed updates. */
 	routerModels: ApiModelDataEntry[];
+	/** Rebuilds the selector list, for when the set of models changed. */
+	fetch(force?: boolean): Promise<void>;
 	fetchRouterModels(): Promise<void>;
 	isModelLoaded(modelId: string): boolean;
 	toDisplayName(id: string): string;
 }
 
 export class ModelStatusManager {
+	private downloadProgress = new SvelteMap<string, ModelDownloadProgress>();
 	private loadingStates = new SvelteMap<string, boolean>();
 	private loadProgress = new SvelteMap<string, ModelLoadProgress>();
 	// /models/sse feed state, the single source of truth for status and load progress
@@ -50,10 +53,23 @@ export class ModelStatusManager {
 	}
 
 	/**
-	 * Current load progress for a model, or null when not loading.
+	 * Progress of a model on its way up, whichever phase it is in. A transfer
+	 * precedes the load, so it wins while both entries linger.
 	 */
-	getLoadProgress(modelId: string): ModelLoadProgress | null {
-		return this.loadProgress.get(modelId) ?? null;
+	getProgress(modelId: string): ModelProgress | null {
+		const download = this.downloadProgress.get(modelId);
+
+		if (download) {
+			return { kind: ModelProgressKind.DOWNLOAD, progress: download };
+		}
+
+		const load = this.loadProgress.get(modelId);
+
+		if (load) {
+			return { kind: ModelProgressKind.LOAD, progress: load };
+		}
+
+		return null;
 	}
 
 	isOperationInProgress(modelId: string): boolean {
@@ -141,6 +157,25 @@ export class ModelStatusManager {
 		this.statusAbort?.abort();
 		this.statusAbort = null;
 		this.loadProgress.clear();
+		this.downloadProgress.clear();
+	}
+
+	/**
+	 * Apply a download envelope: mark the model as transferring and track the
+	 * aggregated progress. A transfer is not a terminal state, so it settles no
+	 * awaiter, the load that follows does.
+	 */
+	private applyDownloadProgress(event: ApiModelsSseEvent): void {
+		const model = event.model;
+		const data = event.data;
+
+		if (!model || !data?.status) return;
+
+		this.setRouterModelStatus(model, data.status);
+
+		if (data.progress) {
+			this.downloadProgress.set(model, data.progress as ModelDownloadProgress);
+		}
 	}
 
 	/**
@@ -158,9 +193,13 @@ export class ModelStatusManager {
 		this.setRouterModelStatus(model, status);
 
 		if (status === ServerModelStatus.LOADING) {
-			if (data.progress) this.loadProgress.set(model, data.progress);
+			if (data.progress) this.loadProgress.set(model, data.progress as ModelLoadProgress);
 		} else {
 			this.loadProgress.delete(model);
+		}
+
+		if (status !== ServerModelStatus.DOWNLOADING) {
+			this.downloadProgress.delete(model);
 		}
 
 		if (status === ServerModelStatus.LOADED) {
@@ -183,7 +222,7 @@ export class ModelStatusManager {
 	/**
 	 * Route one feed record by event kind. Only the status_* events carry a
 	 * status payload, models_reload triggers a list refresh, model_remove drops
-	 * the row, download_* belong to the download surface, not here.
+	 * the row, download_progress feeds the transfer surface.
 	 */
 	private applyStatusEvent(event: ApiModelsSseEvent): void {
 		switch (event.event) {
@@ -194,7 +233,8 @@ export class ModelStatusManager {
 
 				break;
 			case ServerModelsSseEventType.MODELS_RELOAD:
-				void this.host.fetchRouterModels();
+				// the set of models changed, not just their status, so rebuild the list
+				void this.host.fetch(true);
 
 				break;
 			case ServerModelsSseEventType.MODEL_REMOVE:
@@ -202,6 +242,8 @@ export class ModelStatusManager {
 
 				break;
 			case ServerModelsSseEventType.DOWNLOAD_PROGRESS:
+				this.applyDownloadProgress(event);
+
 				break;
 		}
 	}
@@ -226,6 +268,7 @@ export class ModelStatusManager {
 
 		this.host.routerModels = this.host.routerModels.filter((m) => m.id !== modelId);
 		this.loadProgress.delete(modelId);
+		this.downloadProgress.delete(modelId);
 		this.rejectStatus(modelId, new Error(`Model removed: ${this.host.toDisplayName(modelId)}`));
 	}
 
