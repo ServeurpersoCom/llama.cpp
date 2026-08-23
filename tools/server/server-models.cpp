@@ -1011,6 +1011,7 @@ void server_models::load(const std::string & name, const load_options & opts) {
     inst.meta.port        = common_http_get_free_port();
     inst.meta.status      = SERVER_MODEL_STATUS_LOADING;
     inst.meta.loaded_info = json{};
+    inst.meta.progress    = json{};
     inst.meta.last_used   = ggml_time_ms();
 
     if (inst.meta.port <= 0) {
@@ -1183,9 +1184,9 @@ void server_models::unload(const std::string & name) {
         } else if (it->second.meta.is_running()) {
             SRV_INF("stopping model instance name=%s\n", name.c_str());
             stopping_models.insert(name);
-            if (it->second.meta.status == SERVER_MODEL_STATUS_LOADING) {
-                // special case: if model is in loading state, unloading means force-killing it
-                SRV_WRN("model name=%s is still loading, force-killing\n", name.c_str());
+            if (it->second.meta.is_starting()) {
+                // a starting child does not read stdin yet, so unloading means force-killing it
+                SRV_WRN("model name=%s is still starting, force-killing\n", name.c_str());
                 it->second.subproc->terminate();
             }
             cv_stop.notify_all();
@@ -1207,6 +1208,10 @@ void server_models::unload_all() {
             } else if (inst.meta.is_running()) {
                 SRV_INF("stopping model instance name=%s\n", name.c_str());
                 stopping_models.insert(name);
+                if (inst.meta.is_starting()) {
+                    // a starting child does not read stdin yet, waiting for it to exit times out
+                    inst.subproc->terminate();
+                }
                 cv_stop.notify_all();
                 // status change will be handled by the managing thread
             }
@@ -1255,35 +1260,41 @@ void server_models::update_status(const std::string & name, const update_status_
     cv.notify_all();
 }
 
-void server_models::update_download_progress(const std::string & name, const common_download_progress & progress, bool done, bool ok) {
-    json curr;
+void server_models::update_download_progress(const std::string & name, const json & progress) {
+    server_model_status status = SERVER_MODEL_STATUS_DOWNLOADING;
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        auto it = mapping.find(name);
+        if (it == mapping.end()) {
+            return;
+        }
+        auto & meta = it->second.meta;
+        if (meta.status == SERVER_MODEL_STATUS_LOADING) {
+            // a normal child fetches the files it misses before it can load them
+            meta.status = SERVER_MODEL_STATUS_FETCHING;
+        }
+        meta.progress = progress;
+        status        = meta.status;
+    }
+    cv.notify_all(); // the FETCHING transition is a status change, waiters re-evaluate
+    notify_sse("download_progress", name, {
+        {"status",   server_model_status_to_string(status)},
+        {"progress", progress},
+    });
+}
+
+void server_models::finish_download(const std::string & name, bool ok) {
     {
         std::lock_guard<std::mutex> lk(mutex);
         auto it = mapping.find(name);
         if (it != mapping.end()) {
-            if (done) {
-                // mark the instance to be erased on next load_models() call
-                it->second.meta.status = SERVER_MODEL_STATUS_DOWNLOADED;
-                need_reload = true;
-            } else {
-                json & info = it->second.meta.loaded_info;
-                if (!info.contains("progress")) {
-                    info["progress"] = json{};
-                }
-                info["progress"][progress.url] = {
-                    {"done",  progress.downloaded},
-                    {"total", progress.total},
-                };
-                curr = it->second.meta.loaded_info; // copy
-            }
+            // mark the instance to be erased on next load_models() call
+            it->second.meta.status = SERVER_MODEL_STATUS_DOWNLOADED;
+            need_reload = true;
         }
     }
-    if (done) {
-        cv.notify_all(); // notify in case unload() is waiting for download to be cancelled
-        notify_sse(ok ? "download_finished" : "download_failed", name, {});
-    } else {
-        notify_sse("download_progress", name, curr);
-    }
+    cv.notify_all(); // notify in case unload() is waiting for download to be cancelled
+    notify_sse(ok ? "download_finished" : "download_failed", name, {});
 }
 
 bool server_models::remove(const std::string & name) {
@@ -1308,7 +1319,7 @@ bool server_models::remove(const std::string & name) {
         // stop running instance
         SRV_INF("stopping model instance name=%s\n", name.c_str());
         stopping_models.insert(name);
-        if (it->second.meta.status == SERVER_MODEL_STATUS_LOADING) {
+        if (it->second.meta.is_starting()) {
             it->second.subproc->terminate();
         }
         cv_stop.notify_all();
@@ -1435,7 +1446,7 @@ bool server_models::ensure_model_ready(const std::string & name, const std::func
             if (status == SERVER_MODEL_STATUS_DOWNLOADING || status == SERVER_MODEL_STATUS_DOWNLOADED) {
                 break; // do not wait on a download child
             }
-            if (status == SERVER_MODEL_STATUS_LOADING) {
+            if (status == SERVER_MODEL_STATUS_FETCHING || status == SERVER_MODEL_STATUS_LOADING) {
                 saw_loading = true;
             } else if (status == SERVER_MODEL_STATUS_UNLOADED) {
                 if (did_load || saw_loading) {
@@ -1563,7 +1574,6 @@ void server_models::handle_child_state(const std::string & name, const std::stri
         case SERVER_STATE_DOWNLOADING:
             {
                 std::string result = json_value(payload, "result", std::string());
-                std::string url    = json_value(payload, "url",    std::string());
                 auto request_exit = [&]() {
                     std::lock_guard<std::mutex> lk(mutex);
                     auto it = mapping.find(name);
@@ -1572,17 +1582,13 @@ void server_models::handle_child_state(const std::string & name, const std::stri
                     }
                 };
                 if (result == "download_finished") {
-                    update_download_progress(name, {}, true, true);
+                    finish_download(name, true);
                     request_exit();
                 } else if (result == "download_failed") {
-                    update_download_progress(name, {}, true, false);
+                    finish_download(name, false);
                     request_exit();
-                } else if (!url.empty()) {
-                    common_download_progress p;
-                    p.url        = url;
-                    p.downloaded = json_value(payload, "downloaded", (size_t)0);
-                    p.total      = json_value(payload, "total", (size_t)0);
-                    update_download_progress(name, p, false);
+                } else if (payload.contains("progress")) {
+                    update_download_progress(name, payload["progress"]);
                 }
             } break;
         case SERVER_STATE_LOADING:
@@ -1633,52 +1639,72 @@ server_child_mode server_child::get_mode() {
     }
 }
 
-struct server_download_state : public common_download_callback {
-    server_child * self;
-    std::function<bool()> should_stop;
-    std::atomic<int64_t> last_progress_time{0}; // multiple files downloading in different threads
-    bool is_ok = false;
+json server_download_reporter::aggregate() {
+    size_t downloaded = 0;
+    size_t total      = 0;
+    bool   sized      = true;
+    for (const auto & [url, p] : files) {
+        downloaded += p.downloaded;
+        total      += p.total;
+        sized       = sized && p.total > 0;
+    }
+    // a plain URL only reveals its size once the transfer starts, so the value stays unknown
+    // until every file has one, rather than moving backwards as sizes come in
+    return {
+        {"files",      files.size()},
+        {"downloaded", downloaded},
+        {"total",      sized ? total : 0},
+        {"value",      sized && total > 0 ? json((double) downloaded / (double) total) : json()},
+    };
+}
 
-    server_download_state(server_child * s) : self(s) {}
+void server_download_reporter::on_plan(const std::vector<common_download_progress> & plan) {
+    json progress;
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        for (const auto & p : plan) {
+            files[p.url] = p;
+        }
+        if (files.empty()) {
+            return; // everything is on disk already, there is nothing to report
+        }
+        progress = aggregate();
+    }
+    child->notify_to_router(server_state_to_str(SERVER_STATE_DOWNLOADING), {{"progress", progress}});
+}
 
-    bool run(common_params & params) {
-        try {
-            common_models_handler handler = common_models_handler_init(params, LLAMA_EXAMPLE_SERVER);
-            common_models_handler_apply(handler, params, this);
-            is_ok = true;
-        } catch (const std::exception & e) {
-            auto model_name = params.model.get_name();
-            SRV_ERR("download failed for model name=%s: %s\n", model_name.c_str(), e.what());
-            is_ok = false;
+void server_download_reporter::on_start(const common_download_progress & p) {
+    json progress;
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        if (p.cached) {
+            return; // a file served from the cache is not a transfer
         }
-        return is_ok;
+        files[p.url] = p; // a plain URL that was not in the plan registers itself here
+        progress = aggregate();
     }
-    void on_progress(const common_download_progress & p) {
-        json data = {
-            {"url", p.url},
-            {"downloaded", p.downloaded},
-            {"total", p.total},
-        };
-        self->notify_to_router(server_state_to_str(SERVER_STATE_DOWNLOADING), data);
-    }
-    void on_start(const common_download_progress & p) override {
-        on_progress(p);
-    }
-    void on_update(const common_download_progress & p) override {
-        int64_t now = ggml_time_ms();
-        // throttle progress updates to avoid flooding logs
-        if (now - last_progress_time.load(std::memory_order_relaxed) >= 100) {
-            on_progress(p);
-            last_progress_time.store(now, std::memory_order_relaxed);
+    child->notify_to_router(server_state_to_str(SERVER_STATE_DOWNLOADING), {{"progress", progress}});
+}
+
+void server_download_reporter::on_done(const common_download_progress & p, bool) {
+    on_start(p);
+}
+
+void server_download_reporter::on_update(const common_download_progress & p) {
+    json progress;
+    {
+        std::lock_guard<std::mutex> lk(mutex);
+        const int64_t now = ggml_time_ms();
+        if (now - t_last_report_ms < 100) {
+            files[p.url] = p; // keep the sample, the next report carries it
+            return;
         }
+        t_last_report_ms = now;
+        files[p.url] = p;
+        progress = aggregate();
     }
-    void on_done(const common_download_progress & p, bool) override {
-        on_progress(p);
-    }
-    bool is_cancelled() const override {
-        return should_stop ? should_stop() : false;
-    }
-};
+    child->notify_to_router(server_state_to_str(SERVER_STATE_DOWNLOADING), {{"progress", progress}});
+}
 
 int server_child::run_download(common_params & params) {
     auto cancelled = std::make_shared<std::atomic<bool>>(false);
@@ -1688,12 +1714,19 @@ int server_child::run_download(common_params & params) {
         cancelled->store(true, std::memory_order_relaxed);
     });
 
-    server_download_state dl(this);
-    dl.should_stop = [cancelled]() {
+    server_download_reporter reporter(this);
+    reporter.should_stop = [cancelled]() {
         return cancelled->load(std::memory_order_relaxed);
     };
 
-    bool ok = dl.run(params);
+    bool ok = true;
+    try {
+        common_models_handler handler = common_models_handler_init(params, LLAMA_EXAMPLE_SERVER);
+        common_models_handler_apply(handler, params, &reporter);
+    } catch (const std::exception & e) {
+        SRV_ERR("download failed for model name=%s: %s\n", params.model.get_name().c_str(), e.what());
+        ok = false;
+    }
 
     notify_to_router(server_state_to_str(SERVER_STATE_DOWNLOADING), {
         {"result", ok ? "download_finished" : "download_failed"},
@@ -1990,6 +2023,9 @@ void server_models_routes::init_routes() {
                 status["exit_code"] = meta.exit_code;
                 status["failed"]    = true;
             }
+            if (meta.is_starting() && !meta.progress.empty()) {
+                status["progress"] = meta.progress;
+            }
 
             // pi coding agent multimodal compatibility
             json input_modalities = json::array({"text"});
@@ -2149,7 +2185,7 @@ void server_models_routes::init_routes() {
             // once the load ends and the pending request reaches the child
             auto tracked = models.conv_models.lookup(conv_id);
             auto meta = tracked.has_value() ? models.get_meta(*tracked) : std::nullopt;
-            bool transient = meta.has_value() && (meta->status == SERVER_MODEL_STATUS_LOADING ||
+            bool transient = meta.has_value() && (meta->is_starting() ||
                                                   meta->status == SERVER_MODEL_STATUS_DOWNLOADING ||
                                                   meta->status == SERVER_MODEL_STATUS_DOWNLOADED);
             if (transient) {

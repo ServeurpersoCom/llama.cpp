@@ -804,6 +804,28 @@ common_download_hf_plan common_download_get_hf_plan(const common_params_model & 
 }
 
 void common_download_run_tasks(const std::vector<common_download_task> & tasks) {
+    common_download_callback * callback = nullptr;
+    for (const auto & task : tasks) {
+        if (task.opts.callback) {
+            callback = task.opts.callback;
+            break;
+        }
+    }
+
+    if (callback) {
+        std::vector<common_download_progress> plan;
+        for (const auto & task : tasks) {
+            if (std::filesystem::exists(task.local_path)) {
+                continue; // already on disk, it is not part of the transfer
+            }
+            common_download_progress p;
+            p.url   = task.url;
+            p.total = task.size;
+            plan.push_back(p);
+        }
+        callback->on_plan(plan);
+    }
+
     std::vector<std::future<int>> futures;
     for (const auto & task : tasks) {
         futures.push_back(std::async(std::launch::async,

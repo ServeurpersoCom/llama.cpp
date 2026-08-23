@@ -331,8 +331,15 @@ hf_files get_repo_files(const std::string & repo_id,
                 if (item["lfs"].contains("oid") && item["lfs"]["oid"].is_string()) {
                     file.oid = item["lfs"]["oid"].get<std::string>();
                 }
+                if (item["lfs"].contains("size") && item["lfs"]["size"].is_number_integer()) {
+                    file.size = item["lfs"]["size"].get<size_t>();
+                }
             } else if (item.contains("oid") && item["oid"].is_string()) {
                 file.oid = item["oid"].get<std::string>();
+            }
+
+            if (file.size == 0 && item.contains("size") && item["size"].is_number_integer()) {
+                file.size = item["size"].get<size_t>();
             }
 
             if (!file.oid.empty() && !is_valid_oid(file.oid)) {

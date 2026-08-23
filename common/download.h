@@ -21,6 +21,8 @@ struct common_download_progress {
 class common_download_callback {
 public:
     virtual ~common_download_callback() = default;
+    // announces every file about to be transferred, once, before the first one starts
+    virtual void on_plan(const std::vector<common_download_progress> &) {}
     virtual void on_start(const common_download_progress & p) = 0;
     virtual void on_update(const common_download_progress & p) = 0;
     virtual void on_done(const common_download_progress & p, bool ok) = 0;
@@ -69,12 +71,13 @@ struct common_download_task {
     std::string local_path;
     std::function<void()> on_done;
     bool is_hf = false;
+    size_t size = 0; // known ahead of the transfer for HF files, zero otherwise
 
     common_download_task() = default;
     common_download_task(hf_cache::hf_file f,
             const common_download_opts & opts,
             std::function<void()> on_done = nullptr)
-        : opts(opts), url(f.url), local_path(f.local_path), on_done(on_done), is_hf(true) {}
+        : opts(opts), url(f.url), local_path(f.local_path), on_done(on_done), is_hf(true), size(f.size) {}
 };
 
 void common_download_run_tasks(const std::vector<common_download_task> & tasks);

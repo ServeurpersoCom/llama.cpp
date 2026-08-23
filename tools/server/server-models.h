@@ -10,6 +10,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -19,19 +20,23 @@
 /**
  * state diagram:
  *
+ * a download-only instance is transient, it is erased once its child exits:
+ *
  * DOWNLOADING ──► DOWNLOADED ──► (replaced by new instance)
  *
- * UNLOADED ──► LOADING ──► LOADED ◄──── SLEEPING
- *  ▲            │            │               ▲
- *  └───failed───┘            │               │
- *  ▲                         └──sleeping─────┘
- *  └────────unloaded─────────┘
+ * a normal instance fetches the files it misses, then loads them:
+ *
+ * UNLOADED ──► FETCHING ──► LOADING ──► LOADED ◄──── SLEEPING
+ *  ▲              │            │           │               ▲
+ *  └───failed─────┴────────────┘           │               │
+ *  ▲                                       └──sleeping─────┘
+ *  └────────unloaded───────────────────────┘
  */
 enum server_model_status {
-    // TODO: also add downloading state when the logic is added
     SERVER_MODEL_STATUS_DOWNLOADING,
     SERVER_MODEL_STATUS_DOWNLOADED,
     SERVER_MODEL_STATUS_UNLOADED,
+    SERVER_MODEL_STATUS_FETCHING,
     SERVER_MODEL_STATUS_LOADING,
     SERVER_MODEL_STATUS_LOADED,
     SERVER_MODEL_STATUS_SLEEPING
@@ -50,7 +55,9 @@ enum server_child_mode {
 
 static std::string server_model_status_to_string(server_model_status status) {
     switch (status) {
+        // both download lanes report the same thing to the client, they only differ in lifecycle
         case SERVER_MODEL_STATUS_DOWNLOADING: return "downloading";
+        case SERVER_MODEL_STATUS_FETCHING:    return "downloading";
         case SERVER_MODEL_STATUS_DOWNLOADED:  return "downloaded";
         case SERVER_MODEL_STATUS_UNLOADED:    return "unloaded";
         case SERVER_MODEL_STATUS_LOADING:     return "loading";
@@ -79,8 +86,8 @@ struct server_model_meta {
     server_model_status status = SERVER_MODEL_STATUS_UNLOADED;
     int64_t last_used = 0; // for LRU unloading
     std::vector<std::string> args; // args passed to the model instance, will be populated by render_args()
-    json loaded_info; // info to be reflected via /v1/models endpoint ; if in DOWNLOADING state, it should contain download progress info
-    json progress; // reflect load or download progress info, if any
+    json loaded_info; // info to be reflected via /v1/models endpoint
+    json progress; // load progress in LOADING state, per-url download progress in FETCHING state
     int exit_code = 0; // exit code of the model instance process (only valid if status == FAILED)
     int stop_timeout = 0; // seconds to wait before force-killing the model instance during shutdown
     mtmd_caps multimodal; // multimodal capabilities
@@ -91,7 +98,12 @@ struct server_model_meta {
     }
 
     bool is_running() const {
-        return status == SERVER_MODEL_STATUS_LOADED || status == SERVER_MODEL_STATUS_LOADING || status == SERVER_MODEL_STATUS_SLEEPING;
+        return status == SERVER_MODEL_STATUS_LOADED || is_starting() || status == SERVER_MODEL_STATUS_SLEEPING;
+    }
+
+    // a child process is up but has no context yet, so it is killed rather than asked to stop
+    bool is_starting() const {
+        return status == SERVER_MODEL_STATUS_FETCHING || status == SERVER_MODEL_STATUS_LOADING;
     }
 
     bool is_ready_or_sleep() const {
@@ -269,7 +281,8 @@ public:
     // update the status of a model instance (thread-safe)
     // also send SSE notification to /models/sse endpoint
     void update_status(const std::string & name, const update_status_args & args);
-    void update_download_progress(const std::string & name, const common_download_progress & progress, bool done, bool ok = true);
+    void update_download_progress(const std::string & name, const json & progress);
+    void finish_download(const std::string & name, bool ok);
 
     // remove a cache model from disk and update the list (thread-safe)
     // note: only cache models can be removed; returns false if the model doesn't exist or is not a cache model
@@ -295,7 +308,8 @@ public:
     // raw input must starts with CMD_CHILD_TO_ROUTER_STATE, followed by a JSON string
     // this function is not thread-safe, must be called from instance's monitoring thread
     // payload per state:
-    //     state = loading     -> payload = {} (TODO: add progress info)
+    //     state = downloading -> payload = {progress} or {result} once the transfer ends
+    //     state = loading     -> payload = {stages, current, value}
     //     state = ready       -> payload = model_info (json), or {} if wakeup from sleeping
     //     state = sleeping    -> payload = {}
     void handle_child_state(const std::string & name, const std::string & raw_input);
@@ -304,7 +318,6 @@ public:
 struct server_child {
     // serializes the notify_to_router writes
     std::mutex mtx_stdout;
-    std::atomic<bool> is_finished_downloading = false; // set by run_download
 
     // return true if the current process is a child server instance
     bool is_child();
@@ -318,6 +331,29 @@ struct server_child {
     // notify router server for status changes (e.g. loading, downloading, sleeping, etc.)
     // message will be handled by server_models::handle_child_state() on the router side
     void notify_to_router(const std::string & state_name, const json & payload);
+};
+
+// aggregates the transfers of a child process into a single progress value for the router
+// the plan is known before the first byte, so the value is exact and monotonic for HF repos
+struct server_download_reporter : common_download_callback {
+    server_download_reporter(server_child * child) : child(child) {}
+
+    // returns true to abort the transfer, unset means the transfer runs to completion
+    std::function<bool()> should_stop;
+
+    void on_plan  (const std::vector<common_download_progress> & plan) override;
+    void on_start (const common_download_progress & p) override;
+    void on_update(const common_download_progress & p) override;
+    void on_done  (const common_download_progress & p, bool) override;
+    bool is_cancelled() const override { return should_stop && should_stop(); }
+
+private:
+    json aggregate(); // caller must hold the mutex
+
+    server_child * child;
+    std::mutex mutex;
+    std::map<std::string, common_download_progress> files; // keyed by url, files transfer in parallel
+    int64_t t_last_report_ms = 0;
 };
 
 struct server_models_routes {

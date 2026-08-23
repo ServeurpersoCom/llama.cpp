@@ -379,8 +379,10 @@ int llama_server(common_params & params, int argc, char ** argv) {
     } else if (!is_router_server && !is_run_by_cli) {
         // single-model mode (NOT spawned by router)
         // if this is invoked by CLI, model downloading should be already handled
+        // a child reports its transfers to the router, which turns them into /models/sse events
+        server_download_reporter reporter(&child);
         try {
-            common_models_handler_apply(models_handler, params);
+            common_models_handler_apply(models_handler, params, child.is_child() ? &reporter : nullptr);
         } catch (const std::exception & e) {
             SRV_ERR("failed to download model: %s\n", e.what());
             return 1;
