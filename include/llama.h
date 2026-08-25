@@ -344,7 +344,7 @@ extern "C" {
         // into a per-layer cache of moe_stream_slots experts; requires moe_stream = true)
         uint32_t moe_stream_slots;      // expert cache slots per streamed layer (0 = auto)
         uint64_t moe_stream_budget;     // total cache byte budget, used when slots == 0 (0 = auto heuristic)
-        uint64_t moe_stream_ram;        // host mirror byte budget for the experts the cache does not hold (0 = none)
+        uint64_t moe_stream_ram;        // host mirror byte budget for the experts the cache does not hold (UINT64_MAX = auto: mirror all of them, 0 = none)
         int32_t  moe_stream_io_threads; // expert load I/O threads (<= 0 = default)
         bool     moe_stream_direct;     // use O_DIRECT for expert reads (bypass page cache); falls back if unsupported
 

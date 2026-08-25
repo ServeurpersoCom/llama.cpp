@@ -2841,7 +2841,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--moe-stream-ram"}, "N",
         "host mirror for --moe-stream: pinned memory budget in GiB holding the experts the cache does not keep, "
-        "so their misses cross PCIe instead of reading the model file; implies --moe-stream (default: 0)",
+        "so their misses cross PCIe instead of reading the model file; implies --moe-stream "
+        "(default: auto, sized to mirror every expert the cache does not pin; 0 disables the mirror)",
         [](common_params & params, int value) {
             params.moe_stream = true;
             params.moe_stream_ram = (uint64_t) std::max(0, value) * 1024ull * 1024ull * 1024ull;
