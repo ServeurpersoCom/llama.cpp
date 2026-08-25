@@ -28,6 +28,9 @@ static const int64_t  MOE_STREAM_HOT_DECAY_TOKENS   = 64;
 // O_DIRECT alignment: 4096 is a multiple of any device logical block size (512/4096), so it is
 // universally valid, and reading a few extra KB of head/tail padding per slab is negligible
 static const size_t MOE_STREAM_DIRECT_ALIGN = 4096;
+
+// demand loads a worker drains per pass; one stream sync amortizes over the whole batch
+static const size_t MOE_STREAM_UPLOAD_BATCH = 16;
 static const size_t MOE_STREAM_FILL_CHUNK   = 64ull*1024*1024; // bulk read size of the load-time fills
 
 // saturating increment - route-hotness counters accumulate over a whole run and must not wrap
@@ -489,13 +492,38 @@ void llama_moe_stream::start_workers_locked() {
     }
 }
 
-// I/O worker: pops a reserved load, reads its expert slab(s) from the GGUF file into the cache
-// slot, and marks the slot RESIDENT (or flags load_failed); stale/duplicate items are skipped
+// I/O worker: drains a batch of reserved loads, uploads their expert slab(s) into the cache
+// slots, and marks the slots RESIDENT (or flags load_failed); stale/duplicate items are skipped.
+// Mirror slabs stream async on a private per-device backend with a single stream sync per batch,
+// so the copies pipeline back to back on the bus; file slabs go through the staging buffer and
+// stay synchronous because the buffer is reused per slab
 void llama_moe_stream::worker_loop() {
     // page-aligned staging (Metal private buffers require page-aligned source + page-multiple
     // length; O_DIRECT needs the extra head/tail slack for its aligned reads)
     uint8_t * staging = (uint8_t *) moe_aligned_alloc(max_nb_expert + 2*MOE_STREAM_DIRECT_ALIGN);
     GGML_ASSERT(staging != nullptr);
+
+    // async uploads need the buffer to sit in the device's default buffer type; anything else
+    // (host or CPU placed caches) takes the synchronous path
+    std::vector<std::pair<ggml_backend_dev_t, ggml_backend_t>> backends;
+    auto backend_for = [&](ggml_backend_buffer_t buf) -> ggml_backend_t {
+        ggml_backend_buffer_type_t buft = ggml_backend_buffer_get_type(buf);
+        ggml_backend_dev_t         dev  = ggml_backend_buft_get_device(buft);
+        if (dev == nullptr || ggml_backend_dev_buffer_type(dev) != buft) {
+            return nullptr;
+        }
+        for (const auto & b : backends) {
+            if (b.first == dev) {
+                return b.second;
+            }
+        }
+        ggml_backend_t be = ggml_backend_dev_init(dev, nullptr);
+        backends.emplace_back(dev, be);
+        return be;
+    };
+
+    std::vector<llama_moe_stream_work> batch;
+    std::vector<uint8_t>               batch_ok;
 
     std::unique_lock<std::mutex> lk(mtx);
     while (true) {
@@ -504,44 +532,83 @@ void llama_moe_stream::worker_loop() {
             break;
         }
 
-        llama_moe_stream_work w = q_demand.front();
-        q_demand.pop_front();
+        batch.clear();
+        while (!q_demand.empty() && batch.size() < MOE_STREAM_UPLOAD_BATCH) {
+            llama_moe_stream_work w = q_demand.front();
+            q_demand.pop_front();
 
-        auto & sl = *w.sl;
-        if (w.gen != sl.slot_gen[w.slot] ||
-            sl.slot_state[w.slot] != LLAMA_MOE_STREAM_SLOT_LOADING ||
-            sl.slot_expert[w.slot] != w.expert ||
-            sl.slot_claimed[w.slot]) {
-            continue; // stale or duplicate item
+            auto & sl = *w.sl;
+            if (w.gen != sl.slot_gen[w.slot] ||
+                sl.slot_state[w.slot] != LLAMA_MOE_STREAM_SLOT_LOADING ||
+                sl.slot_expert[w.slot] != w.expert ||
+                sl.slot_claimed[w.slot]) {
+                continue; // stale or duplicate item
+            }
+            sl.slot_claimed[w.slot] = 1;
+            batch.push_back(w);
         }
-        sl.slot_claimed[w.slot] = 1;
+        if (batch.empty()) {
+            continue;
+        }
 
         lk.unlock();
 
-        bool ok = true;
-        for (const auto & wt : sl.weights) {
-            const uint8_t * data = wt.host != nullptr && (uint32_t) w.expert >= wt.host_first
-                ? wt.host + (size_t) (w.expert - wt.host_first)*wt.nb_expert
-                : llama_moe_stream_pread(*files[wt.file_idx], staging, wt.nb_expert, wt.offs + (size_t) w.expert*wt.nb_expert, use_direct_io);
-            if (data == nullptr) {
-                ok = false;
-                break;
+        batch_ok.assign(batch.size(), 1);
+        for (size_t k = 0; k < batch.size(); k++) {
+            const auto & w  = batch[k];
+            const auto & sl = *w.sl;
+            for (const auto & wt : sl.weights) {
+                const size_t offs_slot = (size_t) w.slot*wt.nb_expert;
+
+                if (wt.host != nullptr && (uint32_t) w.expert >= wt.host_first) {
+                    const uint8_t * data = wt.host + (size_t) (w.expert - wt.host_first)*wt.nb_expert;
+
+                    ggml_backend_t be = backend_for(wt.cache->buffer);
+                    if (be != nullptr) {
+                        ggml_backend_tensor_set_async(be, wt.cache, data, offs_slot, wt.nb_expert);
+                    } else {
+                        ggml_backend_tensor_set(wt.cache, data, offs_slot, wt.nb_expert);
+                    }
+                    continue;
+                }
+
+                const uint8_t * data = llama_moe_stream_pread(*files[wt.file_idx], staging, wt.nb_expert, wt.offs + (size_t) w.expert*wt.nb_expert, use_direct_io);
+                if (data == nullptr) {
+                    batch_ok[k] = 0;
+                    break;
+                }
+                ggml_backend_tensor_set(wt.cache, data, offs_slot, wt.nb_expert);
             }
-            ggml_backend_tensor_set(wt.cache, data, (size_t) w.slot*wt.nb_expert, wt.nb_expert);
+        }
+
+        for (const auto & b : backends) {
+            if (b.second != nullptr) {
+                ggml_backend_synchronize(b.second);
+            }
         }
 
         lk.lock();
 
-        sl.slot_claimed[w.slot] = 0;
-        if (!ok) {
-            load_failed = true;
-        } else {
-            sl.slot_state[w.slot] = LLAMA_MOE_STREAM_SLOT_RESIDENT;
+        for (size_t k = 0; k < batch.size(); k++) {
+            const auto & w  = batch[k];
+            auto &       sl = *w.sl;
+
+            sl.slot_claimed[w.slot] = 0;
+            if (!batch_ok[k]) {
+                load_failed = true;
+            } else {
+                sl.slot_state[w.slot] = LLAMA_MOE_STREAM_SLOT_RESIDENT;
+            }
         }
         cv_done.notify_all();
     }
     lk.unlock();
 
+    for (const auto & b : backends) {
+        if (b.second != nullptr) {
+            ggml_backend_free(b.second);
+        }
+    }
     moe_aligned_free(staging);
 }
 
