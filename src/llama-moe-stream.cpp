@@ -477,8 +477,19 @@ void llama_moe_stream::fill_host_mirror() {
         throw std::runtime_error("MoE expert streaming: failed to fill the expert host mirror");
     }
 
+    uint32_t n_streamed = 0;
+    for (const auto & sl_ptr : layers) {
+        if (sl_ptr != nullptr && sl_ptr->n_expert > sl_ptr->n_pinned) {
+            n_streamed++;
+        }
+    }
+
     LLAMA_LOG_INFO("%s: expert host mirror = %.2f GiB over %u layers (%.2f s)\n",
             __func__, n_mirrored / 1024.0 / 1024.0 / 1024.0, n_layers, (ggml_time_us() - t_start)/1e6);
+    if (n_layers < n_streamed) {
+        LLAMA_LOG_INFO("%s: %u of %u streamed layers are unmirrored, their misses read the model file\n",
+                __func__, n_streamed - n_layers, n_streamed);
+    }
 }
 
 void llama_moe_stream::start_workers_locked() {
