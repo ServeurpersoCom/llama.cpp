@@ -9,6 +9,7 @@
 
 #include "server-common.h"
 
+#include <atomic>
 #include <random>
 #include <sstream>
 #include <fstream>
@@ -94,8 +95,15 @@ json server_slot_stats::to_json() const {
 std::string random_string() {
     static const std::string str("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz");
 
-    std::random_device rd;
-    std::mt19937 generator(rd());
+    // one generator per thread, seeded once and advanced by every call
+    // the counter separates the threads when the entropy source repeats itself
+    static std::atomic<uint32_t> seed_counter{0};
+
+    static thread_local std::mt19937 generator = []() {
+        std::random_device rd;
+        std::seed_seq seq{ rd(), rd(), rd(), rd(), rd(), rd(), rd(), seed_counter++ };
+        return std::mt19937(seq);
+    }();
 
     std::string result(32, ' ');
 
@@ -111,7 +119,10 @@ std::string gen_chatcmplid() {
 }
 
 std::string gen_tool_call_id() {
-    return random_string();
+    static std::atomic<uint64_t> counter{0};
+
+    // the counter makes the id unique across threads and calls, the random part keeps it unguessable
+    return "call_" + std::to_string(counter++) + "_" + random_string();
 }
 
 const char * get_media_marker() {
