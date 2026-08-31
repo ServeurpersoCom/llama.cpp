@@ -491,13 +491,12 @@ ggml_tensor * llama_model_deepseek4::graph::build_hca_compressed_kv_from_state(
     score = ggml_reshape_3d(ctx0, score, n_embd_head, DSV4_HCA_RATIO, n_blocks);
     cb(score, name, il);
 
-    ggml_tensor * values = ggml_cont(ctx0, ggml_permute(ctx0, kv, 1, 0, 2, 3));
     ggml_tensor * scores = ggml_cont(ctx0, ggml_permute(ctx0, score, 1, 0, 2, 3));
 
     ggml_tensor * weights = ggml_soft_max(ctx0, scores);
-    ggml_tensor * comp = ggml_mul(ctx0, values, weights);
-    comp = ggml_sum_rows(ctx0, comp);
-    comp = ggml_cont(ctx0, ggml_permute(ctx0, comp, 1, 0, 2, 3));
+    weights = ggml_permute(ctx0, weights, 1, 0, 2, 3);
+    ggml_tensor * comp = ggml_mul(ctx0, kv, weights);
+    comp = ggml_sum_rows_ext(ctx0, comp, 1);
     cb(comp, name, il);
 
     comp = build_norm(comp, norm, nullptr, LLM_NORM_RMS, il);
@@ -564,13 +563,12 @@ ggml_tensor * llama_model_deepseek4::graph::build_overlap_compressed_kv_from_sta
     ggml_tensor * values = ggml_concat(ctx0, kv_prev, kv_cur, 1);
     ggml_tensor * scores = ggml_concat(ctx0, score_prev, score_cur, 1);
 
-    values = ggml_cont(ctx0, ggml_permute(ctx0, values, 1, 0, 2, 3));
     scores = ggml_cont(ctx0, ggml_permute(ctx0, scores, 1, 0, 2, 3));
 
     ggml_tensor * weights = ggml_soft_max(ctx0, scores);
+    weights = ggml_permute(ctx0, weights, 1, 0, 2, 3);
     ggml_tensor * comp = ggml_mul(ctx0, values, weights);
-    comp = ggml_sum_rows(ctx0, comp);
-    comp = ggml_cont(ctx0, ggml_permute(ctx0, comp, 1, 0, 2, 3));
+    comp = ggml_sum_rows_ext(ctx0, comp, 1);
     cb(comp, name, il);
 
     comp = build_norm(comp, norm, nullptr, LLM_NORM_RMS, il);
