@@ -4619,7 +4619,8 @@ static bool ggml_backend_webgpu_device_supports_op(ggml_backend_dev_t dev, const
             break;
         case GGML_OP_SUM:
         case GGML_OP_SUM_ROWS:
-            supports_op = op->type == GGML_TYPE_F32 && src0->type == op->type && ggml_is_contiguous_rows(src0);
+            supports_op = op->type == GGML_TYPE_F32 && src0->type == op->type && ggml_is_contiguous_rows(src0) &&
+                          (op->op != GGML_OP_SUM_ROWS || ggml_get_op_params_i32(op, 0) == 0);
             break;
         case GGML_OP_UPSCALE:
             supports_op = (op->type == GGML_TYPE_F32 || op->type == GGML_TYPE_F16) &&

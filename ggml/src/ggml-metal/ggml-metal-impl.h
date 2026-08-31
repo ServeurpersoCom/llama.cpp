@@ -812,6 +812,18 @@ typedef struct {
 } ggml_metal_kargs_sum_rows;
 
 typedef struct {
+    int64_t  ne0;
+    int64_t  nek;
+    uint64_t nbk;
+    uint64_t nb01;
+    uint64_t nb02;
+    uint64_t nb03;
+    uint64_t nb1;
+    uint64_t nb2;
+    uint64_t nb3;
+} ggml_metal_kargs_sum_axis;
+
+typedef struct {
     int64_t  ne00;
     int64_t  ne01;
     int64_t  ne02;

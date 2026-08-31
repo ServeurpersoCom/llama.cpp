@@ -1075,6 +1075,7 @@ struct vk_device_struct {
     vk_pipeline pipeline_topk_radix_f32;
     vk_pipeline pipeline_topk_radix_qsa; // qwen4 QSA indexer fusion (f16 mask)
     vk_pipeline pipeline_sum_rows_f32;
+    vk_pipeline pipeline_sum_axis_f32;
     vk_pipeline pipeline_cross_entropy_loss_f32, pipeline_cross_entropy_loss_f32_wg512;
     vk_pipeline pipeline_cross_entropy_loss_back_f32, pipeline_cross_entropy_loss_back_f32_wg512;
     vk_pipeline pipeline_fwht_f32[4];
@@ -2053,6 +2054,7 @@ struct vk_op_sum_rows_push_constants
     uint32_t misalign_offsets;
     uint32_t ne0_12mp, ne0_12L;
     uint32_t ne0_1mp, ne0_1L;
+    uint32_t ne0, nbk;
 };
 
 static vk_op_sum_rows_push_constants vk_op_sum_rows_push_constants_init(const ggml_tensor * src, const ggml_tensor * dst, int64_t n_cols) {
@@ -5861,6 +5863,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_argmax_f32, "argmax_f32", argmax_f32_len, argmax_f32_data, "main", 2, sizeof(vk_op_push_constants), {1, 1, 1}, { device->subgroup_size }, 1);
 
     ggml_vk_create_pipeline(device, device->pipeline_sum_rows_f32, "sum_rows_f32", sum_rows_f32_len, sum_rows_f32_data, "main", 2, sizeof(vk_op_sum_rows_push_constants), {1, 1, 1}, { device->subgroup_size }, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_sum_axis_f32, "sum_axis_f32", sum_axis_f32_len, sum_axis_f32_data, "main", 2, sizeof(vk_op_sum_rows_push_constants), {1, 1, 1}, { device->subgroup_size }, 1);
     ggml_vk_create_pipeline(device, device->pipeline_cross_entropy_loss_f32, "cross_entropy_loss_f32", cross_entropy_loss_f32_len, cross_entropy_loss_f32_data, "main", 3, sizeof(vk_op_push_constants), {1, 1, 1}, { device->subgroup_size }, 1);
     ggml_vk_create_pipeline(device, device->pipeline_cross_entropy_loss_f32_wg512, "cross_entropy_loss_f32_wg512", cross_entropy_loss_f32_len, cross_entropy_loss_f32_data, "main", 3, sizeof(vk_op_push_constants), {1, 1, 1}, { 512 }, 1);
     ggml_vk_create_pipeline(device, device->pipeline_cross_entropy_loss_back_f32, "cross_entropy_loss_back_f32", cross_entropy_loss_back_f32_len, cross_entropy_loss_back_f32_data, "main", 4, sizeof(vk_op_push_constants), {1, 1, 1}, { device->subgroup_size }, 1);
@@ -11713,9 +11716,16 @@ static vk_pipeline ggml_vk_op_get_pipeline(ggml_backend_vk_context * ctx, const 
             return nullptr;
         }
     case GGML_OP_SUM:
-    case GGML_OP_SUM_ROWS:
     case GGML_OP_MEAN:
         if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
+            return ctx->device->pipeline_sum_rows_f32;
+        }
+        return nullptr;
+    case GGML_OP_SUM_ROWS:
+        if (src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
+            if (ggml_get_op_params_i32(dst, 0) != 0) {
+                return ctx->device->pipeline_sum_axis_f32;
+            }
             return ctx->device->pipeline_sum_rows_f32;
         }
         return nullptr;
@@ -12216,7 +12226,9 @@ static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, co
     case GGML_OP_MEAN:
     case GGML_OP_ARGMAX:
         {
-            const uint32_t nr = ggml_nrows(src0);
+            // sum_rows dispatches one workgroup per dst row, which matches the src rows
+            // on every op here except the reduction along a non zero dim
+            const uint32_t nr = op == GGML_OP_SUM_ROWS ? ggml_nrows(dst) : ggml_nrows(src0);
             if (nr > 262144) {
                 elements = { 512, 512, CEIL_DIV(nr, 262144) };
             } else if (nr > 512) {
@@ -14167,6 +14179,29 @@ static void ggml_vk_sum(ggml_backend_vk_context * ctx, vk_context& subctx, const
 }
 
 static void ggml_vk_sum_rows(ggml_backend_vk_context * ctx, vk_context& subctx, const ggml_tensor * src0, ggml_tensor * dst) {
+    const int dim = ggml_get_op_params_i32(dst, 0);
+
+    if (dim != 0) {
+        // the sum_axis shader decodes each workgroup into dst coords, so ne01/ne02 carry the
+        // dst shape while nb01..nb03 stay the src strides addressing the k == 0 slice
+        const uint32_t type_size = (uint32_t)ggml_type_size(src0->type);
+        vk_op_sum_rows_push_constants p = {};
+        p.n_cols = (uint32_t)src0->ne[dim];
+        p.ne01   = (uint32_t)dst->ne[1];
+        p.ne02   = (uint32_t)dst->ne[2];
+        p.nb01   = (uint32_t)src0->nb[1] / type_size;
+        p.nb02   = (uint32_t)src0->nb[2] / type_size;
+        p.nb03   = (uint32_t)src0->nb[3] / type_size;
+        p.nb11   = (uint32_t)dst->nb[1] / type_size;
+        p.nb12   = (uint32_t)dst->nb[2] / type_size;
+        p.nb13   = (uint32_t)dst->nb[3] / type_size;
+        p.weight = 1.0f;
+        p.ne0    = (uint32_t)dst->ne[0];
+        p.nbk    = (uint32_t)(src0->nb[dim] / type_size);
+        ggml_vk_op_f32(ctx, subctx, src0, nullptr, nullptr, nullptr, dst, GGML_OP_SUM_ROWS, p);
+        return;
+    }
+
     vk_op_sum_rows_push_constants p = vk_op_sum_rows_push_constants_init(src0, dst, src0->ne[0]);
     ggml_vk_op_f32(ctx, subctx, src0, nullptr, nullptr, nullptr, dst, GGML_OP_SUM_ROWS, p);
 }
@@ -17129,6 +17164,14 @@ static bool ggml_vk_can_fuse_ssm_conv(const ggml_backend_vk_context * ctx, const
 
 static bool ggml_vk_can_fuse_topk_moe(ggml_backend_vk_context * ctx, const struct ggml_cgraph * cgraph,
                                       int node_idx, topk_moe_mode mode) {
+
+    // the fused weight normalization sums along ne0
+    for (int i = node_idx; i <= node_idx + 11 && i < cgraph->n_nodes; i++) {
+        const ggml_tensor * node = cgraph->nodes[i];
+        if (node->op == GGML_OP_SUM_ROWS && ggml_get_op_params_i32(node, 0) != 0) {
+            return false;
+        }
+    }
 
     const ggml_tensor * softmax;
     const ggml_tensor * weights;

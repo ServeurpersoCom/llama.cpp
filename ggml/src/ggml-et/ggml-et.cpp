@@ -876,7 +876,8 @@ static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggm
             break;
         case GGML_OP_SUM_ROWS:
             // dst has ne[0]=1, src0 row length must be cache-aligned
-            supported = op->type == GGML_TYPE_F32 && op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
+            supported = ggml_get_op_params_i32(op, 0) == 0 &&
+                        op->type == GGML_TYPE_F32 && op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&
                         op->src[0]->ne[0] % 16 == 0 && ggml_is_contiguous(op->src[0]);
             break;
         case GGML_OP_MEAN:

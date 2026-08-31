@@ -116,6 +116,31 @@ typedef decltype(kernel_sum_rows_impl<float, float>) kernel_sum_rows_t;
 template [[host_name("kernel_sum_rows_f32_f32")]]   kernel kernel_sum_rows_t kernel_sum_rows_impl<float,  float>;
 template [[host_name("kernel_sum_rows_f32_f32_4")]] kernel kernel_sum_rows_t kernel_sum_rows_impl<float4, float>;
 
+// one thread per dst element, i0 is the fast index so the reads along a row coalesce,
+// the dst coords address the k == 0 slice of src0 and the reduction walks dim with its stride
+kernel void kernel_sum_axis_f32(
+        constant ggml_metal_kargs_sum_axis & args,
+        device const char * src0,
+        device       char * dst,
+        uint3   tgpig[[threadgroup_position_in_grid]],
+        ushort3 tpitg[[thread_position_in_threadgroup]],
+        ushort3   ntg[[threads_per_threadgroup]]) {
+    const int i3 = tgpig.z;
+    const int i2 = tgpig.y;
+    const int i1 = tgpig.x;
+
+    device const char  * src_row = src0 + i1*args.nb01 + i2*args.nb02 + i3*args.nb03;
+    device       float * dst_row = (device float *) (dst + i1*args.nb1 + i2*args.nb2 + i3*args.nb3);
+
+    for (int64_t i0 = tpitg.x; i0 < args.ne0; i0 += ntg.x) {
+        float acc = 0.0f;
+        for (int64_t k = 0; k < args.nek; k++) {
+            acc += ((device const float *) (src_row + k*args.nbk))[i0];
+        }
+        dst_row[i0] = acc;
+    }
+}
+
 template<typename T>
 kernel void kernel_cumsum_blk(
         constant ggml_metal_kargs_cumsum_blk & args,

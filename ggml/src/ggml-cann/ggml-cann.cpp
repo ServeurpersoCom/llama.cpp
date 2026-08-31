@@ -2611,7 +2611,9 @@ static bool ggml_backend_cann_supports_op(ggml_backend_dev_t dev, const ggml_ten
         case GGML_OP_SQRT:
         case GGML_OP_CLAMP:
         case GGML_OP_DIAG_MASK_INF:
+            return true;
         case GGML_OP_SUM_ROWS:
+            return ggml_get_op_params_i32(op, 0) == 0;
         case GGML_OP_ARGSORT:
         case GGML_OP_ACC:
         case GGML_OP_SET:

@@ -2930,7 +2930,8 @@ static bool ggml_cuda_topk_moe_fusion(const struct ggml_cgraph * cgraph, int nod
 
         args.norm = true;
         for (const ggml_op op : norm_ops) {
-            if (nodes[node_idx]->op == op && nodes[node_idx]->src[0] == nodes[node_idx - 1]) {
+            if (nodes[node_idx]->op == op && nodes[node_idx]->src[0] == nodes[node_idx - 1] &&
+                (op != GGML_OP_SUM_ROWS || ggml_get_op_params_i32(nodes[node_idx], 0) == 0)) {
                 node_idx++;
             } else {
                 args.norm = false;
@@ -5285,6 +5286,10 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
             return true;
 #endif
         case GGML_OP_SUM_ROWS:
+            if (ggml_get_op_params_i32(op, 0) != 0) {
+                return op->src[0]->type == GGML_TYPE_F32 && ggml_is_contiguous_rows(op->src[0]);
+            }
+            return ggml_is_contiguous(op->src[0]);
         case GGML_OP_MEAN:
         case GGML_OP_GROUP_NORM:
             return ggml_is_contiguous(op->src[0]);

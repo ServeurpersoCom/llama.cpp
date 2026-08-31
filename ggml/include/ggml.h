@@ -1049,6 +1049,14 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * a);
 
+    // sums along the given dim, with input shape [a,b,c,d] and dim 1 return shape [a,1,c,d]
+    // ggml_sum_rows_ext(ctx, a, 0) is equivalent to ggml_sum_rows(ctx, a)
+    // dim != 0 requires F32 input
+    GGML_API struct ggml_tensor * ggml_sum_rows_ext(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            int                   dim);
+
     GGML_API struct ggml_tensor * ggml_cumsum(
         struct ggml_context * ctx,
         struct ggml_tensor  * a);

@@ -893,7 +893,11 @@ static struct ggml_backend_meta_split_state ggml_backend_meta_get_split_state(
             case GGML_OP_SUM: {
                 split_state = handle_generic(src_ss, /*scalar_only =*/ true);
             } break;
-            case GGML_OP_SUM_ROWS:
+            case GGML_OP_SUM_ROWS: {
+                // the reduced dim collapses to 1, so the src must not be split along it
+                GGML_ASSERT((int) src_ss[0].axis != ggml_get_op_params_i32(tensor, 0));
+                split_state = src_ss[0];
+            } break;
             case GGML_OP_CUMSUM:
             case GGML_OP_MEAN:
             case GGML_OP_ARGMAX:

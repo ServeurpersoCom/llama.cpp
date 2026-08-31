@@ -1164,6 +1164,9 @@ static ggml_openvino_op_support is_op_supported_case(const ggml_tensor * op) {
         if (op->src[0]->op == GGML_OP_PERMUTE) {
             return {false, "SUM_ROWS with PERMUTE input is not supported"};
         }
+        if (ggml_get_op_params_i32(op, 0) != 0) {
+            return {false, "SUM_ROWS along a non zero dim is not supported"};
+        }
         break;
     }
     case GGML_OP_FLASH_ATTN_EXT: {

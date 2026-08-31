@@ -2489,12 +2489,27 @@ struct ggml_tensor * ggml_sum(
 struct ggml_tensor * ggml_sum_rows(
         struct ggml_context * ctx,
         struct ggml_tensor  * a) {
-    int64_t ne[GGML_MAX_DIMS] = { 1 };
-    for (int i = 1; i < GGML_MAX_DIMS; ++i) {
+    return ggml_sum_rows_ext(ctx, a, 0);
+}
+
+// ggml_sum_rows_ext
+
+struct ggml_tensor * ggml_sum_rows_ext(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * a,
+        int                   dim) {
+    GGML_ASSERT(dim >= 0 && dim < GGML_MAX_DIMS);
+    GGML_ASSERT(dim == 0 || a->type == GGML_TYPE_F32);
+
+    int64_t ne[GGML_MAX_DIMS];
+    for (int i = 0; i < GGML_MAX_DIMS; ++i) {
         ne[i] = a->ne[i];
     }
+    ne[dim] = 1;
 
     struct ggml_tensor * result = ggml_new_tensor(ctx, a->type, GGML_MAX_DIMS, ne);
+
+    ggml_set_op_params_i32(result, 0, dim);
 
     result->op     = GGML_OP_SUM_ROWS;
     result->src[0] = a;

@@ -971,6 +971,42 @@ int ggml_metal_op_sum_rows(ggml_metal_op_t ctx, int idx) {
     ggml_metal_buffer_id bid_src0 = ggml_metal_get_buffer_id(op->src[0]);
     ggml_metal_buffer_id bid_dst  = ggml_metal_get_buffer_id(op);
 
+    const int dim = ggml_get_op_params_i32(op, 0);
+
+    if (dim != 0) {
+        ggml_metal_kargs_sum_axis args = {
+            /*.ne0  =*/ ne0,
+            /*.nek  =*/ op->src[0]->ne[dim],
+            /*.nbk  =*/ op->src[0]->nb[dim],
+            /*.nb01 =*/ nb01,
+            /*.nb02 =*/ nb02,
+            /*.nb03 =*/ nb03,
+            /*.nb1  =*/ nb1,
+            /*.nb2  =*/ nb2,
+            /*.nb3  =*/ nb3,
+        };
+
+        auto pipeline = ggml_metal_library_get_pipeline_sum_axis(lib, op);
+
+        int nth = 32;
+
+        while (nth < ne0 && nth < ggml_metal_pipeline_max_theads_per_threadgroup(pipeline)) {
+            nth *= 2;
+        }
+
+        nth = std::min(nth, ggml_metal_pipeline_max_theads_per_threadgroup(pipeline));
+        nth = std::min(nth, (int) ne0);
+
+        ggml_metal_encoder_set_pipeline(enc, pipeline);
+        ggml_metal_encoder_set_bytes   (enc, &args, sizeof(args), 0);
+        ggml_metal_encoder_set_buffer  (enc, bid_src0, 1);
+        ggml_metal_encoder_set_buffer  (enc, bid_dst,  2);
+
+        ggml_metal_encoder_dispatch_threadgroups(enc, ne1, ne2, ne3, nth, 1, 1);
+
+        return 1;
+    }
+
     ggml_metal_kargs_sum_rows args = {
         /*.ne00 =*/ ne00,
         /*.ne01 =*/ ne01,

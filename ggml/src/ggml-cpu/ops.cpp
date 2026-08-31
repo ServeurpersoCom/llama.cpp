@@ -1472,19 +1472,45 @@ static void ggml_compute_forward_sum_rows_f32(
 
     GGML_TENSOR_UNARY_OP_LOCALS
 
-    GGML_ASSERT(ne0 == 1);
-    GGML_ASSERT(ne1 == ne01);
-    GGML_ASSERT(ne2 == ne02);
-    GGML_ASSERT(ne3 == ne03);
+    const int dim = ggml_get_op_params_i32(dst, 0);
 
-    for (int64_t i3 = 0; i3 < ne03; i3++) {
-        for (int64_t i2 = 0; i2 < ne02; i2++) {
-            for (int64_t i1 = 0; i1 < ne01; i1++) {
-                float * src_row = (float *) ((char *) src0->data + i1*nb01 + i2*nb02 + i3*nb03);
-                float * dst_row = (float *) ((char *) dst->data  + i1*nb1  + i2*nb2  + i3*nb3);
-                float row_sum = 0;
-                ggml_vec_sum_f32(ne00, &row_sum, src_row);
-                dst_row[0] = row_sum;
+    if (dim == 0) {
+        GGML_ASSERT(ne0 == 1);
+        GGML_ASSERT(ne1 == ne01);
+        GGML_ASSERT(ne2 == ne02);
+        GGML_ASSERT(ne3 == ne03);
+
+        for (int64_t i3 = 0; i3 < ne03; i3++) {
+            for (int64_t i2 = 0; i2 < ne02; i2++) {
+                for (int64_t i1 = 0; i1 < ne01; i1++) {
+                    float * src_row = (float *) ((char *) src0->data + i1*nb01 + i2*nb02 + i3*nb03);
+                    float * dst_row = (float *) ((char *) dst->data  + i1*nb1  + i2*nb2  + i3*nb3);
+                    float row_sum = 0;
+                    ggml_vec_sum_f32(ne00, &row_sum, src_row);
+                    dst_row[0] = row_sum;
+                }
+            }
+        }
+
+        return;
+    }
+
+    // the dst coordinate along dim is always 0, so the dst coords address the k == 0 slice of src0
+    // and the reduction walks the remaining slices with the stride of dim
+    const int64_t nek = src0->ne[dim];
+    const size_t  nbk = src0->nb[dim];
+
+    GGML_ASSERT(ne0 == ne00);
+
+    for (int64_t i3 = 0; i3 < ne3; i3++) {
+        for (int64_t i2 = 0; i2 < ne2; i2++) {
+            for (int64_t i1 = 0; i1 < ne1; i1++) {
+                const char * src_base = (const char *) src0->data + i1*nb01 + i2*nb02 + i3*nb03;
+                float       * dst_row = (float *) ((char *) dst->data + i1*nb1 + i2*nb2 + i3*nb3);
+                ggml_vec_cpy_f32(ne00, dst_row, (const float *) src_base);
+                for (int64_t k = 1; k < nek; k++) {
+                    ggml_vec_add_f32(ne00, dst_row, dst_row, (const float *) (src_base + k*nbk));
+                }
             }
         }
     }

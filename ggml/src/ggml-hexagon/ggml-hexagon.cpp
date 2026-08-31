@@ -5499,7 +5499,7 @@ static bool ggml_backend_hexagon_device_supports_op(ggml_backend_dev_t dev, cons
             break;
 
         case GGML_OP_SUM_ROWS:
-            supp = ggml_hexagon_supported_sum_rows(sess, op);
+            supp = ggml_get_op_params_i32(op, 0) == 0 && ggml_hexagon_supported_sum_rows(sess, op);
             break;
 
         case GGML_OP_SOFT_MAX:

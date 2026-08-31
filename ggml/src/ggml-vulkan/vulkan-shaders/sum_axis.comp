@@ -1,0 +1,34 @@
+#version 450
+
+#include "types.glsl"
+#include "sum_rows.glsl"
+
+layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly buffer A {A_TYPE data_a[];};
+layout (binding = 1) writeonly buffer D {D_TYPE data_d[];};
+
+layout (constant_id = 0) const uint BLOCK_SIZE = 32;
+
+// one workgroup per dst row, one invocation per dst element, i0 is the fast index
+// so the reads along a row coalesce, the dst coords address the k == 0 slice of src
+// and the reduction walks the axis with p.nbk
+void main() {
+    const uint row = gl_WorkGroupID.z * 262144 + gl_WorkGroupID.y * 512 + gl_WorkGroupID.x;
+
+    const uint i03 = fastdiv(row, p.ne0_12mp, p.ne0_12L);
+    const uint i03_offset = i03 * p.ne01*p.ne02;
+    const uint i02 = fastdiv(row - i03_offset, p.ne0_1mp, p.ne0_1L);
+    const uint i01 = row - i03_offset - i02*p.ne01;
+
+    const uint src_idx = get_aoffset() + i01 * p.nb01 + i02 * p.nb02 + i03 * p.nb03;
+    const uint dst_idx = get_doffset() + i01 * p.nb11 + i02 * p.nb12 + i03 * p.nb13;
+
+    for (uint i0 = gl_LocalInvocationID.x; i0 < p.ne0; i0 += BLOCK_SIZE) {
+        FLOAT_TYPE sum = FLOAT_TYPE(0.0);
+        for (uint k = 0; k < p.n_cols; k++) {
+            sum += FLOAT_TYPE(data_a[src_idx + k * p.nbk + i0]);
+        }
+        data_d[dst_idx + i0] = D_TYPE(sum);
+    }
+}

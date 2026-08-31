@@ -6713,15 +6713,16 @@ struct test_sum_rows : public test_case {
     const std::array<int64_t, 4> ne;
     const bool permute;
     const bool slice;
+    const int dim;
 
     std::string vars() override {
-        return VARS_TO_STR4(type, ne, permute, slice);
+        return VARS_TO_STR5(type, ne, permute, slice, dim);
     }
 
     test_sum_rows(ggml_type type = GGML_TYPE_F32,
             std::array<int64_t, 4> ne = {10, 5, 4, 3},
-            bool permute = false, bool slice = false)
-        : type(type), ne(ne), permute(permute), slice(slice) {}
+            bool permute = false, bool slice = false, int dim = 0)
+        : type(type), ne(ne), permute(permute), slice(slice), dim(dim) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         ggml_tensor * a = ggml_new_tensor(ctx, type, 4, ne.data());
@@ -6737,7 +6738,7 @@ struct test_sum_rows : public test_case {
             a = ggml_permute(ctx, a, 0, 2, 3, 1);
         }
 
-        ggml_tensor * out = ggml_sum_rows(ctx, a);
+        ggml_tensor * out = ggml_sum_rows_ext(ctx, a, dim);
         ggml_set_name(out, "out");
 
         return out;
@@ -9943,6 +9944,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_sum(GGML_TYPE_F32, { 33, 256, 1, 1 }));
     test_cases.emplace_back(new test_sum(GGML_TYPE_F32, { 33, 256, 1, 1 }, { 1, 0, 2, 3 })); // sum dst not-contiguous
     test_cases.emplace_back(new test_sum_rows());
+    for (int dim = 1; dim < GGML_MAX_DIMS; dim++) {
+        test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 10,  5,  4, 3 }, false, false, dim));
+        test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 33, 17,  4, 3 }, false, false, dim));
+        test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 1024, 4, 2, 1 }, false, false, dim));
+        test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 11,  5,  6, 3 }, false, true,  dim));
+    }
+    test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 11, 5, 6, 3 }, true, false, 2));
     test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 11, 5, 6, 3 }, true, false));
     test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 11, 5, 6, 3 }, false, true));
     test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 11, 5, 6, 3 }, true, true));
@@ -10636,6 +10644,16 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, it));
         test_cases.emplace_back(new test_sum(GGML_TYPE_F32, it));
     }
+
+    // reduction along ne1, the shapes the indexer and the compressed kv paths build,
+    // paired with the transposed shape that reduces the same data along ne0
+    test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 8192, 8,   1024, 1 }, false, false, 1));
+    test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 8,    8192, 1024, 1 }));
+    test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 512,  8,   8192, 1 }, false, false, 1));
+    test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 8,    512,  8192, 1 }));
+    test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 2048, 4,   2048, 1 }, false, false, 1));
+    test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 4,    2048, 2048, 1 }));
+    test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, { 128,  128, 64,   1 }, false, false, 1));
 
     test_cases.emplace_back(new test_argsort(GGML_TYPE_F32, {65000,  16, 1, 1}));
     test_cases.emplace_back(new test_argsort(GGML_TYPE_F32, {200000, 1,  1, 1}));

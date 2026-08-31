@@ -449,7 +449,8 @@ static bool ggml_sycl_topk_moe_fusion(const ggml_cgraph * cgraph, int node_idx, 
 
         args.norm = true;
         for (const ggml_op op : norm_ops) {
-            if (nodes[node_idx]->op == op && nodes[node_idx]->src[0] == nodes[node_idx - 1]) {
+            if (nodes[node_idx]->op == op && nodes[node_idx]->src[0] == nodes[node_idx - 1] &&
+                (op != GGML_OP_SUM_ROWS || ggml_get_op_params_i32(nodes[node_idx], 0) == 0)) {
                 node_idx++;
             } else {
                 args.norm = false;

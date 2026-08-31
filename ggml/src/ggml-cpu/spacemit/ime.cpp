@@ -1095,7 +1095,8 @@ class tensor_traits_common : public tensor_traits_base {
                 return true;
             case GGML_OP_SUM_ROWS:
                 {
-                    if (op->src[0]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32) {
+                    if (op->src[0]->type == GGML_TYPE_F32 && op->type == GGML_TYPE_F32 &&
+                        ggml_get_op_params_i32(op, 0) == 0) {
                         spacemit_kernels::rvv::forward_sum_rows<float>(params, op);
                     } else {
                         ggml_compute_forward_sum_rows(params, op);

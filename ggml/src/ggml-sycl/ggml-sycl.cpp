@@ -2998,11 +2998,52 @@ inline void ggml_sycl_op_sum_rows(ggml_backend_sycl_context & ctx, ggml_tensor *
     GGML_ASSERT( dst->type == GGML_TYPE_F32);
     dpct::queue_ptr main_stream = ctx.stream();
     SYCL_CHECK(ggml_sycl_set_device(ctx.device));
-    const float * src0_dd = static_cast<const float *>(dst->src[0]->data);
+    const ggml_tensor * src0 = dst->src[0];
+    const float * src0_dd = static_cast<const float *>(src0->data);
     float *       dst_dd  = static_cast<float *>(dst->data);
 
-    const int64_t ncols = dst->src[0]->ne[0];
-    const int64_t nrows = ggml_nrows(dst->src[0]);
+    const int dim = ggml_get_op_params_i32(dst, 0);
+
+    if (dim != 0) {
+        GGML_ASSERT(src0->nb[0] == sizeof(float));
+
+        // one work item per dst element, i0 is the fast index so the reads along a row coalesce,
+        // the dst coords address the k == 0 slice of src0 and the reduction walks dim with its stride
+        const int64_t nelem = ggml_nelements(dst);
+        const int64_t ne0 = dst->ne[0];
+        const int64_t ne1 = dst->ne[1];
+        const int64_t ne2 = dst->ne[2];
+        const int64_t nek = src0->ne[dim];
+        const int64_t nbk = src0->nb[dim];
+        const int64_t nb1 = src0->nb[1];
+        const int64_t nb2 = src0->nb[2];
+        const int64_t nb3 = src0->nb[3];
+
+        main_stream->parallel_for(
+            sycl::range<1>(nelem),
+            [=](sycl::id<1> tid) {
+                const int64_t t  = tid[0];
+                const int64_t i0 = t % ne0;
+                const int64_t r  = t / ne0;
+                const int64_t i1 = r % ne1;
+                const int64_t i2 = (r / ne1) % ne2;
+                const int64_t i3 =  r / (ne1*ne2);
+
+                const char * src_row = (const char *) src0_dd + i1*nb1 + i2*nb2 + i3*nb3;
+
+                float acc = 0.0f;
+                for (int64_t k = 0; k < nek; k++) {
+                    acc += ((const float *) (src_row + k*nbk))[i0];
+                }
+
+                dst_dd[t] = acc;
+            });
+
+        return;
+    }
+
+    const int64_t ncols = src0->ne[0];
+    const int64_t nrows = ggml_nrows(src0);
 
     sum_rows_f32_sycl(src0_dd, dst_dd, ncols, nrows, main_stream);
 }
@@ -6460,8 +6501,12 @@ static bool do_ggml_backend_sycl_device_supports_op(ggml_backend_dev_t dev, cons
                    ggml_is_contiguous(op->src[0]) &&
                    ggml_is_contiguous(op->src[1]);
         case GGML_OP_SUM:
-        case GGML_OP_SUM_ROWS:
         case GGML_OP_MEAN:
+            return ggml_is_contiguous(op->src[0]);
+        case GGML_OP_SUM_ROWS:
+            if (ggml_get_op_params_i32(op, 0) != 0) {
+                return op->src[0]->type == GGML_TYPE_F32 && ggml_is_contiguous_rows(op->src[0]);
+            }
             return ggml_is_contiguous(op->src[0]);
         case GGML_OP_ARGSORT:
             return true;
