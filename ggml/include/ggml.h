@@ -574,6 +574,8 @@ extern "C" {
         GGML_OP_DSV4_HC_COMB,
         GGML_OP_DSV4_HC_PRE,
         GGML_OP_DSV4_HC_POST,
+        GGML_OP_HC_MIX,
+        GGML_OP_HC_COMBINE,
 
         GGML_OP_UNARY,
 
@@ -2666,6 +2668,26 @@ extern "C" {
             struct ggml_tensor  * residual,
             struct ggml_tensor  * post,
             struct ggml_tensor  * comb);
+
+    // gated hyper-connection mix: x [n_embd, hc, n_tokens], gate [n_embd, hc, n_tokens]
+    //          -> [n_embd, n_tokens]
+    //   result[i, t] = mean_c x[i, c, t]*sigmoid(gate[i, c, t])
+    //
+    GGML_API struct ggml_tensor * ggml_hc_mix(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * gate);
+
+    // gated hyper-connection combine: x [n_embd, n_tokens], residual [n_embd, hc, n_tokens],
+    //          gate [hc, n_tokens] -> [n_embd, hc, n_tokens]
+    //   result[i, c, t] = residual[i, c, t] + x[i, t]*2*sigmoid(scale*gate[c, t])
+    //
+    GGML_API struct ggml_tensor * ggml_hc_combine(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * residual,
+            struct ggml_tensor  * gate,
+            float                 scale);
 
     // custom operators
 
