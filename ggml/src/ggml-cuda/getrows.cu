@@ -40,6 +40,84 @@ static __global__ void k_get_rows(
     }
 }
 
+// narrow rows: the elements of all rows are laid flat over the threads, so a block spans as many
+// rows as it takes to fill it. ne00_fdv divides by the number of pairs in a row
+template<int qk, int qr, dequantize_kernel_t dequantize_kernel, typename dst_t>
+static __global__ void k_get_rows_flat(
+        const void * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
+        const uint3 ne00_fdv, const int64_t n_pairs,
+        const int64_t ne11, const uint3 ne12_fdv,
+        const size_t s1, const size_t s2, const size_t s3,
+        const size_t nb01, const size_t nb02, const size_t nb03,
+        const size_t s10, const size_t s11, const size_t s12) {
+
+    ggml_cuda_pdl_sync();
+    const int64_t i = (int64_t) blockIdx.x*blockDim.x + threadIdx.x;
+    if (i >= n_pairs) {
+        return;
+    }
+
+    const uint2 rc  = fast_div_modulo((uint32_t) i, ne00_fdv);
+    const int   i10 = rc.x;
+    const int   i00 = 2*rc.y;
+
+    for (int64_t z = blockIdx.z; z < ne11*(int64_t)ne12_fdv.z; z += gridDim.z) {
+        const uint2 dm  = fast_div_modulo((uint32_t)z, ne12_fdv);
+        const int i11 =  dm.x;
+        const int i12 =  dm.y;
+
+        const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
+
+        dst_t * dst_row = dst + i10*s1 + i11*s2 + i12*s3;
+        const void * src0_row = (const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03;
+
+        const int ib   =  i00/qk;
+        const int iqs  = (i00%qk)/qr;
+        const int iybs = i00 - i00%qk;
+        const int y_offset = qr == 1 ? 1 : qk/2;
+
+        float2 v;
+        dequantize_kernel(src0_row, ib, iqs, v);
+
+        dst_row[iybs + iqs + 0]        = ggml_cuda_cast<dst_t>(v.x);
+        dst_row[iybs + iqs + y_offset] = ggml_cuda_cast<dst_t>(v.y);
+    }
+}
+
+template<typename src0_t, typename dst_t>
+static __global__ void k_get_rows_float_flat(
+        const src0_t * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
+        const uint3 ne00_fdv, const int64_t n_elems,
+        const int64_t ne11, const uint3 ne12_fdv,
+        const size_t s1, const size_t s2, const size_t s3,
+        const size_t nb01, const size_t nb02, const size_t nb03,
+        const size_t s10, const size_t s11, const size_t s12) {
+
+    ggml_cuda_pdl_lc();
+    ggml_cuda_pdl_sync();
+    const int64_t i = (int64_t) blockIdx.x*blockDim.x + threadIdx.x;
+    if (i >= n_elems) {
+        return;
+    }
+
+    const uint2 rc  = fast_div_modulo((uint32_t) i, ne00_fdv);
+    const int   i10 = rc.x;
+    const int   i00 = rc.y;
+
+    for (int64_t z = blockIdx.z; z < ne11*(int64_t)ne12_fdv.z; z += gridDim.z) {
+        const uint2 dm = fast_div_modulo((uint32_t)z, ne12_fdv);
+        const int i11 = dm.x;
+        const int i12 = dm.y;
+
+        const int i01 = src1[i10*s10 + i11*s11 + i12*s12];
+
+        dst_t * dst_row = dst + i10*s1 + i11*s2 + i12*s3;
+        const src0_t * src0_row = (const src0_t *)((const char *) src0 + i01*nb01 + i11*nb02 + i12*nb03);
+
+        dst_row[i00] = ggml_cuda_cast<dst_t>(src0_row[i00]);
+    }
+}
+
 template<typename dst_t, dequantize_kq_t<dst_t> dequantize_kq>
 static __global__ void k_get_rows_kq(
         const void * __restrict__ src0, const int32_t * __restrict__ src1, dst_t * __restrict__ dst,
@@ -184,6 +262,24 @@ static void get_rows_cuda_q(
     GGML_ASSERT(ne11 <= std::numeric_limits<uint32_t>::max() / ne12);
     const uint3 ne12_fdv = init_fastdiv_values(ne12);
 
+    // a row that does not fill a block goes through the flat mapping
+    if (block_num_y == 1) {
+        const int64_t n_pairs = ne10*(ne00/2);
+        GGML_ASSERT(n_pairs <= std::numeric_limits<uint32_t>::max());
+
+        const uint3 ne00_fdv = init_fastdiv_values(ne00/2);
+        const dim3 flat_nums((n_pairs + CUDA_GET_ROWS_BLOCK_SIZE - 1) / CUDA_GET_ROWS_BLOCK_SIZE, 1, MIN(ne11*ne12, UINT16_MAX));
+
+        k_get_rows_flat<qk, qr, dq><<<flat_nums, block_dims, 0, stream>>>(
+            src0_d, src1_d, dst_d,
+            ne00_fdv, n_pairs,
+            ne11, ne12_fdv,
+            s1, s2, s3,
+            nb01, nb02, nb03,
+            s10, s11, s12);
+        return;
+    }
+
     k_get_rows<qk, qr, dq><<<block_nums, block_dims, 0, stream>>>(
         src0_d, src1_d, dst_d,
         ne00, /*ne01, ne02, ne03,*/
@@ -253,6 +349,25 @@ static void get_rows_cuda_float(
     GGML_ASSERT(ne12 > 0);
     GGML_ASSERT(ne11 <= std::numeric_limits<uint32_t>::max() / ne12);
     const uint3 ne12_fdv = init_fastdiv_values(ne12);
+
+    // a row that does not fill a block goes through the flat mapping
+    if (ne00 < CUDA_GET_ROWS_BLOCK_SIZE) {
+        const int64_t n_elems = ne10*ne00;
+        GGML_ASSERT(n_elems <= std::numeric_limits<uint32_t>::max());
+
+        const uint3 ne00_fdv = init_fastdiv_values(ne00);
+        const dim3 flat_nums((n_elems + CUDA_GET_ROWS_BLOCK_SIZE - 1) / CUDA_GET_ROWS_BLOCK_SIZE, 1, MIN(ne11*ne12, UINT16_MAX));
+        const ggml_cuda_kernel_launch_params flat_params = ggml_cuda_kernel_launch_params{flat_nums, block_dims, 0, stream};
+
+        ggml_cuda_kernel_launch(k_get_rows_float_flat<src0_t, dst_t>, flat_params,
+            src0_d, src1_d, dst_d,
+            ne00_fdv, n_elems,
+            ne11, ne12_fdv,
+            s1, s2, s3,
+            nb01, nb02, nb03,
+            s10, s11, s12);
+        return;
+    }
 
     if constexpr (std::is_same<src0_t, dst_t>::value) {
         constexpr int VEC = 16 / sizeof(dst_t);

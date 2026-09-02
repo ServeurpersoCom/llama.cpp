@@ -4185,6 +4185,61 @@ struct test_dsv4_hc_post : public test_dsv4_hc {
     }
 };
 
+// GGML_OP_HC_MIX
+struct test_hc_mix : public test_case {
+    const int64_t n_embd;
+    const int64_t hc;
+    const int64_t n_tokens;
+
+    std::string vars() override {
+        return VARS_TO_STR3(n_embd, hc, n_tokens);
+    }
+
+    test_hc_mix(int64_t n_embd = 31, int64_t hc = 4, int64_t n_tokens = 17)
+        : n_embd(n_embd), hc(hc), n_tokens(n_tokens) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * x = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, hc, n_tokens);
+        ggml_set_name(x, "x");
+
+        ggml_tensor * gate = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, hc, n_tokens);
+        ggml_set_name(gate, "gate");
+
+        ggml_tensor * out = ggml_hc_mix(ctx, x, gate);
+        ggml_set_name(out, "out");
+        return out;
+    }
+};
+
+// GGML_OP_HC_COMBINE
+struct test_hc_combine : public test_case {
+    const int64_t n_embd;
+    const int64_t hc;
+    const int64_t n_tokens;
+
+    std::string vars() override {
+        return VARS_TO_STR3(n_embd, hc, n_tokens);
+    }
+
+    test_hc_combine(int64_t n_embd = 31, int64_t hc = 4, int64_t n_tokens = 17)
+        : n_embd(n_embd), hc(hc), n_tokens(n_tokens) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_embd, n_tokens);
+        ggml_set_name(x, "x");
+
+        ggml_tensor * residual = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_embd, hc, n_tokens);
+        ggml_set_name(residual, "residual");
+
+        ggml_tensor * gate = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hc, n_tokens);
+        ggml_set_name(gate, "gate");
+
+        ggml_tensor * out = ggml_hc_combine(ctx, x, residual, gate, 1.0f/(float) hc);
+        ggml_set_name(out, "out");
+        return out;
+    }
+};
+
 
 // GGML_OP_SSM_CONV
 struct test_ssm_conv : public test_case {
@@ -8673,6 +8728,15 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_dsv4_hc_post(31, 17));
     test_cases.emplace_back(new test_dsv4_hc_post(128, 257));
     test_cases.emplace_back(new test_dsv4_hc_post(4096, 21));
+
+    for (int64_t hc : {1, 4, 5}) {
+        test_cases.emplace_back(new test_hc_mix(1, hc, 1));
+        test_cases.emplace_back(new test_hc_mix(31, hc, 17));
+        test_cases.emplace_back(new test_hc_mix(2560, hc, 21));
+        test_cases.emplace_back(new test_hc_combine(1, hc, 1));
+        test_cases.emplace_back(new test_hc_combine(31, hc, 17));
+        test_cases.emplace_back(new test_hc_combine(2560, hc, 21));
+    }
 
     // glu ops
     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
