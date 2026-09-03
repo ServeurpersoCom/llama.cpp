@@ -106,7 +106,9 @@ void ggml_cuda_flash_attn_ext_compact_mask(
 #endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 }
 
-bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+// the compaction kernel reads the mask as f16 and one index list bounds every mask row,
+// and the gather is only worth its scattered reads once the window is twice the budget
+bool ggml_cuda_flash_attn_ext_shall_use_sparse(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 #if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
     GGML_UNUSED_VARS(ctx, dst);
     return false;
@@ -122,10 +124,21 @@ bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(ggml_backend_cuda_context
     memcpy(&logit_softcap, (const float *) dst->op_params + 2, sizeof(float));
 
     const int32_t n_kv_max = ggml_get_op_params_i32(dst, 4);
-    return GGML_CUDA_CC_IS_NVIDIA(cc) && turing_mma_available(cc) &&
+    return GGML_CUDA_CC_IS_NVIDIA(cc) &&
         mask != nullptr && n_kv_max > 0 && max_bias == 0.0f && logit_softcap == 0.0f &&
         mask->ne[0] == K->ne[1] && mask->ne[1] >= Q->ne[1] && mask->ne[2] == 1 &&
         K->ne[1] >= std::max<int64_t>(4096, 2LL*n_kv_max);
+#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
+}
+
+bool ggml_cuda_flash_attn_ext_mma_f16_shall_use_sparse(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
+    GGML_UNUSED_VARS(ctx, dst);
+    return false;
+#else
+    const int cc = ggml_cuda_info().devices[ctx.device].cc;
+
+    return turing_mma_available(cc) && ggml_cuda_flash_attn_ext_shall_use_sparse(ctx, dst);
 #endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 }
 
