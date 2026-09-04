@@ -273,7 +273,7 @@ llama_context::llama_context(
     cparams.op_offload = params.op_offload;
     cparams.kv_unified = params.kv_unified;
 
-    if (model.moe_stream() && hparams.n_expert_used > 0) {
+    if (model.moe_stream() && hparams.n_expert_used_max() > 0) {
         // ubatches that touch more experts than the streaming cache holds run the expert GEMMs in
         // multiple waves, so no ubatch size restriction is needed
         LLAMA_LOG_INFO("%s: MoE expert streaming with %u cache slots, n_ubatch = %u\n",
@@ -2351,7 +2351,7 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
 
     if (const auto * mstream = model.moe_stream()) {
         // multi-pass streamed prefill adds a bounded number of extra nodes per wave per streamed layer
-        const uint32_t n_eu = model.hparams.n_expert_used;
+        const uint32_t n_eu = model.hparams.n_expert_used_max();
         const uint32_t n_dyn = mstream->n_slots - mstream->n_pinned;
         uint32_t cap = n_dyn > n_eu ? (n_dyn - n_eu)/2 : 0;
         cap = std::max<uint32_t>(cap, 1);

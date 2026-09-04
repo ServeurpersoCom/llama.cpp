@@ -1442,7 +1442,7 @@ static bool llama_moe_stream_is_exps_name(const std::string & name) {
 // resolve the per-layer expert cache slot count; returns 0 when streaming should not be enabled
 // (not a MoE model, or the cache would hold every expert anyway)
 static uint32_t llama_moe_stream_resolve_slots(const llama_model_params & params, const llama_hparams & hparams, const llama_model_loader & ml) {
-    if (hparams.n_expert == 0 || hparams.n_expert_used == 0) {
+    if (hparams.n_expert == 0 || hparams.n_expert_used_max() == 0) {
         LLAMA_LOG_WARN("%s: MoE expert streaming requires a MoE model -- disabled\n", __func__);
         return 0;
     }
@@ -1458,12 +1458,12 @@ static uint32_t llama_moe_stream_resolve_slots(const llama_model_params & params
             }
         }
         if (nb_expert_sum > 0) {
-            n_slots = std::max<uint64_t>(params.moe_stream_budget/nb_expert_sum, hparams.n_expert_used);
+            n_slots = std::max<uint64_t>(params.moe_stream_budget/nb_expert_sum, hparams.n_expert_used_max());
         }
     }
 
     if (n_slots == 0) {
-        n_slots = std::clamp<uint32_t>(2*hparams.n_expert_used, 16, hparams.n_expert);
+        n_slots = std::clamp<uint32_t>(2*hparams.n_expert_used_max(), 16, hparams.n_expert);
     }
 
     if (n_slots >= hparams.n_expert) {
@@ -1885,7 +1885,7 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             pimpl->moe_stream->alloc_bufs(ml.no_alloc);
             if (!ml.no_alloc) {
                 pimpl->moe_stream->open_files(ml.file_paths);
-                pimpl->moe_stream->pin_partition(hparams.n_expert_used);
+                pimpl->moe_stream->pin_partition(hparams.n_expert_used_max());
                 pimpl->moe_stream->fill_host_mirror();
             }
         }
