@@ -109,6 +109,17 @@ export { default as DialogExportSettings } from './DialogExportSettings.svelte';
 export { default as DialogConfirmation } from './DialogConfirmation.svelte';
 
 /**
+ * **DialogConfirmDownload** - Confirm a destructive download action
+ *
+ * Shared confirmation for stopping/cancelling an in-flight download or deleting
+ * a downloaded model, used by the discover quant chips and the model selector's
+ * download rows so both word the action identically. Owns the copy and the
+ * default store removal; render one instance per surface keyed by the acted-on
+ * repo:tag.
+ */
+export { default as DialogConfirmDownload } from './DialogConfirmDownload.svelte';
+
+/**
  * **DialogConversationRename** - Rename a conversation
  *
  * Modal dialog for renaming a conversation. Replaces the prior
@@ -526,3 +537,13 @@ export { default as DialogMcpResourcePreview } from './DialogMcpResourcePreview.
  * ```
  */
 export { default as DialogMermaidPreview } from './DialogMermaidPreview.svelte';
+
+/**
+ * **DialogModelsDiscover** - full-screen model discovery dialog.
+ *
+ * Two-pane layout: searchable model list (Hugging Face + llama.app catalog)
+ * on the left, model details with download options on the right.
+ *
+ * @see ModelsDiscover in $lib/components/app/models/discover
+ */
+export { default as DialogModelsDiscover } from './DialogModelsDiscover.svelte';

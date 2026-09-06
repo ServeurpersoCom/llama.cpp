@@ -1,4 +1,4 @@
-import { Package, Search, Settings, SquarePen } from '@lucide/svelte';
+import { Package, PackageSearch, Search, Settings, SquarePen } from '@lucide/svelte';
 import { SidebarAction, ToolSource } from '$lib/enums';
 import type { DesktopIconStripItem } from '$lib/types';
 
@@ -44,6 +44,9 @@ export const STATS_UNITS = {
 
 export const DEFAULT_MOBILE_BREAKPOINT = 768;
 
+/** Orgs whose avatar is dark and needs inverting in dark mode. */
+export const DARK_INVERT_AVATAR_ORGS = ['openai'];
+
 /** Icon used for the model selector and the `/model` slash command. */
 export const MODEL_SELECTOR_ICON = Package;
 
@@ -61,6 +64,11 @@ export const SIDEBAR_ACTIONS_ITEMS: DesktopIconStripItem[] = [
 		tooltip: 'New chat'
 	},
 	{ icon: Search, keys: ['cmd', 'k'], tooltip: 'Search' },
+	{
+		action: SidebarAction.DISCOVER_MODELS,
+		icon: PackageSearch,
+		tooltip: 'Discover models'
+	},
 	{
 		action: SidebarAction.SETTINGS,
 		icon: Settings,

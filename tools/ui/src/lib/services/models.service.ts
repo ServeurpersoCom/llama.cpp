@@ -7,10 +7,11 @@
  */
 
 import { base } from '$app/paths';
-import { API_MODELS, MODEL_ID } from '$lib/constants';
-import { ServerModelStatus } from '$lib/enums';
+import { API_MODELS, MODEL_ID, type ModelSidecar, sidecarFromFileToken } from '$lib/constants';
+import { ModelAuxSidecar, ModelDraftSidecar, ServerModelStatus } from '$lib/enums';
 import type { ParsedModelId } from '$lib/types/models';
 import {
+	apiDelete,
 	apiFetch,
 	apiPost,
 	extractSseDataPayload,
@@ -19,8 +20,79 @@ import {
 } from '$lib/utils';
 import { getAuthHeaders } from '$lib/utils/api-headers';
 
+/** Sidecar filename tokens, mirrored from the enums for entry-tag checks. */
+const SIDECAR_TOKENS: readonly string[] = [
+	...Object.values(ModelDraftSidecar),
+	...Object.values(ModelAuxSidecar)
+];
+
 export class ModelsService {
 	private static readonly SSE_RECONNECT_MS = 1000;
+
+	// LLAMA-APP-REUSE: repo:tag id builder
+	/**
+	 * Build the `<repo>:<tag>` string expected by POST /models from a parsed
+	 * filename quant + optional sidecar type. Used by the model download
+	 * dialog so callers don't have to know about the tag conventions.
+	 *
+	 * @param repoId - HuggingFace repo id (e.g. `ggml-org/gemma-3-4b-it-GGUF`)
+	 * @param quant - Quantization token, e.g. `Q4_K_M`
+	 * @param sidecar - Sidecar type, as its lowercase filename token (e.g. `mtp`)
+	 * @returns Repo id possibly suffixed with `:tag`
+	 */
+	static buildDownloadTag(
+		repoId: string,
+		quant: string | null,
+		sidecar: ModelSidecar | null
+	): string {
+		if (!quant && !sidecar) return repoId;
+
+		if (!quant) return `${repoId}:${sidecar}`;
+
+		const tag = sidecar ? `${quant}-${sidecar}` : quant;
+
+		return `${repoId}:${tag}`;
+	}
+
+	/**
+	 * Cancel an in-flight download or remove a previously downloaded/failed
+	 * entry from the server's model cache (ROUTER mode only).
+	 *
+	 * Sends DELETE `/models?model=<hfRepoWithTag>`:
+	 * - while a download is running, the child subprocess is asked to exit
+	 *   and any partial `.tmp` files are removed;
+	 * - once the entry has finished downloading or has failed, the cached
+	 *   files are removed from disk.
+	 *
+	 * @param hfRepoWithTag - HuggingFace repo id in the same `<repo>:<tag>`
+	 *                        format returned by `buildDownloadTag`.
+	 * @returns Server acknowledgement containing the success flag
+	 */
+	static async cancelDownload(hfRepoWithTag: string): Promise<ApiModelsDownloadResponse> {
+		return apiDelete<ApiModelsDownloadResponse>(API_MODELS.DELETE, {
+			model: hfRepoWithTag
+		});
+	}
+
+	/**
+	 * Trigger a model download from HuggingFace (ROUTER mode only).
+	 *
+	 * Sends a POST request to `/models`. The response returns immediately; the
+	 * actual download runs in the background and tracks progress through
+	 * `/models/sse`. The server picks the file that matches the supplied tag
+	 * (when present) and additionally pulls mmproj / draft sidecar weights as
+	 * appropriate for the model.
+	 *
+	 * @param hfRepoWithTag - HuggingFace repo id, optionally suffixed with
+	 *                        `:<tag>` (e.g. `ggml-org/gemma-3-4b-it-GGUF:Q4_K_M`
+	 *                        or `:IQ1_M-mtp` for an embedded-draft GGUF).
+	 * @returns Server acknowledgement containing the success flag
+	 */
+	static async downloadModel(hfRepoWithTag: string): Promise<ApiModelsDownloadResponse> {
+		const payload: ApiModelsDownloadRequest = { model: hfRepoWithTag };
+
+		return apiPost<ApiModelsDownloadResponse>(API_MODELS.DOWNLOAD, payload);
+	}
 
 	/**
 	 * Check if a model is loaded based on its metadata.
@@ -33,14 +105,6 @@ export class ModelsService {
 	}
 
 	/**
-	 *
-	 *
-	 * Load/Unload
-	 *
-	 *
-	 */
-
-	/**
 	 * Check if a model is currently loading.
 	 *
 	 * @param model - Model data entry from the API response
@@ -51,24 +115,38 @@ export class ModelsService {
 	}
 
 	/**
+	 *
+	 *
+	 * Load/Unload
+	 *
+	 *
+	 */
+
+	/**
+	 * True when a router entry id is a sidecar-only entry, e.g. `org/model:Q4_0-mtp`
+	 * or `org/model:mmproj`. Such entries mark a downloaded sidecar file, not a
+	 * loadable model, so the selector skips them.
+	 */
+	static isSidecarEntry(modelId: string): boolean {
+		const idx = modelId.indexOf(MODEL_ID.QUANTIZATION_SEPARATOR);
+
+		if (idx === MODEL_ID.NOT_FOUND) return false;
+
+		const tag = modelId.slice(idx + 1).toLowerCase();
+		const dash = tag.lastIndexOf(MODEL_ID.SEGMENT_SEPARATOR);
+		const token = dash === -1 ? tag : tag.slice(dash + 1);
+
+		return SIDECAR_TOKENS.includes(token);
+	}
+
+	/**
 	 * Fetch list of models from OpenAI-compatible endpoint.
 	 * Works in both MODEL and ROUTER modes.
 	 *
 	 * @returns List of available models with basic metadata
 	 */
-	static async list(): Promise<ApiModelListResponse> {
-		return apiFetch<ApiModelListResponse>(API_MODELS.LIST);
-	}
-
-	/**
-	 * Fetch list of all models with detailed metadata (ROUTER mode).
-	 * Returns models with load status, paths, and other metadata
-	 * beyond what the OpenAI-compatible endpoint provides.
-	 *
-	 * @returns List of models with detailed status and configuration info
-	 */
-	static async listRouter(): Promise<ApiRouterModelsListResponse> {
-		return apiFetch<ApiRouterModelsListResponse>(API_MODELS.LIST);
+	static async list(): Promise<ApiModelsListResponse> {
+		return apiFetch<ApiModelsListResponse>(API_MODELS.LIST);
 	}
 
 	/**
@@ -80,16 +158,17 @@ export class ModelsService {
 	 * @param extraArgs - Optional additional arguments to pass to the model instance
 	 * @returns Load response from the server
 	 */
-	static async load(modelId: string, extraArgs?: string[]): Promise<ApiRouterModelsLoadResponse> {
+	static async load(modelId: string, extraArgs?: string[]): Promise<ApiModelsLoadResponse> {
 		const payload: { model: string; extra_args?: string[] } = { model: modelId };
 
 		if (extraArgs && extraArgs.length > 0) {
 			payload.extra_args = extraArgs;
 		}
 
-		return apiPost<ApiRouterModelsLoadResponse>(API_MODELS.LOAD, payload);
+		return apiPost<ApiModelsLoadResponse>(API_MODELS.LOAD, payload);
 	}
 
+	// LLAMA-APP-REUSE: model id parser
 	/**
 	 * Parse a model ID string into its structured components.
 	 *
@@ -108,11 +187,46 @@ export class ModelsService {
 			params: null,
 			quantization: null,
 			raw: modelId,
+			sidecar: null,
 			tags: []
 		};
+
 		// strip directory path and weight extension so a bare `-m /path/file.gguf`
 		// parses like a clean repo id; the HF `org/model` form is preserved
-		const source = normalizeModelName(modelId).replace(MODEL_ID.WEIGHT_EXTENSION_RE, '');
+		let source = normalizeModelName(modelId).replace(MODEL_ID.WEIGHT_EXTENSION_REGEX, '');
+
+		// 0. Detect sidecar prefix (mtp-, dflash-, mmproj-) before any other
+		//    splitting so the inner id parses cleanly.
+		const prefixMatch = source.match(MODEL_ID.SIDECAR_PREFIX_REGEX);
+
+		if (prefixMatch) {
+			result.sidecar = sidecarFromFileToken(prefixMatch[1].toLowerCase());
+			source = prefixMatch[2];
+
+			// a sidecar filename's remainder may be just the quant token,
+			// e.g. `mtp-Q4_0.gguf` or `mmproj-F16.gguf`
+			if (MODEL_ID.QUANTIZATION_SEGMENT_REGEX.test(source)) {
+				result.quantization = source.toUpperCase();
+				source = '';
+			}
+		} else {
+			// 0b. Detect `-<type>` suffix (`-mtp`, `-dflash`, `-dspark`, `-eagle3`).
+			//     Only strip it when the segment preceding it looks like a real quant
+			//     token, so a model literally named `MyModel-mtp` is not mistaken for a
+			//     draft one.
+			const suffixMatch = source.match(MODEL_ID.SIDECAR_SUFFIX_REGEX);
+
+			if (suffixMatch) {
+				const candidate = suffixMatch[1];
+				const headSeg = candidate.split(MODEL_ID.SEGMENT_SEPARATOR).pop();
+
+				if (headSeg && MODEL_ID.QUANTIZATION_SEGMENT_REGEX.test(headSeg)) {
+					result.sidecar = sidecarFromFileToken(suffixMatch[2].toLowerCase());
+					source = candidate;
+				}
+			}
+		}
+
 		// 1. Extract colon-separated quantization (e.g. `model:Q4_K_M`)
 		const colonIdx = source.indexOf(MODEL_ID.QUANTIZATION_SEPARATOR);
 
@@ -143,7 +257,7 @@ export class ModelsService {
 		if (dotIdx !== MODEL_ID.NOT_FOUND && !result.quantization) {
 			const afterDot = modelStr.slice(dotIdx + 1);
 
-			if (MODEL_ID.QUANTIZATION_SEGMENT_RE.test(afterDot)) {
+			if (MODEL_ID.QUANTIZATION_SEGMENT_REGEX.test(afterDot)) {
 				result.quantization = afterDot;
 				modelStr = modelStr.slice(0, dotIdx);
 			}
@@ -158,8 +272,8 @@ export class ModelsService {
 			const last = segments[segments.length - 1];
 			const secondLast = segments.length > 2 ? segments[segments.length - 2] : null;
 
-			if (MODEL_ID.QUANTIZATION_SEGMENT_RE.test(last)) {
-				if (secondLast && MODEL_ID.CUSTOM_QUANTIZATION_PREFIX_RE.test(secondLast)) {
+			if (MODEL_ID.QUANTIZATION_SEGMENT_REGEX.test(last)) {
+				if (secondLast && MODEL_ID.CUSTOM_QUANTIZATION_PREFIX_REGEX.test(secondLast)) {
 					result.quantization = `${secondLast}-${last}`;
 					segments.splice(segments.length - 2, 2);
 				} else {
@@ -176,10 +290,10 @@ export class ModelsService {
 		for (let i = 0; i < segments.length; i++) {
 			const seg = segments[i];
 
-			if (paramsIdx === MODEL_ID.NOT_FOUND && MODEL_ID.PARAMS_RE.test(seg)) {
+			if (paramsIdx === MODEL_ID.NOT_FOUND && MODEL_ID.PARAMS_REGEX.test(seg)) {
 				paramsIdx = i;
 				result.params = seg.toUpperCase();
-			} else if (paramsIdx !== MODEL_ID.NOT_FOUND && MODEL_ID.ACTIVATED_PARAMS_RE.test(seg)) {
+			} else if (paramsIdx !== MODEL_ID.NOT_FOUND && MODEL_ID.ACTIVATED_PARAMS_REGEX.test(seg)) {
 				activatedParamsIdx = i;
 				result.activatedParams = seg.toUpperCase();
 			}
@@ -220,8 +334,8 @@ export class ModelsService {
 	 * @param modelId - Model identifier to unload
 	 * @returns Unload response from the server
 	 */
-	static async unload(modelId: string): Promise<ApiRouterModelsUnloadResponse> {
-		return apiPost<ApiRouterModelsUnloadResponse>(API_MODELS.UNLOAD, { model: modelId });
+	static async unload(modelId: string): Promise<ApiModelsUnloadResponse> {
+		return apiPost<ApiModelsUnloadResponse>(API_MODELS.UNLOAD, { model: modelId });
 	}
 
 	/**

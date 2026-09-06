@@ -44,6 +44,7 @@
 	import { detectIncompleteCodeBlock, highlightCode, type IncompleteCodeBlock } from '$lib/utils';
 	import { sanitizeSvg } from '$lib/utils/sanitize-svg';
 	import { mountSvgShadow } from '$lib/utils/svg-shadow';
+	import DOMPurify from 'dompurify';
 	import type { Root as HastRoot, RootContent as HastRootContent } from 'hast';
 	import githubLightCss from 'highlight.js/styles/github.css?inline';
 	import githubDarkCss from 'highlight.js/styles/github-dark.css?inline';
@@ -57,6 +58,8 @@
 		content: string;
 		class?: string;
 		disableMath?: boolean;
+		/** Render raw HTML found in the markdown (sanitized) instead of escaping it. */
+		allowHtml?: boolean;
 	}
 
 	interface MarkdownBlock {
@@ -65,7 +68,13 @@
 		contentHash?: string;
 	}
 
-	let { attachments, class: className = '', content, disableMath = false }: Props = $props();
+	let {
+		allowHtml = false,
+		attachments,
+		class: className = '',
+		content,
+		disableMath = false
+	}: Props = $props();
 
 	let containerRef = $state<HTMLDivElement>();
 	let renderedBlocks = $state<MarkdownBlock[]>([]);
@@ -118,6 +127,123 @@
 
 	let pendingMarkdown: string | null = null;
 	let isProcessing = false;
+
+	// Raw HTML in model cards renders after sanitization with an explicit allow
+	// list: no scripts, event handlers, forms, iframes or style blocks pass.
+	// Covers the tags model cards use plus the KaTeX output (spans with inline
+	// styles and MathML).
+	const SAFE_HTML_CONFIG = {
+		ALLOWED_ATTR: [
+			'class',
+			'style',
+			'id',
+			'title',
+			'role',
+			'aria-hidden',
+			'aria-label',
+			'aria-describedby',
+			'aria-expanded',
+			'href',
+			'target',
+			'rel',
+			'src',
+			'srcset',
+			'alt',
+			'width',
+			'height',
+			'align',
+			'valign',
+			'colspan',
+			'rowspan',
+			'controls',
+			'type',
+			// MathML
+			'xmlns',
+			'display',
+			'encoding',
+			'mathvariant'
+		],
+		ALLOWED_TAGS: [
+			// text and structure
+			'a',
+			'b',
+			'i',
+			'u',
+			's',
+			'em',
+			'strong',
+			'code',
+			'pre',
+			'kbd',
+			'sub',
+			'sup',
+			'br',
+			'hr',
+			'p',
+			'span',
+			'div',
+			'blockquote',
+			'center',
+			'ul',
+			'ol',
+			'li',
+			'dl',
+			'dt',
+			'dd',
+			'h1',
+			'h2',
+			'h3',
+			'h4',
+			'h5',
+			'h6',
+			'table',
+			'thead',
+			'tbody',
+			'tr',
+			'th',
+			'td',
+			'colgroup',
+			'col',
+			'caption',
+			// media
+			'img',
+			'picture',
+			'source',
+			'figure',
+			'figcaption',
+			'video',
+			'audio',
+			// MathML, for the KaTeX output
+			'math',
+			'mrow',
+			'mi',
+			'mo',
+			'mn',
+			'ms',
+			'mtext',
+			'mfrac',
+			'mroot',
+			'msqrt',
+			'msub',
+			'msup',
+			'msubsup',
+			'munder',
+			'mover',
+			'mmultiscripts',
+			'mtable',
+			'mtr',
+			'mtd',
+			'mspace',
+			'mglyph',
+			'maligngroup',
+			'malignmark',
+			'mpadded',
+			'mphantom',
+			'mstyle',
+			'semantics',
+			'annotation'
+		]
+	};
 
 	// Per-instance transform cache, avoids re-transforming stable blocks during streaming
 	// Garbage collected when component is destroyed (on conversation change)
@@ -183,7 +309,10 @@
 		index: number
 	): Promise<{ html: string; hash: string }> {
 		const hash = getMdastNodeHash(node, index);
-		const cached = transformCache.get(hash);
+		// the rendered HTML also depends on allowHtml (sanitized raw vs escaped),
+		// so the cache is keyed per mode
+		const cacheKey = `${allowHtml ? 'a' : 'p'}:${hash}`;
+		const cached = transformCache.get(cacheKey);
 
 		if (cached) {
 			return { hash, html: cached };
@@ -192,10 +321,13 @@
 		const singleNodeRoot = { children: [node], type: 'root' };
 		const transformedRoot = (await processorInstance.run(singleNodeRoot as MdastRoot)) as HastRoot;
 		const html = processorInstance.stringify(transformedRoot);
+		const safeHtml = allowHtml
+			? (DOMPurify.sanitize(html, SAFE_HTML_CONFIG) as unknown as string)
+			: html;
 
-		transformCache.set(hash, html);
+		transformCache.set(cacheKey, safeHtml);
 
-		return { hash, html };
+		return { hash, html: safeHtml };
 	}
 
 	/**
@@ -300,7 +432,7 @@
 
 			if (prefixMarkdown.trim()) {
 				const normalizedPrefix = preprocessLaTeX(prefixMarkdown);
-				const processorInstance = getMarkdownProcessor({ attachments, disableMath });
+				const processorInstance = getMarkdownProcessor({ allowHtml, attachments, disableMath });
 				const ast = processorInstance.parse(normalizedPrefix) as MdastRoot;
 				const mdastChildren = (ast as { children?: unknown[] }).children ?? [];
 				const nextBlocks: MarkdownBlock[] = [];
@@ -350,7 +482,7 @@
 		incompleteCodeBlock = null;
 
 		const normalized = preprocessLaTeX(markdown);
-		const processorInstance = getMarkdownProcessor({ attachments, disableMath });
+		const processorInstance = getMarkdownProcessor({ allowHtml, attachments, disableMath });
 		const ast = processorInstance.parse(normalized) as MdastRoot;
 		const mdastChildren = (ast as { children?: unknown[] }).children ?? [];
 		const stableCount = Math.max(mdastChildren.length - 1, 0);
@@ -394,6 +526,10 @@
 			)) as HastRoot;
 
 			unstableHtml = processorInstance.stringify(transformedRoot);
+
+			if (allowHtml) {
+				unstableHtml = DOMPurify.sanitize(unstableHtml, SAFE_HTML_CONFIG) as unknown as string;
+			}
 		}
 
 		renderedBlocks = nextBlocks;
