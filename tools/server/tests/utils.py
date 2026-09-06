@@ -109,6 +109,7 @@ class ServerProcess:
     chat_template: str | None = None
     chat_template_file: str | None = None
     server_path: str | None = None
+    mmproj: str | None = None
     mmproj_url: str | None = None
     no_mmproj: bool | None = None
     media_path: str | None = None
@@ -271,6 +272,8 @@ class ServerProcess:
             server_args.extend(["--chat-template", self.chat_template])
         if self.chat_template_file:
             server_args.extend(["--chat-template-file", self.chat_template_file])
+        if self.mmproj:
+            server_args.extend(["--mmproj", self.mmproj])
         if self.mmproj_url:
             server_args.extend(["--mmproj-url", self.mmproj_url])
         if self.no_mmproj:
@@ -637,6 +640,24 @@ class ServerPreset:
         server.n_batch = 512
         server.n_slots = 2
         server.n_predict = 4
+        server.seed = 42
+        return server
+
+    @staticmethod
+    def small_test() -> ServerProcess:
+        # ~95M Qwen3.5 based VLM with MTP head: chat, tool calling, OCR and draft-mtp in one fixture
+        server = ServerProcess()
+        d = os.environ.get("SMALL_TEST_DIR", "/mnt/workspace/models/ggml-org/small-test")
+        server.model_hf_repo = None
+        server.model_hf_file = None
+        server.model_file = f"{d}/small-test-f16.gguf"
+        server.mmproj = f"{d}/small-test-mmproj-f16.gguf"
+        server.model_alias = "small-test"
+        server.jinja = True
+        server.n_ctx = 8192
+        server.n_batch = 2048
+        server.n_slots = 2
+        server.n_predict = 512
         server.seed = 42
         return server
 
