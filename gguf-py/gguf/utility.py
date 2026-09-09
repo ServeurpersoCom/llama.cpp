@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
+import logging
 import os
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 
 def fill_templated_filename(filename: str, output_type: str | None) -> str:
@@ -84,10 +91,8 @@ class RemoteTensor:
     url: str
 
     def data(self) -> bytearray:
-        # TODO: handle request errors (maybe with limited retries?)
         # NOTE: using a bytearray, otherwise PyTorch complains the buffer is not writeable
-        data = bytearray(SafetensorRemote.get_data_by_range(url=self.url, start=self.offset_start, size=self.size))
-        return data
+        return SafetensorRemote.get_data_chunked(url=self.url, start=self.offset_start, size=self.size)
 
 
 class SafetensorRemote:
@@ -110,6 +115,35 @@ class SafetensorRemote:
     """
 
     BASE_DOMAIN = "https://huggingface.co"
+
+    # a range larger than CHUNK_SIZE is read as several chunks fetched at the same time
+    NTHREADS = int(os.environ.get("HF_DOWNLOAD_THREADS", "0")) or 8
+    CHUNK_SIZE = 64 * 1024 * 1024
+    MAX_RETRIES = 5
+    TIMEOUT = (10, 60)
+
+    _lock = threading.Lock()
+    _session: Any = None
+    _pool: ThreadPoolExecutor | None = None
+
+    @classmethod
+    def session(cls) -> Any:
+        import requests
+
+        with cls._lock:
+            if cls._session is None:
+                adapter = requests.adapters.HTTPAdapter(pool_connections=cls.NTHREADS, pool_maxsize=cls.NTHREADS)
+                cls._session = requests.Session()
+                cls._session.mount("https://", adapter)
+                cls._session.mount("http://", adapter)
+        return cls._session
+
+    @classmethod
+    def pool(cls) -> ThreadPoolExecutor:
+        with cls._lock:
+            if cls._pool is None:
+                cls._pool = ThreadPoolExecutor(max_workers=cls.NTHREADS)
+        return cls._pool
 
     @classmethod
     def get_list_tensors_hf_model(cls, model_id: str) -> dict[str, RemoteTensor]:
@@ -218,6 +252,29 @@ class SafetensorRemote:
             raise ValueError(f"Failed to parse safetensor metadata as JSON: {e}")
 
     @classmethod
+    def get_data_chunked(cls, url: str, start: int, size: int) -> bytearray:
+        """
+        Get raw byte data from a remote file by range, as chunks fetched at the same time.
+        """
+        data = bytearray(size)
+        offsets = range(0, size, cls.CHUNK_SIZE)
+
+        if len(offsets) < 2:
+            data[:] = cls.get_data_by_range(url, start, size)
+            return data
+
+        view = memoryview(data)
+
+        def read_chunk(offset: int) -> None:
+            n = min(cls.CHUNK_SIZE, size - offset)
+            view[offset:offset + n] = cls.get_data_by_range(url, start + offset, n)
+
+        for task in [cls.pool().submit(read_chunk, offset) for offset in offsets]:
+            task.result()
+
+        return data
+
+    @classmethod
     def get_data_by_range(cls, url: str, start: int, size: int = -1) -> bytes:
         """
         Get raw byte data from a remote file by range.
@@ -232,12 +289,21 @@ class SafetensorRemote:
 
         headers = cls._get_request_headers()
         if size > -1:
-            headers["Range"] = f"bytes={start}-{start + size}"
-        response = requests.get(url, allow_redirects=True, headers=headers)
-        response.raise_for_status()
+            headers["Range"] = f"bytes={start}-{start + size - 1}"
 
-        # Get raw byte data
-        return response.content[slice(size if size > -1 else None)]
+        attempt = 0
+        while True:
+            try:
+                response = cls.session().get(url, allow_redirects=True, headers=headers, timeout=cls.TIMEOUT)
+                response.raise_for_status()
+                return response.content
+            except requests.RequestException as e:
+                attempt += 1
+                if attempt == cls.MAX_RETRIES:
+                    raise
+                delay = 2 ** attempt
+                logger.warning(f"{e}, retrying in {delay}s")
+                time.sleep(delay)
 
     @classmethod
     def check_file_exist(cls, url: str) -> bool:
@@ -255,7 +321,7 @@ class SafetensorRemote:
         try:
             headers = cls._get_request_headers()
             headers["Range"] = "bytes=0-0"
-            response = requests.head(url, allow_redirects=True, headers=headers)
+            response = cls.session().head(url, allow_redirects=True, headers=headers, timeout=cls.TIMEOUT)
             # Success (2xx) or redirect (3xx)
             return 200 <= response.status_code < 400
         except requests.RequestException:

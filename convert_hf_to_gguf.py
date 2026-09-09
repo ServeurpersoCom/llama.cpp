@@ -57,8 +57,8 @@ def parse_args() -> argparse.Namespace:
         help="path to write to; default: based on input. {ftype} will be replaced by the outtype.",
     )
     parser.add_argument(
-        "--outtype", type=str, choices=["f32", "f16", "bf16", "q8_0", "tq1_0", "tq2_0", "auto"], default="auto",
-        help="output format - use f32 for float32, f16 for float16, bf16 for bfloat16, q8_0 for Q8_0, tq1_0 or tq2_0 for ternary, and auto for the highest-fidelity 16-bit float type",
+        "--outtype", type=str, choices=["f32", "f16", "bf16", "q8_0", "tq1_0", "tq2_0", "q2_k", "q3_k", "q4_k", "q5_k", "q6_k", "auto"], default="auto",
+        help="output format - use f32 for float32, f16 for float16, bf16 for bfloat16, q8_0 for Q8_0, tq1_0 or tq2_0 for ternary, q2_k to q6_k for a uniform k-quant, and auto for the highest-fidelity 16-bit float type",
     )
     parser.add_argument(
         "--bigendian", action="store_true",
@@ -216,6 +216,11 @@ def main() -> None:
         "q8_0": gguf.LlamaFileType.MOSTLY_Q8_0,
         "tq1_0": gguf.LlamaFileType.MOSTLY_TQ1_0,
         "tq2_0": gguf.LlamaFileType.MOSTLY_TQ2_0,
+        "q2_k": gguf.LlamaFileType.MOSTLY_Q2_K,
+        "q3_k": gguf.LlamaFileType.MOSTLY_Q3_K_S,
+        "q4_k": gguf.LlamaFileType.MOSTLY_Q4_K_S,
+        "q5_k": gguf.LlamaFileType.MOSTLY_Q5_K_S,
+        "q6_k": gguf.LlamaFileType.MOSTLY_Q6_K,
         "auto": gguf.LlamaFileType.GUESSED,
     }
 

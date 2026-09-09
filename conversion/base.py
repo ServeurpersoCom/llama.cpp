@@ -63,6 +63,16 @@ HparamsMatcher = Callable[[Path], bool]
 HparamsLoader = Callable[[Path], dict[str, Any]]
 
 
+# k-quant file types map to a single tensor type, the per layer mixes of llama-quantize stay in llama-quant.cpp
+K_QUANT_TYPES: dict[gguf.LlamaFileType, gguf.GGMLQuantizationType] = {
+    gguf.LlamaFileType.MOSTLY_Q2_K:   gguf.GGMLQuantizationType.Q2_K,
+    gguf.LlamaFileType.MOSTLY_Q3_K_S: gguf.GGMLQuantizationType.Q3_K,
+    gguf.LlamaFileType.MOSTLY_Q4_K_S: gguf.GGMLQuantizationType.Q4_K,
+    gguf.LlamaFileType.MOSTLY_Q5_K_S: gguf.GGMLQuantizationType.Q5_K,
+    gguf.LlamaFileType.MOSTLY_Q6_K:   gguf.GGMLQuantizationType.Q6_K,
+}
+
+
 class SentencePieceTokenTypes(IntEnum):
     NORMAL = 1
     UNKNOWN = 2
@@ -1071,6 +1081,8 @@ class ModelBase:
                     ):
                         # TODO: use Q4_K and Q6_K
                         data_qtype = gguf.GGMLQuantizationType.F16
+                    elif self.ftype in K_QUANT_TYPES:
+                        data_qtype = gguf.GGMLQuantizationType.Q6_K
 
                 # No override (data_qtype is False), or wants to be quantized (data_qtype is True)
                 if isinstance(data_qtype, bool):
@@ -1086,6 +1098,8 @@ class ModelBase:
                         data_qtype = gguf.GGMLQuantizationType.TQ1_0
                     elif self.ftype == gguf.LlamaFileType.MOSTLY_TQ2_0:
                         data_qtype = gguf.GGMLQuantizationType.TQ2_0
+                    elif (k_qtype := K_QUANT_TYPES.get(self.ftype)) is not None:
+                        data_qtype = k_qtype
                     else:
                         raise ValueError(f"Unknown file type: {self.ftype.name}")
 

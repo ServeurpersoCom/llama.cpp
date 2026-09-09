@@ -5,6 +5,7 @@ from math import log2, ceil
 
 from numpy.typing import DTypeLike
 
+from . import native
 from .constants import GGML_QUANT_SIZES, GGMLQuantizationType, QK_K
 from .lazy import LazyNumpyTensor
 
@@ -80,6 +81,9 @@ class __Quant(ABC):
     qtype: GGMLQuantizationType
     block_size: int
     type_size: int
+
+    # encoding goes through the ggml shared library, decoding stays in numpy
+    use_native: bool = False
 
     grid: np.ndarray[Any, np.dtype[np.float32]] | None = None
     grid_shape: tuple[int, int] = (0, 0)
@@ -166,6 +170,8 @@ class __Quant(ABC):
 
     @classmethod
     def __quantize_array(cls, array: np.ndarray) -> np.ndarray:
+        if cls.use_native:
+            return native.quantize(cls.qtype, array)
         return _apply_over_grouped_rows(cls.quantize_rows, arr=array, otype=np.uint8, oshape=cls.__shape_to_bytes(array.shape))
 
     @classmethod
@@ -403,6 +409,8 @@ class Q8_0(__Quant, qtype=GGMLQuantizationType.Q8_0):
 
 
 class Q2_K(__Quant, qtype=GGMLQuantizationType.Q2_K):
+    use_native = True
+
     @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
@@ -430,6 +438,8 @@ class Q2_K(__Quant, qtype=GGMLQuantizationType.Q2_K):
 
 
 class Q3_K(__Quant, qtype=GGMLQuantizationType.Q3_K):
+    use_native = True
+
     @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
@@ -474,6 +484,8 @@ class Q3_K(__Quant, qtype=GGMLQuantizationType.Q3_K):
 
 
 class Q4_K(__Quant, qtype=GGMLQuantizationType.Q4_K):
+    use_native = True
+
     K_SCALE_SIZE = 12
 
     @staticmethod
@@ -524,6 +536,8 @@ class Q4_K(__Quant, qtype=GGMLQuantizationType.Q4_K):
 
 
 class Q5_K(__Quant, qtype=GGMLQuantizationType.Q5_K):
+    use_native = True
+
     @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
@@ -551,6 +565,8 @@ class Q5_K(__Quant, qtype=GGMLQuantizationType.Q5_K):
 
 
 class Q6_K(__Quant, qtype=GGMLQuantizationType.Q6_K):
+    use_native = True
+
     @classmethod
     def dequantize_blocks(cls, blocks: np.ndarray) -> np.ndarray:
         n_blocks = blocks.shape[0]
