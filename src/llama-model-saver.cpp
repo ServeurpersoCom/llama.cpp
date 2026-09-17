@@ -15,10 +15,6 @@
 
 bool llama_model_saver_supports_arch(llm_arch arch) {
     switch (arch) {
-        case LLM_ARCH_GEMMA3N:
-        case LLM_ARCH_BITNET:
-        case LLM_ARCH_T5:
-        case LLM_ARCH_APERTUS:
         case LLM_ARCH_STEP35:
             return false;
         default:
@@ -236,7 +232,7 @@ void llama_model_saver::add_kv_from_model() {
     add_kv(LLM_KV_DEEPSTACK_MAPPING,                 hparams.deepstack_mapping_arr);
     add_kv(LLM_KV_POOLING_TYPE,                      uint32_t(hparams.pooling_type));
     add_kv(LLM_KV_LOGIT_SCALE,                       hparams.f_logit_scale);
-    add_kv(LLM_KV_DECODER_START_TOKEN_ID,            hparams.dec_start_token_id);
+    add_kv(LLM_KV_DECODER_START_TOKEN_ID,            uint32_t(hparams.dec_start_token_id));
     add_kv(LLM_KV_DECODER_BLOCK_COUNT,               hparams.dec_n_layer);
     add_kv(LLM_KV_ATTN_LOGIT_SOFTCAPPING,            hparams.f_attn_logit_softcapping);
     add_kv(LLM_KV_ROUTER_LOGIT_SOFTCAPPING,          hparams.f_router_logit_softcapping);
@@ -428,10 +424,10 @@ void llama_model_saver::add_kv_from_model() {
 
     add_kv(LLM_KV_SHORTCONV_L_CACHE,                 hparams.n_shortconv_l_cache);
 
-    add_kv(LLM_KV_XIELU_ALPHA_N,                     hparams.xielu_alpha_n);
-    add_kv(LLM_KV_XIELU_ALPHA_P,                     hparams.xielu_alpha_p);
-    add_kv(LLM_KV_XIELU_BETA,                        hparams.xielu_beta);
-    add_kv(LLM_KV_XIELU_EPS,                         hparams.xielu_eps);
+    add_kv(LLM_KV_XIELU_ALPHA_N,                     hparams.xielu_alpha_n, true);
+    add_kv(LLM_KV_XIELU_ALPHA_P,                     hparams.xielu_alpha_p, true);
+    add_kv(LLM_KV_XIELU_BETA,                        hparams.xielu_beta, true);
+    add_kv(LLM_KV_XIELU_EPS,                         hparams.xielu_eps, true);
 
     add_kv(LLM_KV_ATTN_RES_BLOCK_SIZE,               hparams.attn_res_block_size);
     add_kv(LLM_KV_ACTIVATION_SITU_BETA,              hparams.situ_beta);
@@ -449,7 +445,7 @@ void llama_model_saver::add_kv_from_model() {
 }
 
 void llama_model_saver::add_tensors_from_model() {
-    if (model->output != nullptr &&
+    if (model->output == nullptr ||
             std::string(model->output->name) != std::string(model->tok_embd->name)) {
         add_tensor(model->tok_embd); // some models use the same tensor for tok_embd and output
     }
@@ -476,7 +472,11 @@ void llama_model_saver::add_tensors_from_model() {
     add_tensor(model->hc_head_fn);
     add_tensor(model->hc_head_base);
     add_tensor(model->hc_head_scale);
+    add_tensor(model->altup_proj);
+    add_tensor(model->altup_unembd_proj);
     add_tensor(model->per_layer_tok_embd);
+    add_tensor(model->per_layer_model_proj);
+    add_tensor(model->per_layer_proj_norm);
     add_tensor(model->hc_head_norm);
     add_tensor(model->hc_head_down);
     add_tensor(model->hc_head_up);
