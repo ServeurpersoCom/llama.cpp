@@ -781,20 +781,74 @@ static void ggml_backend_cuda_buffer_memset_tensor(ggml_backend_buffer_t buffer,
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
 }
 
+#if defined(GGML_USE_HIP)
+// Host <-> device copies go through a pinned bounce buffer per device. The HIP runtime pins
+// pageable host memory for the current device only, in page aligned windows, so consecutive
+// copies of adjacent host ranges through different devices share a host page and the second
+// device faults on it. Pinned memory is mapped for every device, which removes the sharing.
+#define GGML_HIP_BOUNCE_SIZE (16u << 20)
+
+struct ggml_hip_bounce {
+    std::mutex mutex;
+    void * ptr = nullptr;
+};
+
+static ggml_hip_bounce & ggml_hip_bounce_get(int device) {
+    static ggml_hip_bounce bounces[GGML_CUDA_MAX_DEVICES];
+    return bounces[device];
+}
+
+static void ggml_hip_copy_to_device(int device, void * dst, const void * src, size_t size) {
+    ggml_hip_bounce & bounce = ggml_hip_bounce_get(device);
+    std::lock_guard<std::mutex> lock(bounce.mutex);
+    if (bounce.ptr == nullptr) {
+        CUDA_CHECK(cudaMallocHost(&bounce.ptr, GGML_HIP_BOUNCE_SIZE));
+    }
+    for (size_t done = 0; done < size; done += GGML_HIP_BOUNCE_SIZE) {
+        const size_t n = std::min(size - done, (size_t) GGML_HIP_BOUNCE_SIZE);
+        memcpy(bounce.ptr, (const char *) src + done, n);
+        CUDA_CHECK(cudaMemcpyAsync((char *) dst + done, bounce.ptr, n, cudaMemcpyHostToDevice, cudaStreamPerThread));
+        CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+    }
+}
+
+static void ggml_hip_copy_from_device(int device, void * dst, const void * src, size_t size) {
+    ggml_hip_bounce & bounce = ggml_hip_bounce_get(device);
+    std::lock_guard<std::mutex> lock(bounce.mutex);
+    if (bounce.ptr == nullptr) {
+        CUDA_CHECK(cudaMallocHost(&bounce.ptr, GGML_HIP_BOUNCE_SIZE));
+    }
+    for (size_t done = 0; done < size; done += GGML_HIP_BOUNCE_SIZE) {
+        const size_t n = std::min(size - done, (size_t) GGML_HIP_BOUNCE_SIZE);
+        CUDA_CHECK(cudaMemcpyAsync(bounce.ptr, (const char *) src + done, n, cudaMemcpyDeviceToHost, cudaStreamPerThread));
+        CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+        memcpy((char *) dst + done, bounce.ptr, n);
+    }
+}
+#endif // GGML_USE_HIP
+
 static void ggml_backend_cuda_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
+#if defined(GGML_USE_HIP)
+    ggml_hip_copy_to_device(ctx->device, (char *) tensor->data + offset, data, size);
+#else
     CUDA_CHECK(cudaMemcpyAsync((char *) tensor->data + offset, data, size, cudaMemcpyHostToDevice, cudaStreamPerThread));
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+#endif // GGML_USE_HIP
 }
 
 static void ggml_backend_cuda_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset, size_t size) {
     ggml_backend_cuda_buffer_context * ctx = (ggml_backend_cuda_buffer_context *) buffer->context;
 
     ggml_cuda_set_device(ctx->device);
+#if defined(GGML_USE_HIP)
+    ggml_hip_copy_from_device(ctx->device, data, (const char *) tensor->data + offset, size);
+#else
     CUDA_CHECK(cudaMemcpyAsync(data, (const char *) tensor->data + offset, size, cudaMemcpyDeviceToHost, cudaStreamPerThread));
     CUDA_CHECK(cudaStreamSynchronize(cudaStreamPerThread));
+#endif // GGML_USE_HIP
 }
 
 static void ggml_backend_cuda_buffer_set_tensor_2d(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor, const void * data,
