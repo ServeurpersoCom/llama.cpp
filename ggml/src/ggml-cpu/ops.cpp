@@ -8840,6 +8840,16 @@ void ggml_compute_forward_top_k(
     }
 }
 
+// KV positions an F16 V accumulator sums before it is folded into the F32 accumulator
+#define GGML_FA_F16_BLOCK 256
+
+// VKQ32 = VKQ16 on the first fold, VKQ32 += VKQ16 after
+static inline void ggml_flash_attn_ext_fold_f16(int64_t n, float * VKQ32, const ggml_fp16_t * VKQ16, bool add) {
+    for (int64_t d = 0; d < n; ++d) {
+        VKQ32[d] = (add ? VKQ32[d] : 0.0f) + GGML_CPU_FP16_TO_FP32(VKQ16[d]);
+    }
+}
+
 static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
         const ggml_compute_params * params,
         ggml_tensor * dst,
@@ -8938,8 +8948,11 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
 
         float       * VKQ32 = (float       *) params->wdata + ith*(1*DK + 2*DV + CACHE_LINE_SIZE_F32); // FP32 VKQ accumulator
         float       * V32   =                 (VKQ32 + 1*DV); // (temporary) FP32 V buffer
-        ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1*DV); // (temporary) FP16 VKQ accumulator
+        ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1*DV); // (temporary) FP16 VKQ accumulator of the current KV block
         ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2*DV); // (temporary) buffer for Q converted to quantized/FP16
+
+        int64_t n_f16    = 0;     // KV positions summed in VKQ16
+        bool    folded32 = false; // VKQ32 holds folded F16 blocks
 
         if (v->type == GGML_TYPE_F16) {
             memset(VKQ16, 0, DV*sizeof(ggml_fp16_t));
@@ -8990,51 +9003,48 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
 
             const char * v_data = ((const char *) v->data + (ic*nbv1 + iv2*nbv2 + iv3*nbv3));
 
-            if (v->type == GGML_TYPE_F16) {
-                if (s > M) {
-                    // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
-                    M = s;
-                    ms = expf(Mold - M);
+            if (s > M) {
+                // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
+                M = s;
+                ms = expf(Mold - M);
 
-                    // V = V*expf(Mold - M)
+                // V = V*expf(Mold - M)
+                if (v->type == GGML_TYPE_F16) {
                     ggml_vec_scale_f16(DV, VKQ16, ms);
+                    if (folded32) {
+                        ggml_vec_scale_f32(DV, VKQ32, ms);
+                    }
                 } else {
-                    // no new maximum, ms == 1.0f, vs != 1.0f
-                    vs = expf(s - M);
-                }
-
-                // V += v*expf(s - M)
-                ggml_vec_mad_f16(DV, VKQ16, (const ggml_fp16_t *) v_data, vs);
-            } else {
-                if (s > M) {
-                    // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
-                    M = s;
-                    ms = expf(Mold - M);
-
-                    // V = V*expf(Mold - M)
                     ggml_vec_scale_f32(DV, VKQ32, ms);
-                } else {
-                    // no new maximum, ms == 1.0f, vs != 1.0f
-                    vs = expf(s - M);
                 }
+            } else {
+                // no new maximum, ms == 1.0f, vs != 1.0f
+                vs = expf(s - M);
+            }
 
-                // V += v*expf(s - M)
-                if (v_to_float) {
-                    v_to_float(v_data, V32, DV);
-                    ggml_vec_mad_f32(DV, VKQ32, V32, vs);
-                } else {
-                    // V is F32
-                    ggml_vec_mad_f32(DV, VKQ32, (const float *) v_data, vs);
+            // V += v*expf(s - M)
+            if (v->type == GGML_TYPE_F16) {
+                ggml_vec_mad_f16(DV, VKQ16, (const ggml_fp16_t *) v_data, vs);
+
+                if (++n_f16 == GGML_FA_F16_BLOCK) {
+                    ggml_flash_attn_ext_fold_f16(DV, VKQ32, VKQ16, folded32);
+                    memset(VKQ16, 0, DV*sizeof(ggml_fp16_t));
+                    n_f16    = 0;
+                    folded32 = true;
                 }
+            } else if (v_to_float) {
+                v_to_float(v_data, V32, DV);
+                ggml_vec_mad_f32(DV, VKQ32, V32, vs);
+            } else {
+                // V is F32
+                ggml_vec_mad_f32(DV, VKQ32, (const float *) v_data, vs);
             }
 
             S = S*ms + vs; // scale and increment sum with partial sum
         }
 
         if (v->type == GGML_TYPE_F16) {
-            for (int64_t d = 0; d < DV; ++d) {
-                VKQ32[d] = GGML_CPU_FP16_TO_FP32(VKQ16[d]);
-            }
+            ggml_flash_attn_ext_fold_f16(DV, VKQ32, VKQ16, folded32);
         }
 
         // sinks - apply only on the first kv-chunk
