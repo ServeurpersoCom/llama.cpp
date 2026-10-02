@@ -339,7 +339,10 @@ static bool llama_moe_stream_run_jobs(int32_t n_threads, size_t n_jobs, size_t n
 
 void llama_moe_stream::pin_partition(uint32_t n_expert_used) {
     // the dynamic pool must hold one wave plus its preload plus the parked pairs
-    const uint32_t n_dyn = std::max<uint32_t>(3*n_expert_used, 8);
+    uint32_t n_dyn = std::max<uint32_t>(3*n_expert_used, 8);
+    if (const char * e = getenv("LLAMA_MOE_STREAM_DYN")) { // benchmark knob: size of the dynamic (hotness) pool
+        n_dyn = std::max<uint32_t>(n_dyn, (uint32_t) atoi(e));
+    }
 
     const int64_t t_start = ggml_time_us();
 
