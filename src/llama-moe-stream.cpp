@@ -269,6 +269,12 @@ void llama_moe_stream::open_files(const std::vector<std::string> & paths) {
         files.clear();
         for (const auto & path : paths) {
             files.emplace_back(new llama_file(path.c_str(), "rb", direct));
+#ifdef __APPLE__
+            // macOS has no O_DIRECT; F_NOCACHE keeps streamed expert reads out of the unified buffer cache
+            if (direct) {
+                fcntl(files.back()->file_id(), F_NOCACHE, 1);
+            }
+#endif
         }
     };
 
@@ -279,7 +285,11 @@ void llama_moe_stream::open_files(const std::vector<std::string> & paths) {
     // filesystems accept the flag then reject aligned reads). reopening is needed because O_DIRECT
     // is a property of the fd. done here, single-threaded, before any worker starts.
     if (use_direct_io) {
+#ifdef __APPLE__
+        bool ok = !files.empty();
+#else
         bool ok = !files.empty() && files.front()->has_direct_io();
+#endif
         if (ok) {
             uint8_t * probe = (uint8_t *) moe_aligned_alloc(MOE_STREAM_DIRECT_ALIGN);
             GGML_ASSERT(probe != nullptr);
