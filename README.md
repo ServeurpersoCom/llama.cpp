@@ -17,6 +17,91 @@
 
 </div>
 
+> **This fork:** branch `moe-stream-master` is upstream `master` plus SSD streaming of
+> Mixture-of-Experts weights, so MoE models much larger than RAM run with a bounded
+> memory footprint. See [Running MoE models that do not fit in RAM](#running-moe-models-that-do-not-fit-in-ram).
+> Everything else is unchanged; without the `--moe-stream*` flags it behaves like stock llama.cpp.
+
+## Running MoE models that do not fit in RAM
+
+In a Mixture-of-Experts model most of the weights are routed experts, and each token
+uses only a few of them. GLM-5.3-Flash, for example, is 320B parameters, but 304B of
+those are experts and a token touches 8 of the 288 experts in each of 42 layers. Stock
+llama.cpp still has to hold every expert in memory (or let `mmap` page them through the
+file cache, which is slow and uncontrolled).
+
+With `--moe-stream`, the routed-expert tensors are never loaded. Each layer gets a cache
+of expert *slots* on the compute device; after the router picks the experts for a token,
+missing ones are read from the GGUF file by a pool of I/O threads and evicted by a
+decaying hotness score. Routing decisions are unchanged, so output is bit-identical to a
+fully resident run. Only latency changes. Everything that is not a routed expert
+(attention, routers, shared experts, embeddings, output head, KV cache) stays resident
+as usual, so that is the memory floor.
+
+### Flags
+
+| Flag | Meaning |
+| --- | --- |
+| `--moe-stream` | enable expert streaming |
+| `--moe-stream-cache <N\|Ns>` | cache budget in GiB (`40`), or exact slots per layer (`64s`); implies `--moe-stream` |
+| `--moe-stream-direct` | bypass the OS page cache (O_DIRECT on Linux, F_NOCACHE on macOS); use when the model far exceeds RAM, or to benchmark a smaller machine honestly |
+| `--moe-stream-io-threads N` | reader threads (default: auto) |
+| `--moe-stream-ram N` | pinned host mirror in GiB for discrete GPUs; set `0` on unified-memory machines such as Apple Silicon |
+| `LLAMA_MOE_STREAM_DYN=N` (env) | size of the hotness-ranked pool. Slots beyond it are pinned by expert ID; set it equal to the slot count to make the whole cache hotness-ranked, which measured better |
+
+The dynamic pool must hold at least `3 * n_expert_used` slots (24 for an 8-expert
+model) for chunked prefill, so use at least that many slots.
+
+### Example: GLM-5.3-Flash on a Mac
+
+```sh
+LLAMA_MOE_STREAM_DYN=24 llama-server \
+    -m GLM-5.3-Flash-UD-IQ4_XS-00001-of-00005.gguf \
+    --moe-stream-cache 24s --moe-stream-ram 0 --moe-stream-direct -c 8192
+```
+
+Measured on an M5 Max with the 157 GB `UD-IQ4_XS` GGUF, 480-token prompt, 256
+generated tokens, `temp 0`, Metal, page cache bypassed except where noted:
+
+| Slots per layer | Expert cache | Peak footprint | Hit rate | Prefill | Decode | Fits a |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 24 (buffered) | 11.4 GB | 22.8 GB | 50% | 24.5 tok/s | 3.1 tok/s | 32 GB Mac |
+| 24 | 11.4 GB | 22.7 GB | 50% | 26.2 tok/s | 2.7 tok/s | 32 GB Mac |
+| 48 | 22.8 GB | 34.8 GB | 62% | 35.2 tok/s | 3.7 tok/s | 48 GB Mac |
+| 96 | 45.7 GB | 58.8 GB | 76% | 44.4 tok/s | 4.9 tok/s | 64 GB Mac |
+| 160 | 76.1 GB | 90.1 GB | 85% | 45.2 tok/s | 7.5 tok/s | 128 GB Mac |
+
+The resident part was 9 GB (core weights) plus about 0.5 GB of KV and compute buffers at
+8K context. All five runs produced identical text. Decode is bound by SSD bandwidth
+times miss rate: roughly 6 GB/s from the internal SSD here, with 14 MB per expert read.
+
+### Sizing a cache
+
+1. Find the model's fixed cost: load once with a small cache and read the
+   `model buffer size`, `KV buffer size` and `compute buffer size` lines (run with `-lv 4`).
+2. Subtract that and about 4 GB for the OS from your RAM; the rest is the expert cache.
+3. Slot size is bytes per expert at your quantization; the loader prints
+   `expert cache size = ... (N slots per layer)` so you can check the arithmetic.
+4. More slots raise the hit rate roughly with the logarithm of cache size. Pass
+   `--moe-stream-direct` when the model is much larger than RAM, otherwise leave it off
+   and let the page cache help.
+
+Higher-precision quantizations cost more per slot and per miss but nothing extra on
+disk, so streaming lets a quality-first setup keep experts at 6- or 8-bit at the price
+of tokens per second rather than of RAM.
+
+### Notes
+
+- Works for any MoE architecture, since it operates on the generic `ffn_*_exps` tensors.
+  Dense models are unaffected by the flags.
+- `glm5next` GGUFs (converted with Unsloth's pre-merge PR) load as `glm5-next` on this
+  branch.
+- One context per streamed model: concurrent decodes on the same model can evict each
+  other's experts.
+- Upstream tracking: this is [PR #25294](https://github.com/ggml-org/llama.cpp/pull/25294)
+  and [ServeurpersoCom's partition rebase](https://github.com/ServeurpersoCom/llama.cpp/tree/moe-stream-partition),
+  rebased onto master with macOS fixes.
+
 ## Quick start
 
 A few options to get `llama.cpp` installed on your machine:
