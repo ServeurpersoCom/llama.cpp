@@ -1015,10 +1015,10 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,     {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
 };
 
-LLM_KV::LLM_KV(llm_arch arch, const char * suffix) : arch(arch), suffix(suffix) {}
+LLM_KV::LLM_KV(llm_arch arch, const char * suffix, const char * arch_name) : arch(arch), suffix(suffix), arch_name(arch_name) {}
 
 std::string LLM_KV::operator()(llm_kv kv) const {
-    std::string name = ::format(LLM_KV_NAMES.at(kv), LLM_ARCH_NAMES.at(arch));
+    std::string name = ::format(LLM_KV_NAMES.at(kv), arch_name != nullptr ? arch_name : LLM_ARCH_NAMES.at(arch));
 
     if (suffix != nullptr) {
         name += ".";
@@ -1062,11 +1062,19 @@ const char * llm_arch_name(llm_arch arch) {
     return it->second;
 }
 
+// architecture strings written by pre-merge converters that map onto a supported architecture
+static const std::map<std::string, llm_arch> LLM_ARCH_ALIASES = {
+    { "glm5next", LLM_ARCH_GLM5_NEXT }, // unsloth GGUFs converted with PR #27754
+};
+
 llm_arch llm_arch_from_string(const std::string & name) {
     for (const auto & kv : LLM_ARCH_NAMES) { // NOLINT
         if (kv.second == name) {
             return kv.first;
         }
+    }
+    if (auto it = LLM_ARCH_ALIASES.find(name); it != LLM_ARCH_ALIASES.end()) {
+        return it->second;
     }
 
     return LLM_ARCH_UNKNOWN;

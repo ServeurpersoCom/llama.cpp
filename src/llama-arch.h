@@ -734,10 +734,11 @@ enum llm_tensor_layer {
 };
 
 struct LLM_KV {
-    LLM_KV(llm_arch arch, const char * suffix = nullptr);
+    LLM_KV(llm_arch arch, const char * suffix = nullptr, const char * arch_name = nullptr);
 
     llm_arch arch;
     const char * suffix;
+    const char * arch_name; // GGUF architecture string when it is an alias of arch (e.g. "glm5next" for glm5-next)
 
     std::string operator()(llm_kv kv) const;
 };
