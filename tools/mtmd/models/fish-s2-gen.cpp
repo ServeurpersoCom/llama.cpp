@@ -37,7 +37,7 @@ ggml_cgraph * mtmd_graph_fish_s2_gen::build_fast_ar() {
             cur = ggml_reshape_1d(ctx0, ggml_get_rows(ctx0, model.gen_code_tok_embd_w, code), n_embd);
         }
         ggml_tensor * kq_mask = cg.causal_mask_row(n_cb, p);
-        ggml_tensor * inp_pos = cg.const_i32(k_cache[0], (float) p);
+        ggml_tensor * inp_pos = cg.row_i32(n_cb, p);
         for (int il = 0; il < n_layer; il++) {
             cur = cg.layer_forward(cur, model.layers[il], inp_pos, kq_mask, k_cache[il], v_cache[il], n_cb, p, il);
         }

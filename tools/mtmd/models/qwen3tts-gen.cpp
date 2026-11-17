@@ -103,10 +103,24 @@ ggml_tensor * mtmd_graph_qwen3tts_gen::code_gen::const_i32(ggml_tensor * anchor,
     return ggml_cast(ctx0, ggml_scale_bias(ctx0, v, 0.0f, value), GGML_TYPE_I32);
 }
 
+// i32 scalar holding pos, used as a cache row index and as a RoPE position
+ggml_tensor * mtmd_graph_qwen3tts_gen::code_gen::row_i32(int64_t n_kv_pad, int pos) const {
+    // one 256-byte row per position, so every view starts on a buffer offset that all backends can bind
+    if (!rows) {
+        ggml_tensor * pos_f32 = ggml_reshape_2d(ctx0, ggml_arange(ctx0, 0.0f, (float) n_kv_pad, 1.0f), 1, n_kv_pad);
+        rows = ggml_cast(ctx0, ggml_repeat_4d(ctx0, pos_f32, 64, n_kv_pad, 1, 1), GGML_TYPE_I32);
+    }
+    GGML_ASSERT(rows->ne[1] == n_kv_pad && pos >= 0 && pos < n_kv_pad);
+    return ggml_view_1d(ctx0, rows, 1, (size_t) pos * rows->nb[1]);
+}
+
 // causal keep-mask row for a query at position pos, window size n_kv_pad
 ggml_tensor * mtmd_graph_qwen3tts_gen::code_gen::causal_mask_row(int64_t n_kv_pad, int pos) const {
-    ggml_tensor * ones = ggml_fill(ctx0, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_kv_pad, n_kv_pad), 1.0f);
-    ggml_tensor * keep = ggml_tri(ctx0, ones, GGML_TRI_TYPE_LOWER_DIAG);
+    if (!keep) {
+        ggml_tensor * ones = ggml_fill(ctx0, ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_kv_pad, n_kv_pad), 1.0f);
+        keep = ggml_tri(ctx0, ones, GGML_TRI_TYPE_LOWER_DIAG);
+    }
+    GGML_ASSERT(keep->ne[0] == n_kv_pad && pos >= 0 && pos < n_kv_pad);
     ggml_tensor * row  = ggml_view_1d(ctx0, keep, n_kv_pad, (size_t) pos * keep->nb[1]);
     ggml_tensor * mask = ggml_log(ctx0, row); // 0 = keep, -inf = masked
     mask = ggml_reshape_4d(ctx0, mask, n_kv_pad, 1, 1, 1);
@@ -170,9 +184,9 @@ ggml_tensor * mtmd_graph_qwen3tts_gen::code_gen::layer_forward(
                       hparams.rope_theta, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f);
 
     // write k/v into the cache at row pos, flat layout
-    ggml_tensor * k_flat = ggml_reshape_1d(ctx0, k, d_head * n_head_kv);
-    k_cache_layer = cache_set(k_cache_layer, pos, k_flat);
-    v_cache_layer = cache_set(v_cache_layer, pos, v);
+    ggml_tensor * row = row_i32(n_kv_pad, pos);
+    k_cache_layer = ggml_set_rows(ctx0, k_cache_layer, ggml_reshape_2d(ctx0, k, d_head * n_head_kv, 1), row);
+    v_cache_layer = ggml_set_rows(ctx0, v_cache_layer, ggml_reshape_2d(ctx0, v, d_head * n_head_kv, 1), row);
 
     ggml_tensor * q_cur = ggml_reshape_4d(ctx0, q, d_head, n_head, 1, 1);
     ggml_tensor * k_cur = ggml_reshape_4d(ctx0, k_cache_layer, d_head, n_head_kv, n_kv_pad, 1);
@@ -207,7 +221,7 @@ void mtmd_graph_qwen3tts_gen::code_gen::prefill(
     {
         ggml_tensor * cur     = project_in(h_state);
         ggml_tensor * kq_mask = causal_mask_row(n_kv_pad, 0);
-        ggml_tensor * inp_pos = const_i32(k_cache[0], 0.0f);
+        ggml_tensor * inp_pos = row_i32(n_kv_pad, 0);
         for (size_t il = 0; il < model.layers.size(); il++) {
             cur = layer_forward(cur, model.layers[il], inp_pos, kq_mask, k_cache[il], v_cache[il], n_kv_pad, 0, (int) il);
         }
@@ -217,7 +231,7 @@ void mtmd_graph_qwen3tts_gen::code_gen::prefill(
     {
         ggml_tensor * cur     = project_in(code0_embd);
         ggml_tensor * kq_mask = causal_mask_row(n_kv_pad, 1);
-        ggml_tensor * inp_pos = const_i32(k_cache[0], 1.0f);
+        ggml_tensor * inp_pos = row_i32(n_kv_pad, 1);
         for (size_t il = 0; il < model.layers.size(); il++) {
             cur = layer_forward(cur, model.layers[il], inp_pos, kq_mask, k_cache[il], v_cache[il], n_kv_pad, 1, (int) il);
         }
@@ -268,7 +282,7 @@ ggml_tensor * mtmd_graph_qwen3tts_gen::code_gen::step(
     cb(cur, "step_proj_in", step_idx);
 
     ggml_tensor * kq_mask = causal_mask_row(n_kv_pad, pos);
-    ggml_tensor * inp_pos = const_i32(k_cache[0], (float) pos);
+    ggml_tensor * inp_pos = row_i32(n_kv_pad, pos);
 
     for (size_t il = 0; il < model.layers.size(); il++) {
         cur = layer_forward(cur, model.layers[il], inp_pos, kq_mask, k_cache[il], v_cache[il], n_kv_pad, pos, (int) il);
