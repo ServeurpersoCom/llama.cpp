@@ -51,7 +51,7 @@ ggml_tensor * mtmd_graph_pockettts_seanet::conv1d(ggml_tensor * x, ggml_tensor *
         y = ggml_mul_mat(ctx0, ggml_reshape_2d(ctx0, col, col->ne[0], col->ne[2] * col->ne[1]),
                          ggml_reshape_2d(ctx0, w, w->ne[0] * w->ne[1], w->ne[2]));
     } else {
-        y = ggml_conv_1d(ctx0, w, x, stride, 0, dilation);
+        y = build_conv1d(w, x, stride, 0, dilation);
     }
     y = ggml_reshape_2d(ctx0, y, y->ne[0], y->ne[1]);
     if (b) {

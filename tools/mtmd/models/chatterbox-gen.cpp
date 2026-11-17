@@ -25,7 +25,7 @@ ggml_tensor * mtmd_graph_chatterbox_base::cbx_conv1d(ggml_tensor * k, ggml_tenso
         z = ggml_scale(ctx0, z, 0.0f);
         xt = ggml_concat(ctx0, xt, z, 0);
     }
-    ggml_tensor * y = ggml_conv_1d(ctx0, k, xt, stride, 0, 1); // [T_out, OC]
+    ggml_tensor * y = build_conv1d(k, xt, stride, 0, 1); // [T_out, OC]
     y = ggml_cont(ctx0, ggml_transpose(ctx0, y));              // [OC, T_out]
     if (b) {
         y = ggml_add(ctx0, y, b);
@@ -37,7 +37,7 @@ ggml_tensor * mtmd_graph_chatterbox_base::cbx_conv1d(ggml_tensor * k, ggml_tenso
 ggml_tensor * mtmd_graph_chatterbox_base::cbx_conv1d_dil(ggml_tensor * k, ggml_tensor * b, ggml_tensor * x,
                                                          int pad, int dil) const {
     ggml_tensor * xt = ggml_cont(ctx0, ggml_transpose(ctx0, x));
-    ggml_tensor * y = ggml_conv_1d(ctx0, k, xt, 1, pad, dil);
+    ggml_tensor * y = build_conv1d(k, xt, 1, pad, dil);
     y = ggml_cont(ctx0, ggml_transpose(ctx0, y));
     if (b) {
         y = ggml_add(ctx0, y, b);
@@ -328,7 +328,7 @@ ggml_cgraph * mtmd_graph_chatterbox::build() {
         ggml_tensor * z = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, 4, 512);
         z = ggml_scale(ctx0, z, 0.0f);
         xt = ggml_concat(ctx0, z, xt, 0);
-        ggml_tensor * y = ggml_conv_1d(ctx0, c.up_conv_w, xt, 1, 0, 1);
+        ggml_tensor * y = build_conv1d(c.up_conv_w, xt, 1, 0, 1);
         x = ggml_cont(ctx0, ggml_transpose(ctx0, y));                            // [512, T2]
         x = ggml_add(ctx0, x, c.up_conv_b);
         cb(x, "fenc_upsample", -1);
@@ -513,7 +513,7 @@ ggml_cgraph * mtmd_graph_chatterbox::build_vocoder(int n_mel, int n_stft) {
         ggml_tensor * si;
         {
             ggml_tensor * st = ggml_cont(ctx0, ggml_transpose(ctx0, sstft));
-            st = ggml_conv_1d(ctx0, sk, st, SS, SP, 1);
+            st = build_conv1d(sk, st, SS, SP, 1);
             si = ggml_cont(ctx0, ggml_transpose(ctx0, st));
             si = ggml_add(ctx0, si, up.source_down_b);
         }

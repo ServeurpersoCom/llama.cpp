@@ -705,6 +705,13 @@ ggml_tensor * mtmd_graph::build_stack(ggml_tensor * cur, int32_t stack_factor, i
 
 // aka pixel_shuffle / pixel_unshuffle / patch_merger (Kimi-VL)
 // support dynamic resolution
+ggml_tensor * mtmd_graph::build_conv1d(ggml_tensor * w, ggml_tensor * x, int s0, int p0, int d0) const {
+    ggml_tensor * y = ggml_conv_2d_direct(ctx0,
+            ggml_reshape_4d(ctx0, w, w->ne[0], 1, w->ne[1], w->ne[2]),
+            ggml_reshape_4d(ctx0, x, x->ne[0], 1, x->ne[1], x->ne[2]), s0, 1, p0, 0, d0, 1);
+    return ggml_reshape_3d(ctx0, y, y->ne[0], y->ne[2], y->ne[3]);
+}
+
 ggml_tensor * mtmd_graph::build_suffix(ggml_tensor * cur) {
     for (int idx : mtmd_suffix_rows(img.suffix_type)) {
         GGML_ASSERT(model.tok_embd_sep && idx < model.tok_embd_sep->ne[1]);

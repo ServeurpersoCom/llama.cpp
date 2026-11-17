@@ -31,7 +31,7 @@ ggml_cgraph * mtmd_graph_voxtral_rt::build() {
     ggml_tensor * kq_mask = build_inp_attn_mask(n_ctx, n_new);
 
     // causal conv stem
-    ggml_tensor * cur = ggml_conv_1d(ctx0, model.conv1d_1_w, inp, 1, 0, 1);
+    ggml_tensor * cur = build_conv1d(model.conv1d_1_w, inp, 1, 0, 1);
     cur = ggml_add(ctx0, cur, model.conv1d_1_b);
     cur = ggml_gelu_erf(ctx0, cur); // [2*n_new, n_embd]
 
@@ -43,7 +43,7 @@ ggml_cgraph * mtmd_graph_voxtral_rt::build() {
     ggml_build_forward_expand(gf, tail);
 
     cur = ggml_concat(ctx0, stem_tail, cur, 0); // [2*n_new + 1, n_embd]
-    cur = ggml_conv_1d(ctx0, model.conv1d_2_w, cur, 2, 0, 1);
+    cur = build_conv1d(model.conv1d_2_w, cur, 2, 0, 1);
     cur = ggml_add(ctx0, cur, model.conv1d_2_b);
     cur = ggml_gelu_erf(ctx0, cur); // [n_new, n_embd]
     cur = ggml_cont(ctx0, ggml_transpose(ctx0, cur)); // [n_embd, n_new]
