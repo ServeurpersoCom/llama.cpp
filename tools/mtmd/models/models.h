@@ -467,8 +467,13 @@ struct mtmd_graph_qwen3tts_gen : mtmd_graph {
         ggml_tensor * do_sampling(ggml_tensor * logits, ggml_tensor * inp_rand) const;
 
         ggml_tensor * const_i32(ggml_tensor * anchor, float value) const;
+        ggml_tensor * row_i32(int64_t n_kv_pad, int pos) const;
         ggml_tensor * causal_mask_row(int64_t n_kv_pad, int pos) const;
         ggml_tensor * project_in(ggml_tensor * cur) const;
+
+        // built once per graph, each position takes a view
+        mutable ggml_tensor * rows = nullptr; // [64, n_kv_pad] i32, row p holds p
+        mutable ggml_tensor * keep = nullptr; // [n_kv_pad, n_kv_pad] causal, 1 = keep, 0 = masked
 
         ggml_tensor * layer_forward(
                 ggml_tensor * cur,
