@@ -316,7 +316,7 @@ ggml_tensor * mtmd_graph_qwen3tts_gen::code2wav::causal_conv1d(ggml_tensor * x, 
         ggml_tensor * left = state_in.at(state_name); // [pad, IC]
         x_full = ggml_concat(ctx0, left, x, 0);
     }
-    ggml_tensor * y = ggml_conv_1d(ctx0, w, x_full, 1, 0, dilation); // [T, OC, 1]
+    ggml_tensor * y = build_conv1d(w, x_full, 1, 0, dilation); // [T, OC, 1]
     y = ggml_reshape_2d(ctx0, y, y->ne[0], y->ne[1]);
     if (b) {
         y = ggml_add(ctx0, y, ggml_reshape_2d(ctx0, b, 1, b->ne[0]));

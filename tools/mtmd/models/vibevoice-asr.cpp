@@ -39,7 +39,7 @@ ggml_tensor * mtmd_graph_vibevoice_asr::with_left_ctx(ggml_tensor * x, const std
 // x: [T, IC], w: [K, IC, OC] -> [T / stride, OC]
 ggml_tensor * mtmd_graph_vibevoice_asr::causal_conv(ggml_tensor * x, ggml_tensor * w, ggml_tensor * b, int stride, const std::string & name) const {
     x = with_left_ctx(x, name);
-    ggml_tensor * y = ggml_conv_1d(ctx0, w, x, stride, 0, 1);
+    ggml_tensor * y = build_conv1d(w, x, stride, 0, 1);
     y = ggml_reshape_2d(ctx0, y, y->ne[0], y->ne[1]);
     return ggml_add(ctx0, y, ggml_reshape_2d(ctx0, b, 1, b->ne[0]));
 }

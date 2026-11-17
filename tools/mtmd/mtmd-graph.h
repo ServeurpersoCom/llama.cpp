@@ -173,6 +173,10 @@ struct mtmd_graph {
 
     // append the separators of img.suffix_type after the image tokens
     ggml_tensor * build_suffix(ggml_tensor * cur);
+
+    // ggml_conv_1d as an implicit GEMM: the patches expand in shared memory, never as an im2col matrix
+    // w: [K, IC, OC], F16 for the fast GPU paths. x: [T, IC, N]. returns [T_out, OC, N], like ggml_conv_1d
+    ggml_tensor * build_conv1d(ggml_tensor * w, ggml_tensor * x, int s0, int p0, int d0) const;
 };
 
 static inline std::string get_attn_mask_name(int idx) {

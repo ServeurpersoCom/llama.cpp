@@ -14,7 +14,7 @@ ggml_cgraph * mtmd_graph_soprano::build() {
     cur = ggml_interpolate(ctx0, cur, n_up, n_inp, 1, 1, GGML_SCALE_MODE_BILINEAR | GGML_SCALE_FLAG_ALIGN_CORNERS);
     if (ggml_n_dims(v.input_w) == 3) {
         const int k = v.input_w->ne[0];
-        cur = ggml_conv_1d(ctx0, v.input_w, cur, 1, k / 2, 1);
+        cur = build_conv1d(v.input_w, cur, 1, k / 2, 1);
         cur = ggml_cont(ctx0, ggml_transpose(ctx0, cur));
     } else {
         cur = ggml_cont(ctx0, ggml_transpose(ctx0, cur));

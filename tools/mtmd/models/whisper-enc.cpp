@@ -10,12 +10,12 @@ ggml_cgraph * mtmd_graph_whisper_enc::build() {
     // conv1d block
     {
         // convolution + gelu
-        ggml_tensor * cur = ggml_conv_1d_ph(ctx0, model.conv1d_1_w, inp, 1, 1);
+        ggml_tensor * cur = build_conv1d(model.conv1d_1_w, inp, 1, model.conv1d_1_w->ne[0] / 2, 1);
         cur = ggml_add(ctx0, cur, model.conv1d_1_b);
 
         cur = ggml_gelu_erf(ctx0, cur);
 
-        cur = ggml_conv_1d_ph(ctx0, model.conv1d_2_w, cur, 2, 1);
+        cur = build_conv1d(model.conv1d_2_w, cur, 2, model.conv1d_2_w->ne[0] / 2, 1);
         cur = ggml_add(ctx0, cur, model.conv1d_2_b);
 
         cur = ggml_gelu_erf(ctx0, cur);
