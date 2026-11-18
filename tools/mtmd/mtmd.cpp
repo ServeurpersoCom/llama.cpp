@@ -1575,6 +1575,7 @@ struct mtmd_context {
         if (audio_preproc) {
             audio_preproc->mel_config.n_threads = n_threads;
             audio_preproc->mel_config.sched     = backends->sched.get();
+            audio_preproc->mel_config.sched_epoch = &backends->sched_epoch;
             audio_preproc->initialize();
         }
     }

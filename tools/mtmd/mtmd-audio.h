@@ -79,6 +79,7 @@ struct mtmd_audio_mel_config {
 
     const mtmd_audio_cache * cache = nullptr;
     ggml_backend_sched_t     sched = nullptr;
+    uint64_t *               sched_epoch = nullptr; // bumped on each graph allocated on sched
 };
 
 struct mtmd_audio_preproc_out {
