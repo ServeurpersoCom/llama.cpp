@@ -69,6 +69,13 @@ struct mtmd_graph {
         return false;
     }
 
+    // true when other would build the very same graph, so the subcontext can rerun the graph of other
+    // only the inputs may differ: every shape, op and parameter must be fixed by what is compared here
+    virtual bool same_graph(const mtmd_graph & other) const {
+        GGML_UNUSED(other);
+        return false;
+    }
+
     //
     // utility functions
     //

@@ -14,6 +14,8 @@
 #include <random>
 #include <vector>
 
+struct mtmd_graph;
+
 // !!! Internal header, to be used by mtmd only !!!
 
 // runs the graphs of one mtmd_model on the shared backends and scheduler
@@ -45,6 +47,9 @@ struct mtmd_backends {
 
     // its buffers fit the largest graph reserved by the subcontexts
     ggml_backend_sched_ptr sched;
+
+    // bumped whenever a graph is reserved or allocated on sched, a kept graph is valid only while it is unchanged
+    uint64_t sched_epoch = 0;
 
     // device nullptr means CPU
     mtmd_backends(ggml_backend_dev_t device, int n_threads, int max_nodes,
@@ -182,6 +187,14 @@ struct mtmd_subcontext {
     mtmd_backends & backends;
 
     std::vector<uint8_t> buf_compute_meta;
+
+    // the last graph and its builder, rerun as is when the next builder reports the same graph
+    // the builder context lives in buf_compute_meta_prev, so building the next candidate cannot overwrite it
+    std::vector<uint8_t>        buf_compute_meta_prev;
+    std::shared_ptr<mtmd_graph> prev_builder;
+    ggml_cgraph *               prev_gf    = nullptr;
+    ggml_tensor *               prev_last  = nullptr;
+    uint64_t                    prev_epoch = 0;
 
     int max_nodes = 8192;
     mtmd_flash_attn_type flash_attn_type = MTMD_FLASH_ATTN_TYPE_AUTO;

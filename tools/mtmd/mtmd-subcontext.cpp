@@ -134,6 +134,7 @@ mtmd_subcontext::mtmd_subcontext(const mtmd_model & model, mtmd_backends & backe
     debug_output_embeddings = std::getenv("MTMD_DEBUG_EMBEDDINGS") != nullptr;
 
     buf_compute_meta.resize(max_nodes * ggml_tensor_overhead() + ggml_graph_overhead_custom(max_nodes, false));
+    buf_compute_meta_prev.resize(buf_compute_meta.size());
 
     auto batch = get_dummy_batch();
     if (model.modality != MTMD_MODALITY_GEN_AUDIO) {
@@ -243,6 +244,7 @@ void mtmd_subcontext::warmup(const mtmd_image_f32_batch & batch) {
 mtmd_subcontext::support_info_graph mtmd_subcontext::reserve_compute_meta(const mtmd_image_f32_batch & batch) {
     ggml_cgraph * gf = mtmd_get_graph_builder(this, batch)->build();
     ggml_backend_sched_reserve(backends.sched.get(), gf);
+    backends.sched_epoch++;
 
     const int n_splits = ggml_backend_sched_get_n_splits(backends.sched.get());
     const int n_nodes  = ggml_graph_n_nodes(gf);
@@ -342,6 +344,9 @@ bool mtmd_audio_log_mel(const mtmd_audio_mel_config & config, const float * samp
         ggml_build_forward_expand(gf, cur);
 
         ggml_backend_sched_reset(sched);
+        if (config.sched_epoch) {
+            ++*config.sched_epoch;
+        }
         if (!ggml_backend_sched_alloc_graph(sched, gf)) {
             LOG_ERR("%s: failed to allocate compute graph\n", __func__);
             return false;
@@ -641,18 +646,37 @@ bool mtmd_subcontext::encode(mtmd_subctx_encode_params * params) {
         }
     }
 
-    // build the inference graph
-    ggml_backend_sched_reset(backends.sched.get());
-    ggml_cgraph * gf = mtmd_get_graph_builder(this, imgs, params)->build();
+    std::unique_ptr<mtmd_graph> builder = mtmd_get_graph_builder(this, imgs, params);
 
-    // the last node is the embedding tensor, code2wav has no out_embd
-    // read it before scheduling: backends may reorder the nodes of graphs with several outputs (Metal)
-    ggml_tensor * embeddings = params->out_embd ? ggml_graph_node(gf, -1) : nullptr;
+    // nothing else went through the scheduler since the last graph, and the builder would build it again
+    const bool reuse = prev_builder && prev_epoch == backends.sched_epoch && builder->same_graph(*prev_builder);
 
-    if (!ggml_backend_sched_alloc_graph(backends.sched.get(), gf)) {
-        LOG_ERR("%s: failed to allocate compute graph\n", __func__);
-        return false;
+    ggml_cgraph * gf   = prev_gf;
+    ggml_tensor * last = prev_last;
+    if (!reuse) {
+        // build the inference graph
+        ggml_backend_sched_reset(backends.sched.get());
+        backends.sched_epoch++;
+        gf = builder->build();
+
+        // the last node is the embedding tensor, code2wav has no out_embd
+        // read it before scheduling: backends may reorder the nodes of graphs with several outputs (Metal)
+        last = ggml_graph_node(gf, -1);
+
+        if (!ggml_backend_sched_alloc_graph(backends.sched.get(), gf)) {
+            LOG_ERR("%s: failed to allocate compute graph\n", __func__);
+            prev_builder.reset();
+            return false;
+        }
+
+        // keep it, and give the next builders the other buffer
+        prev_builder = std::move(builder);
+        prev_gf      = gf;
+        prev_last    = last;
+        prev_epoch   = backends.sched_epoch;
+        buf_compute_meta.swap(buf_compute_meta_prev);
     }
+    ggml_tensor * embeddings = params->out_embd ? last : nullptr;
 
     // set inputs
     const auto & hparams = model.hparams;

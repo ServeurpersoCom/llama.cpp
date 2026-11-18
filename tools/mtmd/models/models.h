@@ -431,6 +431,13 @@ struct mtmd_graph_qwen3tts_gen : mtmd_graph {
         : mtmd_graph(ctx, img), gen_process(gen_process), top_k(top_k), top_p(top_p) {}
     ggml_cgraph * build() override;
 
+    // GEN_CODE and GEN_WAV have fixed shapes, every frame reruns the same graph
+    bool same_graph(const mtmd_graph & other) const override {
+        const auto * o = dynamic_cast<const mtmd_graph_qwen3tts_gen *>(&other);
+        return o && (gen_process == MTMD_SUBCTX_GEN_PROCESS_GEN_CODE || gen_process == MTMD_SUBCTX_GEN_PROCESS_GEN_WAV) &&
+               o->gen_process == gen_process && o->top_k == top_k && o->top_p == top_p;
+    }
+
     // MTMD_SUBCTX_GEN_PROCESS_TOKENIZE: reference clip -> codes and their talker input rows
     ggml_cgraph * build_ref_encoder();
     static ggml_tensor * nearest_code(ggml_context * ctx0, ggml_tensor * x, ggml_tensor * codebook);
@@ -604,6 +611,13 @@ struct mtmd_graph_pockettts_gen : mtmd_graph {
         : mtmd_graph(ctx, img), gen_process(gen_process), n_step(n_step), n_frames(n_frames) {}
     ggml_cgraph * build() override;
 
+    // the flow head has fixed shapes, the Mimi decoder depends on the number of latents
+    bool same_graph(const mtmd_graph & other) const override {
+        const auto * o = dynamic_cast<const mtmd_graph_pockettts_gen *>(&other);
+        return o && (gen_process == MTMD_SUBCTX_GEN_PROCESS_GEN_CODE || gen_process == MTMD_SUBCTX_GEN_PROCESS_GEN_WAV) &&
+               o->gen_process == gen_process && o->n_step == n_step && o->n_frames == n_frames;
+    }
+
     mtmd_subctx_gen_process gen_process;
     int n_step;   // lsd_decode steps, fixed at graph-build time
     int n_frames; // GEN_WAV only: number of latents to decode
@@ -704,6 +718,14 @@ struct mtmd_graph_drama3_gen : mtmd_graph {
 struct mtmd_graph_fish_s2_gen : mtmd_graph_drama3_gen {
     using mtmd_graph_drama3_gen::mtmd_graph_drama3_gen;
     ggml_cgraph * build() override;
+
+    // the fast AR has fixed shapes, the codec depends on the number of frames
+    bool same_graph(const mtmd_graph & other) const override {
+        const auto * o = dynamic_cast<const mtmd_graph_fish_s2_gen *>(&other);
+        return o && (gen_process == MTMD_SUBCTX_GEN_PROCESS_GEN_CODE || gen_process == MTMD_SUBCTX_GEN_PROCESS_GEN_WAV) &&
+               o->gen_process == gen_process && o->gen_state == gen_state && o->n_frames == n_frames &&
+               o->top_k == top_k && o->top_p == top_p && o->temp == temp;
+    }
 
     ggml_cgraph * build_fast_ar();
 };
