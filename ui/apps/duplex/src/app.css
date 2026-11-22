@@ -1,0 +1,20 @@
+@import '@ggml-org/llama-brand/css/colors.css';
+@import '../../../lib/ui/src/lib/styles/tokens.css';
+@import '../../../lib/ui/src/lib/styles/fonts.css';
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	background: var(--surface-page);
+	color: var(--fg-default);
+	font-family: 'Llama Sans', system-ui, sans-serif;
+	font-size: 15px;
+	line-height: 1.5;
+}
+
+code {
+	font-family: 'Llama Mono', ui-monospace, monospace;
+}

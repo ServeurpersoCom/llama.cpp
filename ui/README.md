@@ -8,7 +8,8 @@ ui/
 │   ├── ui/     @ggml-org/llama-ui: design tokens, fonts, surfaces and components
 │   └── voice/  @ggml-org/llama-voice: microphone capture, transcription and dictation
 └── apps/
-    └── chat/   Llama Chat, the chat app that llama-server serves
+    ├── chat/   Llama Chat, the chat app that llama-server serves
+    └── duplex/ Llama Duplex, live speech translation with a full duplex model
 ```
 
 - [`lib/ui`](lib/ui/README.md) draws the parts and handles interaction, with no business logic. It is built with
@@ -20,6 +21,9 @@ ui/
 - [`apps/chat`](apps/chat/README.md) talks to llama-server, stores conversations and runs the agentic loop. CMake
   builds it into llama-server (see `scripts/ui-assets.cmake`), and it is published to npm as `@ggml-org/llama-chat`
   (with `llama-chat` as its short name), so `npx llama-chat` runs it against any llama-server.
+- [`apps/duplex`](apps/duplex/README.md) streams the microphone to a full duplex model on llama-server's realtime
+  socket and plays the translation back. It is not embedded or published: build it and serve its `dist` with
+  `llama-server --path`.
 
 Each folder is its own npm package with its own `package-lock.json`: run `npm ci` in the one you work on. Building,
 checking and testing `apps/chat` needs no install in `lib/ui` or `lib/voice`.

@@ -1,0 +1,25 @@
+{
+	"name": "llama-duplex",
+	"version": "0.0.0",
+	"private": true,
+	"description": "Llama Duplex, live speech translation with a full duplex model on llama-server's realtime socket.",
+	"license": "MIT",
+	"type": "module",
+	"scripts": {
+		"build": "vite build",
+		"check": "svelte-check --tsconfig ./tsconfig.json",
+		"dev": "vite"
+	},
+	"devDependencies": {
+		"@ggml-org/llama-brand": "0.1.0",
+		"@sveltejs/vite-plugin-svelte": "7.3.1",
+		"@types/node": "24.19.2",
+		"svelte": "5.57.3",
+		"svelte-check": "4.7.8",
+		"typescript": "6.0.3",
+		"vite": "8.3.6"
+	},
+	"engines": {
+		"node": ">=20"
+	}
+}
