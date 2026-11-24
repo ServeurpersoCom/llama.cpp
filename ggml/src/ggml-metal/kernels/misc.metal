@@ -541,6 +541,449 @@ template [[host_name("kernel_snake_f16")]]  kernel void kernel_snake<half>(const
 template [[host_name("kernel_snake_bf16")]] kernel void kernel_snake<bfloat>(constant ggml_metal_kargs_snake &, device const bfloat *, device const float *, device const float *, device bfloat *, uint, uint, uint);
 #endif
 
+// fused situ activation of the gate and up views, see ggml_metal_fusion_check_situ
+kernel void kernel_situ_f32(
+        constant ggml_metal_kargs_situ & args,
+        device const char  * g,
+        device const char  * u,
+        device const char  * scales,
+        device const char  * ids,
+        device       float * dst,
+        uint tgpig [[threadgroup_position_in_grid]],
+        uint tpitg [[thread_position_in_threadgroup]],
+        uint ntg   [[threads_per_threadgroup]]) {
+    const int idx = tgpig*ntg + tpitg;
+    if (idx >= args.ne0*args.ne1*args.ne2) {
+        return;
+    }
+
+    const int i0 = idx % args.ne0;
+    const int i1 = (idx / args.ne0) % args.ne1;
+    const int i2 = idx / (args.ne0*args.ne1);
+
+    float gv = *((device const float *) (g + i2*args.nbg2 + i1*args.nbg1) + i0);
+    float uv = *((device const float *) (u + i2*args.nbu2 + i1*args.nbu1) + i0);
+
+    if (args.scaled) {
+        const int32_t e = *((device const int32_t *) (ids + i2*args.nbi1 + i1*args.nbi0));
+        const float   s = *((device const float *) (scales + (args.ns2 > 1 ? i2 : 0)*args.nbs2 + e*args.nbs1));
+        gv *= s;
+        uv *= s;
+    }
+
+    const float act = args.g_out*precise::tanh(args.g_in*gv) * (1 / (1 + exp(-gv)));
+    dst[idx] = act * (args.u_out*precise::tanh(args.u_in*uv));
+}
+
+// fused gated mix x - tanh(f)*x + tanh(g)*m, see ggml_metal_fusion_check_tanh_gate
+kernel void kernel_tanh_gate_f32(
+        constant ggml_metal_kargs_tanh_gate & args,
+        device const char  * x,
+        device const char  * m,
+        device const char  * f,
+        device const char  * g,
+        device       float * dst,
+        uint tgpig [[threadgroup_position_in_grid]],
+        uint tpitg [[thread_position_in_threadgroup]],
+        uint ntg   [[threads_per_threadgroup]]) {
+    const int idx = tgpig*ntg + tpitg;
+    if (idx >= args.ne0*args.ne1) {
+        return;
+    }
+
+    const int i0 = idx % args.ne0;
+    const int i1 = idx / args.ne0;
+
+    const float xv = *((device const float *) (x + i1*args.nbx1) + i0);
+    const float mv = *((device const float *) (m + i1*args.nbm1) + i0);
+    const float fv = precise::tanh(*((device const float *) (f + i1*args.nbf1) + i0));
+    const float gv = precise::tanh(*((device const float *) (g + i1*args.nbg1) + i0));
+
+    dst[idx] = (xv - fv*xv) + gv*mv;
+}
+
+// fused (a + b)*scale + bias [+ c], see ggml_metal_fusion_check_add_scale
+kernel void kernel_add_scale_f32(
+        constant ggml_metal_kargs_add_scale & args,
+        device const char  * a,
+        device const char  * b,
+        device const char  * c,
+        device       float * dst,
+        uint tgpig [[threadgroup_position_in_grid]],
+        uint tpitg [[thread_position_in_threadgroup]],
+        uint ntg   [[threads_per_threadgroup]]) {
+    const int idx = tgpig*ntg + tpitg;
+    if (idx >= args.ne0*args.ne1*args.ne2) {
+        return;
+    }
+
+    const int i0 = idx % args.ne0;
+    const int i1 = (idx / args.ne0) % args.ne1;
+    const int i2 = idx / (args.ne0*args.ne1);
+
+    const float av = *((device const float *) (a + i2*args.nba2 + i1*args.nba1) + i0);
+    const float bv = *((device const float *) (b + i2*args.nbb2 + i1*args.nbb1) + i0);
+
+    float r = (av + bv)*args.scale + args.bias;
+    if (args.has_c) {
+        r += *((device const float *) (c + i2*args.nbc2 + i1*args.nbc1) + i0);
+    }
+    dst[idx] = r;
+}
+
+// one thread per (channel, sequence): the short convolution over [past, cur], its state store and the
+// optional (cur + out)*s + t, see ggml_metal_fusion_check_conv_step
+kernel void kernel_conv_step_f32(
+        constant ggml_metal_kargs_conv_step & args,
+        device const char  * past,
+        device const char  * x,
+        device const char  * w,
+        device       char  * state,
+        device       float * dst,
+        device const float * res,
+        device const char  * dyn,
+        uint tgpig [[threadgroup_position_in_grid]],
+        uint tpitg [[thread_position_in_threadgroup]],
+        uint ntg   [[threads_per_threadgroup]]) {
+    const int idx = tgpig*ntg + tpitg;
+    if (idx >= args.ch*args.n_s) {
+        return;
+    }
+
+    const int c = idx % args.ch;
+    const int s = idx / args.ch;
+    const int n = args.n_cols;
+
+    float win[8];
+    float wc[8];
+    for (int k = 0; k < n; ++k) {
+        win[k] = *((device const float *) (past + s*args.nbp2 + c*args.nbp1) + k);
+    }
+    for (int k = 0; k <= n; ++k) {
+        wc[k] = *((device const float *) (w + c*args.nbw1) + k);
+    }
+
+    for (int t = 0; t < args.n_t; ++t) {
+        const float xv = *((device const float *) (x + s*args.nbx2 + t*args.nbx1) + c);
+        win[n] = xv;
+
+        float acc = 0.0f;
+        for (int k = 0; k <= n; ++k) {
+            acc += win[k]*wc[k];
+        }
+
+        const int o = (s*args.n_t + t)*args.ch + c;
+
+        // the input-dependent taps of the head of c, lag l reads x[t + n - l]
+        if (args.n_dyn) {
+            device const float * tp = (device const float *) (dyn + (s*args.n_t + t)*args.nbd1) + (c/args.hd)*args.n_dyn;
+            for (int l = 0; l < args.n_dyn; ++l) {
+                acc += win[n - l]*tp[l];
+            }
+        }
+
+        for (int k = 0; k < n; ++k) {
+            win[k] = win[k + 1];
+        }
+
+        float r = args.add_scale ? (xv + acc)*args.scale + args.bias : acc;
+        if (args.has_res) {
+            r += res[o];
+        }
+        dst[o] = r;
+    }
+
+    for (int k = 0; k < n; ++k) {
+        *((device float *) (state + s*args.nbs1) + c*n + k) = win[k];
+    }
+}
+
+// the relative bias gathered by distance and added to the mask, see ggml_metal_fusion_check_rel_mask
+kernel void kernel_rel_mask_f16(
+        constant ggml_metal_kargs_rel_mask & args,
+        device const char * tab,
+        device const char * sink,
+        device const char * pos,
+        device const char * mask,
+        device       half * dst,
+        uint3 tgpig [[threadgroup_position_in_grid]],
+        uint3 tpitg [[thread_position_in_threadgroup]],
+        uint3 ntg   [[threads_per_threadgroup]]) {
+    const int kv = tgpig.x*ntg.x + tpitg.x;
+    if (kv >= args.n_kv) {
+        return;
+    }
+
+    const int t   = tgpig.y;           // token in [0, n_t)
+    const int h   = tgpig.z;           // head
+    const int n_l = args.n_t/args.n_st;
+    const int tl  = t % n_l;           // token within its stream
+    const int st  = t / n_l;           // stream
+
+    const int32_t r = *((device const int32_t *) (pos + t*args.nbp1) + kv);
+    const float   b = *((device const float *) (tab + t*args.nbt2 + h*args.nbt1) + r)
+                    - *((device const float *) (sink + t*args.nbs2 + h*args.nbs1));
+    const float   m = *((device const float *) (mask + st*args.nbm3 + tl*args.nbm1) + kv);
+
+    dst[((st*args.n_hd + h)*n_l + tl)*args.n_kv + kv] = (half) (m + b);
+}
+
+// one simdgroup per row: y = x*w, y/max(|y|, eps)*scale + bias, see ggml_metal_fusion_check_l2_clip
+kernel void kernel_l2_clip_f32(
+        constant ggml_metal_kargs_l2_clip & args,
+        device const char  * x,
+        device const float * w,
+        device       float * dst,
+        uint   tgpig [[threadgroup_position_in_grid]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort nsg   [[simdgroups_per_threadgroup]]) {
+    const int row = tgpig*nsg + sgitg;
+    if (row >= args.nrows) {
+        return;
+    }
+
+    const int i1 = row % args.ne1;
+    const int i2 = row / args.ne1;
+
+    device const float * xr = (device const float *) (x + i2*args.nbx2 + i1*args.nbx1);
+    device       float * yr = dst + (int64_t) row*args.ne0;
+
+    float s = 0.0f;
+    for (int i = tiisg; i < args.ne0; i += 32) {
+        const float v = args.has_w ? xr[i]*w[i] : xr[i];
+        s += v*v;
+    }
+    s = simd_sum(s);
+
+    const float f = args.scale/max(sqrt(s), args.eps);
+    for (int i = tiisg; i < args.ne0; i += 32) {
+        const float v = args.has_w ? xr[i]*w[i] : xr[i];
+        yr[i] = v*f + args.bias;
+    }
+}
+
+// one threadgroup per (output row, token): W[:, r].concat(a, b), see ggml_metal_fusion_check_cat_mv
+kernel void kernel_cat_mv_f32(
+        constant ggml_metal_kargs_cat_mv & args,
+        device const char  * a,
+        device const char  * b,
+        device const char  * w,
+        device       char  * dst,
+        uint3  tgpig [[threadgroup_position_in_grid]],
+        ushort tpitg [[thread_index_in_threadgroup]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort nsg   [[simdgroups_per_threadgroup]]) {
+    threadgroup float red[32];
+
+    const int r   = tgpig.x;
+    const int t   = tgpig.y;
+    const int nth = nsg*32;
+
+    device const float4 * wr = (device const float4 *) (w + r*args.nbw1);
+    device const float4 * ar = (device const float4 *) (a + t*args.nba1);
+    device const float4 * br = (device const float4 *) (b + t*args.nbb1);
+
+    float s = 0.0f;
+    for (int i = tpitg; i < args.ne_a/4; i += nth) {
+        s += dot(wr[i], ar[i]);
+    }
+    for (int i = tpitg; i < args.ne_b/4; i += nth) {
+        s += dot(wr[args.ne_a/4 + i], br[i]);
+    }
+    s = simd_sum(s);
+    if (tiisg == 0) {
+        red[sgitg] = s;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (sgitg == 0) {
+        s = simd_sum(tiisg < nsg ? red[tiisg] : 0.0f);
+        if (tiisg == 0) {
+            *((device float *) (dst + t*args.nb1) + r) = s;
+        }
+    }
+}
+
+// one simdgroup per output element: x - tanh(Wf.d)*x + tanh(Wg.d)*m, see ggml_metal_fusion_check_gate_mv
+kernel void kernel_gate_mv_f32(
+        constant ggml_metal_kargs_gate_mv & args,
+        device const char  * d,
+        device const char  * wf,
+        device const char  * wg,
+        device const char  * x,
+        device const char  * m,
+        device       float * dst,
+        uint3  tgpig [[threadgroup_position_in_grid]],
+        ushort sgitg [[simdgroup_index_in_threadgroup]],
+        ushort tiisg [[thread_index_in_simdgroup]],
+        ushort nsg   [[simdgroups_per_threadgroup]]) {
+    const int e = tgpig.x*nsg + sgitg;
+    const int t = tgpig.y;
+    if (e >= args.ne0) {
+        return;
+    }
+
+    device const float * dr = (device const float *) (d  + t*args.nbd1);
+    device const float * fr = (device const float *) (wf + e*args.nbwf1);
+    device const float * gr = (device const float *) (wg + e*args.nbwg1);
+
+    float fs = 0.0f;
+    float gs = 0.0f;
+    for (int k = tiisg; k < args.rank; k += 32) {
+        fs += fr[k]*dr[k];
+        gs += gr[k]*dr[k];
+    }
+    fs = simd_sum(fs);
+    gs = simd_sum(gs);
+
+    if (tiisg == 0) {
+        const float xv = *((device const float *) (x + t*args.nbx1) + e);
+        const float mv = *((device const float *) (m + t*args.nbm1) + e);
+
+        dst[t*args.ne0 + e] = (xv - precise::tanh(fs)*xv) + precise::tanh(gs)*mv;
+    }
+}
+
+kernel void kernel_sigmoid_mul_f32(
+        constant ggml_metal_kargs_sigmoid_mul & args,
+        device const char  * g,
+        device const char  * a,
+        device       float * dst,
+        uint tgpig [[threadgroup_position_in_grid]],
+        uint tpitg [[thread_position_in_threadgroup]],
+        uint ntg   [[threads_per_threadgroup]]) {
+    const int idx = tgpig*ntg + tpitg;
+    if (idx >= args.ne0*args.ne1*args.ne2) {
+        return;
+    }
+
+    const int i0 = idx % args.ne0;
+    const int i1 = (idx / args.ne0) % args.ne1;
+    const int i2 = idx / (args.ne0*args.ne1);
+
+    const float gv = *((device const float *) (g + i2*args.nbg2 + i1*args.nbg1) + i0);
+    const float av = *((device const float *) (a + i2*args.nba2 + i1*args.nba1) + i0);
+
+    dst[idx] = av * (1 / (1 + exp(-gv)));
+}
+
+kernel void kernel_scale_id_f32(
+        constant ggml_metal_kargs_scale_id & args,
+        device const float * x,
+        device const char  * tab,
+        device const char  * ids,
+        device       float * dst,
+        uint tgpig [[threadgroup_position_in_grid]],
+        uint tpitg [[thread_position_in_threadgroup]],
+        uint ntg   [[threads_per_threadgroup]]) {
+    const int idx = tgpig*ntg + tpitg;
+    if (idx >= args.ne0*args.ne1*args.ne2) {
+        return;
+    }
+
+    const int i1 = (idx / args.ne0) % args.ne1;
+    const int i2 = idx / (args.ne0*args.ne1);
+
+    const int32_t e = *((device const int32_t *) (ids + i2*args.nbi1 + i1*args.nbi0));
+    const float   s = *((device const float *) (tab + (args.nt2 > 1 ? i2 : 0)*args.nbt2 + e*args.nbt1));
+
+    dst[idx] = x[idx]*s;
+}
+
+// sum over the threadgroup, every thread gets the result
+static inline float depth_mix_sum(float v, threadgroup float * red, ushort sgitg, ushort tiisg, ushort nsg) {
+    v = simd_sum(v);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (tiisg == 0) {
+        red[sgitg] = v;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    return simd_sum(tiisg < nsg ? red[tiisg] : 0.0f);
+}
+
+// one threadgroup per (query, token): softmax(scale*q.x_j) over the states x_j = stack_j and rms_norm(cur),
+// then the weighted sum of the states, see ggml_metal_fusion_check_depth_mix
+kernel void kernel_depth_mix_f32(
+        constant ggml_metal_kargs_depth_mix & args,
+        device const char * stack,
+        device const char * cur,
+        device const char * query,
+        device       char * dst,
+        device const float * w,
+        device       float * dst2,
+        uint3   tgpig [[threadgroup_position_in_grid]],
+        ushort3 tpig3 [[thread_position_in_threadgroup]],
+        ushort  sgitg [[simdgroup_index_in_threadgroup]],
+        ushort  tiisg [[thread_index_in_simdgroup]],
+        ushort3 ntg3  [[threads_per_threadgroup]]) {
+    threadgroup float red[32];
+    threadgroup float scores[64];
+
+    const int iq  = tgpig.x;
+    const int it  = tgpig.y;
+    const ushort tpitg = tpig3.x;
+    const ushort ntg   = ntg3.x;
+    const ushort nsg   = ntg/32;
+    const int ns  = args.ns;
+
+    device const float * c = (device const float *) (cur   + it*args.nbc2);
+    device const float * q = (device const float *) (query + iq*args.nbq1 + it*args.nbq2);
+    device       float * y = (device       float *) (dst   + iq*args.nb1  + it*args.nb2);
+
+    float s = 0.0f;
+    for (int i = tpitg; i < args.ne0; i += ntg) {
+        s += c[i]*c[i];
+    }
+    s = depth_mix_sum(s, red, sgitg, tiisg, nsg);
+    const float rms = 1.0f/sqrt(s/args.ne0 + args.eps);
+
+    for (int j = 0; j <= ns; ++j) {
+        device const float * x = j < ns ? (device const float *) (stack + it*args.nbs2 + j*args.nbs1) : c;
+        float d = 0.0f;
+        for (int i = tpitg; i < args.ne0; i += ntg) {
+            d += x[i]*q[i];
+        }
+        d = depth_mix_sum(d, red, sgitg, tiisg, nsg);
+        if (tpitg == 0) {
+            scores[j] = (j < ns ? d : d*rms)*args.scale;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float mx = -INFINITY;
+    for (int j = 0; j <= ns; ++j) {
+        mx = max(mx, scores[j]);
+    }
+    float sum = 0.0f;
+    for (int j = 0; j <= ns; ++j) {
+        sum += exp(scores[j] - mx);
+    }
+    const float inv = 1.0f/sum;
+
+    float s2 = 0.0f;
+    for (int i = tpitg; i < args.ne0; i += ntg) {
+        float acc = 0.0f;
+        for (int j = 0; j < ns; ++j) {
+            acc += exp(scores[j] - mx)*inv * ((device const float *) (stack + it*args.nbs2 + j*args.nbs1))[i];
+        }
+        acc += exp(scores[ns] - mx)*inv * (c[i]*rms);
+        y[i] = acc;
+        s2 += acc*acc;
+    }
+
+    // the rms norm of the mixed state [times a weight]: each thread reads back what it wrote
+    if (args.n_post > 0) {
+        s2 = depth_mix_sum(s2, red, sgitg, tiisg, nsg);
+        const float rms2 = 1.0f/sqrt(s2/args.ne0 + args.eps_post);
+        device float * z = dst2 + iq*args.ne0;
+        for (int i = tpitg; i < args.ne0; i += ntg) {
+            z[i] = args.n_post == 2 ? (y[i]*rms2)*w[i] : y[i]*rms2;
+        }
+    }
+}
+
 template<int N, typename src_t>
 kernel void kernel_fwht(
         constant ggml_metal_kargs_fwht & args,

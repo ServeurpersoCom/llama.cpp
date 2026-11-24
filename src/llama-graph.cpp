@@ -1946,7 +1946,9 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
         const int64_t n_expert = w_s->ne[0];
         const int64_t n_tokens = cur->ne[2];
         ggml_tensor * s = ggml_reshape_3d(ctx0, w_s, 1, n_expert, 1);
-        s = ggml_repeat_4d(ctx0, s, 1, n_expert, n_tokens, 1);
+        if (n_tokens > 1) {
+            s = ggml_repeat_4d(ctx0, s, 1, n_expert, n_tokens, 1);
+        }
         s = ggml_get_rows(ctx0, s, ids);
         res = ggml_mul(ctx0, res, s);
     }
@@ -4469,11 +4471,11 @@ ggml_tensor * llm_graph_context::build_attn(
     GGML_ASSERT(attn_mask.rows == nullptr);
 
     // a mask per head, in the dense layout of the input mask, which flash attention takes in F16
-    ggml_tensor * kq_mask = attn_mask.raw;
-    if (kq_mask->type != GGML_TYPE_F32) {
-        kq_mask = ggml_cast(ctx0, kq_mask, GGML_TYPE_F32);
+    ggml_tensor *& kq_mask_f32 = is_swa ? inp->kq_mask_f32_swa : inp->kq_mask_f32;
+    if (!kq_mask_f32) {
+        kq_mask_f32 = attn_mask.raw->type == GGML_TYPE_F32 ? attn_mask.raw : ggml_cast(ctx0, attn_mask.raw, GGML_TYPE_F32);
     }
-    kq_mask = ggml_add(ctx0, kq_b, kq_mask);
+    ggml_tensor * kq_mask = ggml_add(ctx0, kq_b, kq_mask_f32);
     if (cparams.flash_attn) {
         kq_mask = ggml_cast(ctx0, kq_mask, GGML_TYPE_F16);
     }

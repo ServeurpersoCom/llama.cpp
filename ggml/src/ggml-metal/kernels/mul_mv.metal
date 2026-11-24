@@ -3186,58 +3186,41 @@ void kernel_mul_mv_nvfp4_f32_impl(
     const int nb   = args.ne00/QK_NVFP4;
     const int ns01 = args.nb01/args.nb00; // this can be larger than nb for permuted src0 tensors
 
-    const short ix = tiisg/2;  // 0...15
-    const short it = tiisg%2;  // 0 or 1
+    // a thread handles one 16-weight sub-block, so 8 blocks per loop iteration: the short rows of the
+    // expert projections (18 or 36 blocks) keep more threads busy than with one half-block per thread
+    const short ix = tiisg/4;  // 0...7
+    const short is = tiisg%4;  // sub-block
 
-    float4 yl[8];
     float sumf[NR0]={0.f};
 
-    device const float * yb = y + ix*QK_NVFP4 + it*32;
+    device const float * yb = y + ix*QK_NVFP4 + is*QK_NVFP4_SUB;
 
     // note: just the check `ib < nb` is enough, but adding the redundant `&& ib < ns01` check makes the kernel a bit faster
     //       no idea why that is - needs some deeper investigation [TAG_MUL_MV_WEIRD]
-    for (int ib = ix; ib < nb && ib < ns01; ib += 16) {
+    for (int ib = ix; ib < nb && ib < ns01; ib += 8) {
         device const float4 * y4 = (device const float4 *) yb;
 
-        yl[0] = y4[0];
-        yl[1] = y4[2];
-        yl[2] = y4[1];
-        yl[3] = y4[3];
-        yl[4] = y4[4];
-        yl[5] = y4[6];
-        yl[6] = y4[5];
-        yl[7] = y4[7];
+        const float4 yl0 = y4[0];
+        const float4 yl1 = y4[2];
+        const float4 yl2 = y4[1];
+        const float4 yl3 = y4[3];
 
         FOR_UNROLL (short row = 0; row < NR0; row++) {
             device const block_nvfp4 & xb = x[row*ns01 + ib];
 
-            // a block is 36 bytes, so its 16 quant bytes are 4-byte aligned and read as four words
-            device const uint32_t * pw = (device const uint32_t *)(xb.qs + 16*it);
+            // the 8 quant bytes of the sub-block, 4-byte aligned
+            device const uint32_t * pw = (device const uint32_t *)(xb.qs + 8*is);
 
             const uint32_t w0 = pw[0];
             const uint32_t w1 = pw[1];
-            const uint32_t w2 = pw[2];
-            const uint32_t w3 = pw[3];
 
-            float4 acc1 = yl[0]*e2m1_lo4(w0);
-            float4 acc2 = yl[1]*e2m1_hi4(w0);
-            float4 acc3 = yl[2]*e2m1_lo4(w1);
-            float4 acc4 = yl[3]*e2m1_hi4(w1);
-
-            float4 acc5 = yl[4]*e2m1_lo4(w2);
-            float4 acc6 = yl[5]*e2m1_hi4(w2);
-            float4 acc7 = yl[6]*e2m1_lo4(w3);
-            float4 acc8 = yl[7]*e2m1_hi4(w3);
-
-            acc1 = (acc1 + acc3) + (acc2 + acc4);
-            acc5 = (acc5 + acc7) + (acc6 + acc8);
+            const float4 acc = (yl0*e2m1_lo4(w0) + yl2*e2m1_lo4(w1)) + (yl1*e2m1_hi4(w0) + yl3*e2m1_hi4(w1));
 
             // 16384 undoes the 2^-14 of the decode
-            sumf[row] += ue4m3_to_fp32(xb.d[2*it + 0])*16384.0f*((acc1[0] + acc1[1]) + (acc1[2] + acc1[3])) +
-                         ue4m3_to_fp32(xb.d[2*it + 1])*16384.0f*((acc5[0] + acc5[1]) + (acc5[2] + acc5[3]));
+            sumf[row] += ue4m3_to_fp32(xb.d[is])*16384.0f*((acc[0] + acc[1]) + (acc[2] + acc[3]));
         }
 
-        yb += 16 * QK_NVFP4;
+        yb += 8 * QK_NVFP4;
     }
 
     device float * dst_f32 = (device float *) dst + (uint64_t)im*args.ne0*args.ne1 + (uint64_t)r1*args.ne0;

@@ -200,7 +200,18 @@ static bool ggml_mem_ranges_add(ggml_mem_ranges_t mrs, ggml_mem_range mr) {
 }
 
 static ggml_mem_range ggml_mem_range_from_tensor(const ggml_tensor * tensor, ggml_mem_range_type pt) {
-    // always use the base tensor
+    // an allocated view covers its own bytes only: disjoint views of one tensor (e.g. the slots of a recurrent
+    // state) do not conflict
+    if (tensor->view_src && tensor->buffer && tensor->data && !ggml_is_empty(tensor)) {
+        return {
+            /*.pb =*/ (uint64_t) tensor->buffer,
+            /*.p0 =*/ (uint64_t) tensor->data,
+            /*.p1 =*/ (uint64_t) tensor->data + ggml_nbytes(tensor),
+            /*.pt =*/ pt,
+        };
+    }
+
+    // otherwise use the base tensor
     tensor = tensor->view_src ? tensor->view_src : tensor;
 
     GGML_ASSERT(!tensor->view_src);
@@ -241,7 +252,7 @@ static ggml_mem_range ggml_mem_range_from_tensor_dst(const ggml_tensor * tensor)
     return ggml_mem_range_from_tensor(tensor, MEM_RANGE_TYPE_DST);
 }
 
-static bool ggml_mem_ranges_add_src(ggml_mem_ranges_t mrs, const ggml_tensor * tensor) {
+bool ggml_mem_ranges_add_src(ggml_mem_ranges_t mrs, const ggml_tensor * tensor) {
     GGML_ASSERT(tensor);
 
     ggml_mem_range mr = ggml_mem_range_from_tensor_src(tensor);
@@ -253,7 +264,7 @@ static bool ggml_mem_ranges_add_src(ggml_mem_ranges_t mrs, const ggml_tensor * t
     return ggml_mem_ranges_add(mrs, mr);
 }
 
-static bool ggml_mem_ranges_add_dst(ggml_mem_ranges_t mrs, const ggml_tensor * tensor) {
+bool ggml_mem_ranges_add_dst(ggml_mem_ranges_t mrs, const ggml_tensor * tensor) {
     GGML_ASSERT(tensor);
 
     ggml_mem_range mr = ggml_mem_range_from_tensor_dst(tensor);
@@ -289,7 +300,8 @@ static bool ggml_mem_ranges_check(ggml_mem_ranges_t mrs, ggml_mem_range mr) {
             continue;
         }
 
-        if (mr.p0 < cmp.p1 && mr.p1 >= cmp.p0) {
+        // half-open ranges: adjacent ones do not intersect
+        if (mr.p0 < cmp.p1 && mr.p1 > cmp.p0) {
             if (mrs->debug > 2) {
                 GGML_LOG_DEBUG("%s: the %s range buf=%lld, [%lld, %lld) overlaps with a previous %s range buf=%lld, [%lld, %lld)\n",
                         __func__,
@@ -306,7 +318,7 @@ static bool ggml_mem_ranges_check(ggml_mem_ranges_t mrs, ggml_mem_range mr) {
     return true;
 }
 
-static bool ggml_mem_ranges_check_src(ggml_mem_ranges_t mrs, const ggml_tensor * tensor) {
+bool ggml_mem_ranges_check_src(ggml_mem_ranges_t mrs, const ggml_tensor * tensor) {
     GGML_ASSERT(tensor);
 
     ggml_mem_range mr = ggml_mem_range_from_tensor_src(tensor);
@@ -316,7 +328,7 @@ static bool ggml_mem_ranges_check_src(ggml_mem_ranges_t mrs, const ggml_tensor *
     return res;
 }
 
-static bool ggml_mem_ranges_check_dst(ggml_mem_ranges_t mrs, const ggml_tensor * tensor) {
+bool ggml_mem_ranges_check_dst(ggml_mem_ranges_t mrs, const ggml_tensor * tensor) {
     GGML_ASSERT(tensor);
 
     ggml_mem_range mr = ggml_mem_range_from_tensor_dst(tensor);
@@ -375,6 +387,12 @@ struct node_info {
 static std::vector<int> ggml_metal_graph_optimize_reorder(const std::vector<node_info> & nodes) {
     // helper to add node src and dst ranges
     const auto & h_add = [](ggml_mem_ranges_t mrs, const node_info & node) {
+        // a view neither reads nor writes: its range would be the one of the viewed tensor, as a destination,
+        // which would serialize the later readers of that tensor
+        if (node.is_empty() && node.fused.empty()) {
+            return true;
+        }
+
         // only external sources matter: sources produced by the fused group are internal
         for (int i = 0; i < GGML_MAX_SRC; i++) {
             const ggml_tensor * src = node.node->src[i];
@@ -473,6 +491,9 @@ static std::vector<int> ggml_metal_graph_optimize_reorder(const std::vector<node
             case GGML_OP_CPY:
             case GGML_OP_CONT:
             case GGML_OP_REPEAT:
+            case GGML_OP_CONCAT:
+            case GGML_OP_PAD:
+            case GGML_OP_SOFT_MAX:
                 return true;
             default:
                 return ggml_op_is_empty(op);

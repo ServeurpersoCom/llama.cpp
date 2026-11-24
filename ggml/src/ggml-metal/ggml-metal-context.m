@@ -20,6 +20,9 @@
 // max number of MTLCommandBuffer used to submit a graph for processing
 #define GGML_METAL_MAX_COMMAND_BUFFERS 8
 
+// the fewest extra command buffers: short ones keep the GPU fed while the rest of the graph is encoded
+#define GGML_METAL_N_CB_STREAM 8
+
 struct ggml_metal_command_buffer {
     id<MTLCommandBuffer> obj;
 };
@@ -52,7 +55,8 @@ struct ggml_metal {
     id<MTLCaptureScope> capture_scope;
 
     // command buffer state
-    int n_cb;           // number of extra threads used to submit the command buffers
+    int n_cb;           // number of extra command buffers
+    int n_par;          // number of extra threads used to submit them
 
     // first node of each extra command buffer, then the end of the graph
     int cb_start[GGML_METAL_MAX_COMMAND_BUFFERS + 1];
@@ -155,7 +159,8 @@ ggml_metal_t ggml_metal_init(ggml_metal_device_t dev) {
         res->finfo = ggml_metal_device_get_fusion_info(dev);
         if (ggml_metal_fusion_info_stats(res->finfo)) {
             ggml_metal_fusion_info_labels_init(res->finfo);
-            res->n_cb = 0;
+            res->n_cb  = 0;
+            res->n_par = 0;
         }
 
         GGML_LOG_INFO("%s: use fusion         = %s\n", __func__, ggml_metal_fusion_info_enabled(res->finfo) ? "true" : "false");
@@ -482,10 +487,13 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
     }
 
     // number of nodes encoded by the main thread (empirically determined)
-    const int n_main = MAX(64, 0.1*gf->n_nodes);
+    // number of command buffers in addition to the main one, and of threads that encode them
+    const int n_cb  = ctx->n_cb;
+    const int n_par = ctx->n_par;
 
-    // number of threads in addition to the main thread
-    const int n_cb = ctx->n_cb;
+    // when a thread encodes several command buffers in order, each one is committed as soon as it is encoded and the
+    // GPU starts early on a short first one; otherwise the main thread covers the time the threads need
+    const int n_main = n_par < n_cb ? MAX(64, gf->n_nodes/25) : MAX(64, 0.1*gf->n_nodes);
 
     // keep the memory wired
     ggml_metal_device_rsets_keep_alive(ctx->dev);
@@ -503,18 +511,14 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
         // the main thread encodes [0, cb_start[0]) and the extra command buffer i encodes [cb_start[i], cb_start[i + 1])
         // a fusion cannot span two command buffers, so each boundary moves to the end of the fusable group it falls
         // into and the encoders fuse the same nodes as with a single command buffer
+        // only the boundary of the main command buffer is needed before its encoding: the others are found while the
+        // GPU runs it
+        int i_split = 0;
         {
-            const int n_rest   = gf->n_nodes - MIN(n_main, gf->n_nodes);
-            const int n_per_cb = n_cb > 0 ? (n_rest + n_cb - 1) / n_cb : 0;
-
-            int i = 0;
-            for (int cb_idx = 0; cb_idx < n_cb; ++cb_idx) {
-                const int target = MIN(n_main + cb_idx*n_per_cb, gf->n_nodes);
-                while (i < target) {
-                    i += ggml_metal_fusion_max(gf, i);
-                }
-                ctx->cb_start[cb_idx] = MIN(i, gf->n_nodes);
+            while (i_split < MIN(n_main, gf->n_nodes)) {
+                i_split += ggml_metal_fusion_max(gf, i_split);
             }
+            ctx->cb_start[0]    = n_cb > 0 ? MIN(i_split, gf->n_nodes) : gf->n_nodes;
             ctx->cb_start[n_cb] = gf->n_nodes;
         }
 
@@ -582,6 +586,20 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
         // remember the command buffer for the next iteration
         ctx->cmd_buf_last = ctx->cmd_bufs[n_cb].obj;
 
+        if (n_cb > 0) {
+            const int n_rest   = gf->n_nodes - ctx->cb_start[0];
+            const int n_per_cb = (n_rest + n_cb - 1) / n_cb;
+
+            int i = ctx->cb_start[0];
+            for (int cb_idx = 1; cb_idx < n_cb; ++cb_idx) {
+                const int target = MIN(ctx->cb_start[0] + cb_idx*n_per_cb, gf->n_nodes);
+                while (i < target) {
+                    i += ggml_metal_fusion_max(gf, i);
+                }
+                ctx->cb_start[cb_idx] = MIN(i, gf->n_nodes);
+            }
+        }
+
         // prepare the rest of the command buffers asynchronously (optional)
         // cmd_buf[0.. n_cb)
         for (int cb_idx = 0; cb_idx < n_cb; ++cb_idx) {
@@ -604,7 +622,18 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
             }
         }
 
-        dispatch_apply(n_cb, ctx->d_queue, ctx->encode_async);
+        if (n_par == n_cb) {
+            dispatch_apply(n_cb, ctx->d_queue, ctx->encode_async);
+        } else if (n_par > 0) {
+            // each thread encodes a run of consecutive command buffers, in order
+            void (^enc)(size_t) = ctx->encode_async;
+            dispatch_apply(n_par, ctx->d_queue, ^(size_t t) {
+                const int per = (n_cb + n_par - 1)/n_par;
+                for (int cb_idx = t*per; cb_idx < MIN((int) (t + 1)*per, n_cb); ++cb_idx) {
+                    enc(cb_idx);
+                }
+            });
+        }
 
         // for debugging: block until graph is computed
         //[ctx->cmd_buf_last waitUntilCompleted];
@@ -676,6 +705,7 @@ enum ggml_status ggml_metal_graph_compute(ggml_metal_t ctx, struct ggml_cgraph *
                 return res;
             }
         }
+
     }
 
     return GGML_STATUS_SUCCESS;
@@ -734,10 +764,15 @@ void ggml_metal_set_n_cb(ggml_metal_t ctx, int n_cb) {
         n_cb = 0;
     }
 
-    if (ctx->n_cb != n_cb) {
-        ctx->n_cb = MIN(n_cb, GGML_METAL_MAX_COMMAND_BUFFERS);
+    // n_cb threads encode at least GGML_METAL_N_CB_STREAM command buffers, the ones of a thread in order
+    const int n_par = MIN(MAX(n_cb, 0), GGML_METAL_MAX_COMMAND_BUFFERS);
+    const int n_buf = n_par > 0 ? MIN(MAX(n_par, GGML_METAL_N_CB_STREAM), GGML_METAL_MAX_COMMAND_BUFFERS) : 0;
 
-        if (ctx->n_cb > 2) {
+    if (ctx->n_par != n_par || ctx->n_cb != n_buf) {
+        ctx->n_par = n_par;
+        ctx->n_cb  = n_buf;
+
+        if (n_par > 2) {
             GGML_LOG_WARN("%s: n_cb = %d, using n_cb > 2 is not recommended and can degrade the performance in some cases\n", __func__, n_cb);
         }
     }

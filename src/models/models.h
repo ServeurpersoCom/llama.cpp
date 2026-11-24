@@ -2545,6 +2545,9 @@ struct llama_model_inkling2 : public llama_model_base {
     struct graph : public llm_graph_context {
         graph(const llm_graph_params & params);
         ggml_tensor * mix(const std::vector<ggml_tensor *> & blocks, ggml_tensor * cur, ggml_tensor * query);
+        // the normalized blocks stacked newest first [n_embd, n_blocks, n_tokens], built once per block list
+        ggml_tensor * stack(const std::vector<ggml_tensor *> & blocks);
+        std::map<std::vector<ggml_tensor *>, ggml_tensor *> stacks;
         ggml_tensor * clip(ggml_tensor * cur, ggml_tensor * scale, float threshold);
         ggml_tensor * convolve(
                 ggml_tensor * cur,
@@ -2554,7 +2557,8 @@ struct llama_model_inkling2 : public llama_model_base {
                 ggml_tensor * history,
                 llm_graph_input_rs * inp,
                 int64_t offset);
-        ggml_tensor * control(ggml_tensor * cur, ggml_tensor * message, const loop_layer & loop, int ctrl);
+        ggml_tensor * control(ggml_tensor * cur, ggml_tensor * cur_norm, ggml_tensor * message, ggml_tensor * message_norm,
+                const loop_layer & loop, int ctrl);
 
     protected:
         // the helpers alone, a derived graph builds its own body
@@ -2574,6 +2578,7 @@ struct llama_model_inkling2 : public llama_model_base {
 
         ggml_tensor * inp_out_ids = nullptr;
         ggml_tensor * tau         = nullptr; // log-scaled positions
+        ggml_tensor * sinks_zero  = nullptr; // the zero sinks shared by the layers
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;

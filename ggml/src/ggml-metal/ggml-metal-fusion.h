@@ -20,7 +20,7 @@ struct ggml_metal_device_props;
 
 // the maximum number of nodes that can be fused in a single kernel
 // (also the maximum length of a packed fusion group during graph optimization)
-#define GGML_METAL_FUSION_MAX 16
+#define GGML_METAL_FUSION_MAX 20
 
 typedef enum ggml_metal_fusion_mode {
     // structural checks for the graph optimizer, which runs before the graph tensors are allocated (weights
@@ -43,6 +43,17 @@ typedef enum ggml_metal_fusion_id {
     GGML_METAL_FUSION_MOE_REDUCE,   // MUL + expert VIEWs + ADD chain (MoE output reduction)
     GGML_METAL_FUSION_SSM_CONV_SILU, // SSM_CONV + UNARY (silu)
     GGML_METAL_FUSION_MUL_MAT_ADD,  // MUL_MAT + ADD (residual added in the few-row MMA store)
+    GGML_METAL_FUSION_SITU,         // [GET_ROWS + MUL] + SCALE + TANH + SCALE + SIGMOID + MUL + SCALE + TANH + SCALE + MUL
+    GGML_METAL_FUSION_TANH_GATE,    // TANH + MUL + SUB + TANH + MUL + ADD: x - tanh(f)*x + tanh(g)*m
+    GGML_METAL_FUSION_DEPTH_MIX,    // RMS_NORM + CONCAT + CONT + [REPEAT] + MUL_MAT + SOFT_MAX + MUL_MAT: attention over stacked states
+    GGML_METAL_FUSION_ADD_SCALE,    // ADD + SCALE [+ ADD]: (a + b)*s + t [+ c]
+    GGML_METAL_FUSION_CONV_STEP,    // CONCAT + CPY + SSM_CONV [+ ADD + SCALE]: short convolution with its state store
+    GGML_METAL_FUSION_REL_MASK,     // SUB + CONT + GET_ROWS + CONT + ADD + CPY: gathered relative bias added to the mask
+    GGML_METAL_FUSION_L2_CLIP,      // [MUL] + L2_NORM + SCALE: rows scaled to a bounded L2 norm
+    GGML_METAL_FUSION_CAT_MV,       // CONCAT + MUL_MAT: F32 matrix-vector product of two concatenated inputs
+    GGML_METAL_FUSION_GATE_MV,      // MUL_MAT + MUL_MAT + tanh gate: x - tanh(Wf.d)*x + tanh(Wg.d)*m
+    GGML_METAL_FUSION_SIGMOID_MUL,  // SIGMOID + MUL: a*sigmoid(g)
+    GGML_METAL_FUSION_SCALE_ID,     // GET_ROWS + MUL: x scaled by a per-expert factor gathered by the expert ids
 } ggml_metal_fusion_id;
 
 struct ggml_metal_fusion; // defined in ggml-metal-fusion.cpp
@@ -93,8 +104,8 @@ const ggml_metal_fusion * ggml_metal_fusion_next(
         ggml_metal_fusion_mode mode,
         int * n_out);
 
-// optimize phase: maximum number of nodes starting at idx (a raw sequential graph index) that
-// could be fused on a device with props, chaining patterns back-to-back. returns at least 1.
+// optimize phase: number of nodes starting at idx (a raw sequential graph index) that the longest
+// pattern there fuses, views included. returns at least 1.
 int ggml_metal_fusion_max(const struct ggml_cgraph * gf, int idx);
 
 #ifdef __cplusplus

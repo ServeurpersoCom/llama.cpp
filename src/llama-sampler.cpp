@@ -1139,6 +1139,9 @@ struct llama_sampler_dist : public llama_sampler_backend {
     // inputs for the current sampling graph
     std::vector<ggml_tensor *> inp_uniforms;
 
+    // per-chunk sums of the probabilities, scratch of the CPU sampling
+    std::vector<float> chunk_sums;
+
     void copy_state(const llama_sampler_dist & src) {
         // note: inp_uniforms and backend_transactional belong to the current sampling graph
         seed_cur                  = src.seed_cur;
@@ -1152,6 +1155,33 @@ struct llama_sampler_dist : public llama_sampler_backend {
 static const char * llama_sampler_dist_name(const struct llama_sampler * smpl) {
     auto * sctx = (llama_sampler_dist *) smpl->ctx;
     return sctx->get_name();
+}
+
+// exp(x) for x <= 0 within ~2 ulp of expf, as straight-line code the compiler vectorizes
+// below -87 the result is 0: next to the largest term, which is 1, expf would give less than 2e-38, and a masked
+// logit (-INFINITY) keeps a zero probability
+static inline float llama_sampler_expf_nonpos(float x) {
+    const bool zero = !(x >= -87.0f);
+    x = zero ? -87.0f : x;
+
+    // x = n*ln(2) + r, |r| <= ln(2)/2, with n rounded by the float magic number
+    const float z = x*1.44269504088896341f;
+    const float n = (z + 12582912.0f) - 12582912.0f;
+    const float r = (x - n*0.693145751953125f) - n*1.428606765330187e-06f;
+
+    float p = 1.0f/720.0f;
+    p = p*r + 1.0f/120.0f;
+    p = p*r + 1.0f/24.0f;
+    p = p*r + 1.0f/6.0f;
+    p = p*r + 0.5f;
+    p = p*r + 1.0f;
+    p = p*r + 1.0f;
+
+    const int32_t e = ((int32_t) n + 127) << 23;
+    float scale;
+    memcpy(&scale, &e, sizeof(scale));
+
+    return zero ? 0.0f : p*scale;
 }
 
 static void llama_sampler_dist_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
@@ -1177,47 +1207,89 @@ static void llama_sampler_dist_apply(struct llama_sampler * smpl, llama_token_da
     // max logit for numerical stability
     float max_l = cur_p->data[0].logit;
     if (!cur_p->sorted) {
-        for (size_t i = 1; i < cur_p->size; ++i) {
-            max_l = std::max(max_l, cur_p->data[i].logit);
+        // 8 partial maxima, so that the reduction vectorizes
+        float part[8];
+        for (int j = 0; j < 8; ++j) {
+            part[j] = max_l;
+        }
+        size_t i = 0;
+        for (; i + 8 <= cur_p->size; i += 8) {
+            for (int j = 0; j < 8; ++j) {
+                part[j] = std::max(part[j], cur_p->data[i + j].logit);
+            }
+        }
+        for (; i < cur_p->size; ++i) {
+            part[0] = std::max(part[0], cur_p->data[i].logit);
+        }
+        for (int j = 0; j < 8; ++j) {
+            max_l = std::max(max_l, part[j]);
         }
     }
 
-    // apply softmax to obtain the probabilities
-    double sum_cum = 0.0f;
-    for (size_t i = 0; i < cur_p->size; ++i) {
-        float p = expf(cur_p->data[i].logit - max_l);
-        cur_p->data[i].p = p;
-        sum_cum += p;
+    // apply softmax to obtain the probabilities, in chunks whose sums locate the sampled token
+    // the exponential is a polynomial the compiler vectorizes, which matters for full vocabularies (~200k)
+    constexpr size_t CHUNK = 256;
+
+    const size_t n_chunks = (cur_p->size + CHUNK - 1)/CHUNK;
+    ctx->chunk_sums.resize(n_chunks);
+
+    double sum_cum = 0.0;
+    for (size_t c = 0; c < n_chunks; ++c) {
+        const size_t i0 = c*CHUNK;
+        const size_t i1 = std::min(cur_p->size, i0 + CHUNK);
+
+        for (size_t i = i0; i < i1; ++i) {
+            cur_p->data[i].p = llama_sampler_expf_nonpos(cur_p->data[i].logit - max_l);
+        }
+
+        // 8 partial sums, so that the reduction vectorizes too
+        float part[8] = {};
+        size_t i = i0;
+        for (; i + 8 <= i1; i += 8) {
+            for (int j = 0; j < 8; ++j) {
+                part[j] += cur_p->data[i + j].p;
+            }
+        }
+        for (; i < i1; ++i) {
+            part[0] += cur_p->data[i].p;
+        }
+        const float sum = ((part[0] + part[1]) + (part[2] + part[3])) + ((part[4] + part[5]) + (part[6] + part[7]));
+
+        ctx->chunk_sums[c] = sum;
+        sum_cum += sum;
     }
 
 #if 1
-    // sample from the obtained probabilities and normalize the probs in a single pass
-    // this is ~3x faster on Mac with full gpt-oss vocab than the version below
-    //
+    // sample from the obtained probabilities: find the chunk, then the token in the chunk
     const double rnd = dist(ctx->rng);
 
-          double sum_run = 0.0f;
     const double sum_tgt = sum_cum*rnd;
 
-    bool found = false;
-    for (size_t i = 0; i < cur_p->size; ++i) {
-        if (!found) {
-            // accumulate probs until we reach the target sum
-            sum_run += cur_p->data[i].p;
-            if (sum_run >= sum_tgt) {
-                cur_p->selected = i;
-                found = true;
-            }
-        }
-
-        // normalize probs
-        cur_p->data[i].p /= sum_cum;
+    double sum_run = 0.0;
+    size_t c = 0;
+    while (c + 1 < n_chunks && sum_run + ctx->chunk_sums[c] < sum_tgt) {
+        sum_run += ctx->chunk_sums[c++];
     }
 
-    // fallback to the last token (don't think this can happen)
-    assert(found);
+    bool found = false;
+    for (size_t i = c*CHUNK; i < std::min(cur_p->size, (c + 1)*CHUNK); ++i) {
+        sum_run += cur_p->data[i].p;
+        if (sum_run >= sum_tgt) {
+            cur_p->selected = i;
+            found = true;
+            break;
+        }
+    }
+
+    // fallback to the last token of the chunk (rounding only)
     if (!found) {
-        cur_p->selected = cur_p->size - 1;
+        cur_p->selected = std::min(cur_p->size, (c + 1)*CHUNK) - 1;
+    }
+
+    // normalize probs
+    const float inv = (float) (1.0/sum_cum);
+    for (size_t i = 0; i < cur_p->size; ++i) {
+        cur_p->data[i].p *= inv;
     }
 #else
     // for clarity, this is the same as above but does one pass for normalization and one extra pass for sampling
@@ -1417,6 +1489,7 @@ struct llama_sampler * llama_sampler_init_dist(uint32_t seed) {
             /* .n_backend_draws_generated = */ 0,
             /* .n_backend_draws_committed = */ 0,
             /* .inp_uniforms              = */ {},
+            /* .chunk_sums                = */ {},
         }
     );
 }

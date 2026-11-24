@@ -44,6 +44,12 @@ bool ggml_mem_ranges_add(ggml_mem_ranges_t mrs, const struct ggml_tensor * tenso
 // - new dst range overlaps with any existing range (src or dst)
 bool ggml_mem_ranges_check(ggml_mem_ranges_t mrs, const struct ggml_tensor * tensor);
 
+// the read or the write of one tensor only
+bool ggml_mem_ranges_add_src  (ggml_mem_ranges_t mrs, const struct ggml_tensor * tensor);
+bool ggml_mem_ranges_add_dst  (ggml_mem_ranges_t mrs, const struct ggml_tensor * tensor);
+bool ggml_mem_ranges_check_src(ggml_mem_ranges_t mrs, const struct ggml_tensor * tensor);
+bool ggml_mem_ranges_check_dst(ggml_mem_ranges_t mrs, const struct ggml_tensor * tensor);
+
 // reorder the nodes in the graph to improve concurrency, while respecting the fusions of a device with props
 //
 // note: this implementation is generic and not specific to metal

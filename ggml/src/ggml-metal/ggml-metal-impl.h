@@ -716,6 +716,154 @@ typedef struct {
 } ggml_metal_kargs_snake;
 
 typedef struct {
+    int32_t  ne0;
+    int32_t  ne1;
+    int32_t  ne2;
+    uint64_t nbg1;
+    uint64_t nbg2;
+    uint64_t nbu1;
+    uint64_t nbu2;
+    int32_t  scaled;
+    int32_t  ns2;
+    uint64_t nbs1;
+    uint64_t nbs2;
+    uint64_t nbi0;
+    uint64_t nbi1;
+    float    g_in;
+    float    g_out;
+    float    u_in;
+    float    u_out;
+} ggml_metal_kargs_situ;
+
+typedef struct {
+    int32_t  ne0;
+    int32_t  ne1;
+    uint64_t nbx1;
+    uint64_t nbm1;
+    uint64_t nbf1;
+    uint64_t nbg1;
+} ggml_metal_kargs_tanh_gate;
+
+typedef struct {
+    int32_t  ne0;
+    int32_t  ns;
+    uint64_t nbs1;
+    uint64_t nbs2;
+    uint64_t nbc2;
+    uint64_t nbq1;
+    uint64_t nbq2;
+    uint64_t nb1;
+    uint64_t nb2;
+    float    eps;
+    float    scale;
+    int32_t  n_post;
+    float    eps_post;
+} ggml_metal_kargs_depth_mix;
+
+typedef struct {
+    int32_t  ne0;
+    int32_t  ne1;
+    int32_t  ne2;
+    int32_t  has_c;
+    uint64_t nba1;
+    uint64_t nba2;
+    uint64_t nbb1;
+    uint64_t nbb2;
+    uint64_t nbc1;
+    uint64_t nbc2;
+    float    scale;
+    float    bias;
+} ggml_metal_kargs_add_scale;
+
+typedef struct {
+    int32_t  n_cols;
+    int32_t  ch;
+    int32_t  n_t;
+    int32_t  n_s;
+    int32_t  add_scale;
+    int32_t  has_res;
+    uint64_t nbp1;
+    uint64_t nbp2;
+    uint64_t nbx1;
+    uint64_t nbx2;
+    uint64_t nbw1;
+    uint64_t nbs1;
+    float    scale;
+    float    bias;
+    int32_t  n_dyn;
+    int32_t  hd;
+    uint64_t nbd1;
+} ggml_metal_kargs_conv_step;
+
+typedef struct {
+    int32_t  n_kv;
+    int32_t  n_t;
+    int32_t  n_hd;
+    int32_t  n_st;
+    uint64_t nbt1;
+    uint64_t nbt2;
+    uint64_t nbs1;
+    uint64_t nbs2;
+    uint64_t nbp1;
+    uint64_t nbm1;
+    uint64_t nbm3;
+} ggml_metal_kargs_rel_mask;
+
+typedef struct {
+    int32_t  ne0;
+    int32_t  ne1;
+    int32_t  nrows;
+    int32_t  has_w;
+    uint64_t nbx1;
+    uint64_t nbx2;
+    float    eps;
+    float    scale;
+    float    bias;
+} ggml_metal_kargs_l2_clip;
+
+typedef struct {
+    int32_t  ne_a;
+    int32_t  ne_b;
+    int32_t  n_out;
+    uint64_t nba1;
+    uint64_t nbb1;
+    uint64_t nbw1;
+    uint64_t nb1;
+} ggml_metal_kargs_cat_mv;
+
+typedef struct {
+    int32_t  ne0;
+    int32_t  ne1;
+    int32_t  rank;
+    uint64_t nbd1;
+    uint64_t nbwf1;
+    uint64_t nbwg1;
+    uint64_t nbx1;
+    uint64_t nbm1;
+} ggml_metal_kargs_gate_mv;
+
+typedef struct {
+    int32_t  ne0;
+    int32_t  ne1;
+    int32_t  ne2;
+    uint64_t nbg1;
+    uint64_t nbg2;
+    uint64_t nba1;
+    uint64_t nba2;
+} ggml_metal_kargs_sigmoid_mul;
+
+typedef struct {
+    int32_t  ne0;
+    int32_t  ne1;
+    int32_t  ne2;
+    int32_t  nt2;
+    uint64_t nbt1;
+    uint64_t nbt2;
+    uint64_t nbi0;
+    uint64_t nbi1;
+} ggml_metal_kargs_scale_id;
+
+typedef struct {
     int32_t  IC;
     int32_t  IH;
     int32_t  IW;
