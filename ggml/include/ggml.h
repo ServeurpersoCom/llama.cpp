@@ -415,6 +415,7 @@ extern "C" {
         GGML_OP_DSV4_HC_PRE,
         GGML_OP_DSV4_HC_POST,
         GGML_OP_TOP_K_MASK,
+        GGML_OP_SOFTMAX_POOL,
 
         GGML_OP_UNARY,
 
@@ -2580,6 +2581,17 @@ extern "C" {
             struct ggml_tensor  * score,
             struct ggml_tensor  * blocks,
             struct ggml_tensor  * extra);
+
+    // softmax weighted pooling over the members of each pool, per channel:
+    //   out[c, p] = sum_m softmax_m(s[c, m, p] + b[c, m]) * v[c, m, p]
+    // v, s: [C, M, P] F32, each row contiguous over C, the rows and pools may be strided
+    // b:    [C, M] F32 added to the scores of every pool, or NULL
+    // out:  [C, P] F32
+    GGML_API struct ggml_tensor * ggml_softmax_pool(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * v,
+            struct ggml_tensor  * s,
+            struct ggml_tensor  * b);
 
     // custom operators
 

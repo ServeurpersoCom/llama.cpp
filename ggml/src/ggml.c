@@ -1099,6 +1099,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "DSV4_HC_PRE",
     "DSV4_HC_POST",
     "TOP_K_MASK",
+    "SOFTMAX_POOL",
 
     "UNARY",
 
@@ -1120,7 +1121,7 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
     "SIGMOID_BACK",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
 
 static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "none",
@@ -1216,6 +1217,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "dsv4_hc_pre(x, weights)",
     "dsv4_hc_post(x, residual, post, comb)",
     "top_k_mask(mask, top_k, score, blocks, extra)",
+    "softmax_pool(v, s, b)",
 
     "unary(x)",
 
@@ -1237,7 +1239,7 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "sigmoid_back(x)",
 };
 
-static_assert(GGML_OP_COUNT == 101, "GGML_OP_COUNT != 101");
+static_assert(GGML_OP_COUNT == 102, "GGML_OP_COUNT != 102");
 
 static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
 
@@ -6810,6 +6812,32 @@ struct ggml_tensor * ggml_top_k_mask(
     result->src[2] = score;
     result->src[3] = blocks;
     result->src[4] = extra;
+
+    return result;
+}
+
+// ggml_softmax_pool
+
+struct ggml_tensor * ggml_softmax_pool(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * v,
+        struct ggml_tensor  * s,
+        struct ggml_tensor  * b) {
+    GGML_ASSERT(v->type == GGML_TYPE_F32 && s->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_are_same_shape(v, s));
+    GGML_ASSERT(v->ne[3] == 1);
+    GGML_ASSERT(v->nb[0] == sizeof(float) && s->nb[0] == sizeof(float));
+    if (b) {
+        GGML_ASSERT(b->type == GGML_TYPE_F32 && ggml_is_contiguous(b));
+        GGML_ASSERT(b->ne[0] == v->ne[0] && b->ne[1] == v->ne[1] && b->ne[2] == 1 && b->ne[3] == 1);
+    }
+
+    struct ggml_tensor * result = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, v->ne[0], v->ne[2]);
+
+    result->op     = GGML_OP_SOFTMAX_POOL;
+    result->src[0] = v;
+    result->src[1] = s;
+    result->src[2] = b;
 
     return result;
 }

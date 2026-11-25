@@ -11181,6 +11181,56 @@ struct test_lightning_indexer : public test_case {
 };
 
 // GGML_OP_TOP_K_MASK
+// GGML_OP_SOFTMAX_POOL
+struct test_softmax_pool : public test_case {
+    const int64_t C;
+    const int64_t M;
+    const int64_t P;
+    const bool    bias;
+    const bool    packed; // value and score halves of the same rows, as in the Hy4 flash indexer cache
+
+    std::string vars() override {
+        return VARS_TO_STR5(C, M, P, bias, packed);
+    }
+
+    test_softmax_pool(int64_t C = 33, int64_t M = 4, int64_t P = 17, bool bias = true, bool packed = true)
+        : C(C), M(M), P(P), bias(bias), packed(packed) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * v;
+        ggml_tensor * s;
+        if (packed) {
+            ggml_tensor * rows = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 2*C, M, P);
+            ggml_set_name(rows, "rows");
+            v = ggml_view_3d(ctx, rows, C, M, P, rows->nb[1], rows->nb[2], 0);
+            s = ggml_view_3d(ctx, rows, C, M, P, rows->nb[1], rows->nb[2], C*sizeof(float));
+        } else {
+            v = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, C, M, P);
+            s = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, C, M, P);
+            ggml_set_name(v, "v");
+            ggml_set_name(s, "s");
+        }
+
+        ggml_tensor * b = nullptr;
+        if (bias) {
+            b = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, C, M);
+            ggml_set_name(b, "b");
+        }
+
+        ggml_tensor * out = ggml_softmax_pool(ctx, v, s, b);
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != NULL; t = ggml_get_next_tensor(ctx, t)) {
+            // scores spread wide enough for the softmax to pick, values around zero
+            init_tensor_uniform(t, -8.0f, 8.0f);
+        }
+    }
+};
+
 struct test_top_k_mask : public test_case {
     const ggml_type type;
     const int64_t n_kv;
@@ -12188,6 +12238,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_dsv4_hc_chain(GGML_TYPE_Q4_0, n_embd, n_tokens, false, false));
         }
     }
+
+    test_cases.emplace_back(new test_softmax_pool());
+    test_cases.emplace_back(new test_softmax_pool(33, 4, 17, false, false));
+    test_cases.emplace_back(new test_softmax_pool(128, 4, 300));             // Hy4 flash indexer pools
+    test_cases.emplace_back(new test_softmax_pool(128, 4, 70000, true));     // more pools than a grid dimension
+    test_cases.emplace_back(new test_softmax_pool(64, 128, 7, false, false)); // DeepSeek V4 HCA
+    test_cases.emplace_back(new test_softmax_pool(64, 2, 9, false, false));   // DeepSeek V4.1 CSA
+    test_cases.emplace_back(new test_softmax_pool(5, 1, 3, true, true));
 
     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
         // blocks with extra cells and scores (k-pool)

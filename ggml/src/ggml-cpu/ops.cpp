@@ -12716,3 +12716,54 @@ void ggml_compute_forward_lightning_indexer(
         }
     }
 }
+
+// ggml_compute_forward_softmax_pool
+
+void ggml_compute_forward_softmax_pool(
+        const ggml_compute_params * params,
+        ggml_tensor * dst) {
+    const ggml_tensor * v = dst->src[0];
+    const ggml_tensor * s = dst->src[1];
+    const ggml_tensor * b = dst->src[2];
+
+    const int64_t C = v->ne[0];
+    const int64_t M = v->ne[1];
+    const int64_t P = v->ne[2];
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    std::vector<float> mx(C);
+    std::vector<float> den(C);
+    std::vector<float> acc(C);
+
+    for (int64_t p = ith; p < P; p += nth) {
+        std::fill(mx.begin(),  mx.end(), -INFINITY);
+        std::fill(den.begin(), den.end(), 0.0f);
+        std::fill(acc.begin(), acc.end(), 0.0f);
+
+        for (int64_t m = 0; m < M; ++m) {
+            const float * sm = (const float *) ((const char *) s->data + m*s->nb[1] + p*s->nb[2]);
+            const float * bm = b ? (const float *) b->data + m*C : nullptr;
+            for (int64_t c = 0; c < C; ++c) {
+                mx[c] = std::max(mx[c], sm[c] + (bm ? bm[c] : 0.0f));
+            }
+        }
+
+        for (int64_t m = 0; m < M; ++m) {
+            const float * sm = (const float *) ((const char *) s->data + m*s->nb[1] + p*s->nb[2]);
+            const float * vm = (const float *) ((const char *) v->data + m*v->nb[1] + p*v->nb[2]);
+            const float * bm = b ? (const float *) b->data + m*C : nullptr;
+            for (int64_t c = 0; c < C; ++c) {
+                const float e = expf(sm[c] + (bm ? bm[c] : 0.0f) - mx[c]);
+                den[c] += e;
+                acc[c] += e*vm[c];
+            }
+        }
+
+        float * out = (float *) ((char *) dst->data + p*dst->nb[1]);
+        for (int64_t c = 0; c < C; ++c) {
+            out[c] = acc[c]/den[c];
+        }
+    }
+}
