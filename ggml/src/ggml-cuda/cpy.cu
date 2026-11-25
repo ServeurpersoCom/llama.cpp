@@ -53,6 +53,10 @@ static __global__ void cpy_scalar_transpose(const char * cx, char * cdst, const 
     const int64_t nmat = ne / (ne00 * ne01);
     const int64_t n = ne00 * ne01;
 
+    // the source rows and matrices may be strided, e.g. a permuted view of part of each row
+    const int64_t s_row = nb00 / (int64_t) sizeof(T);
+    const int64_t s_mat = nb02 / (int64_t) sizeof(T);
+
     const int64_t x  = (int64_t) blockIdx.x * CUDA_CPY_TILE_DIM_2D + threadIdx.x;
     const int64_t y  = (int64_t) blockIdx.y * CUDA_CPY_TILE_DIM_2D + threadIdx.y;
     const int64_t tx = (int64_t) blockIdx.y * CUDA_CPY_TILE_DIM_2D + threadIdx.x;  // transpose block offset
@@ -75,7 +79,7 @@ static __global__ void cpy_scalar_transpose(const char * cx, char * cdst, const 
                 const int row = threadIdx.y+j;
                 const int col = threadIdx.x * sizeof(float)/sizeof(T);
                 T *tile2 = reinterpret_cast<T*>(tile[cur_tile_buf][row]);
-                tile2[col] = src[imat*n + (y+j)*ne01 + x];
+                tile2[col] = src[imat*s_mat + (y+j)*s_row + x];
             }
         }
 
@@ -93,7 +97,7 @@ static __global__ void cpy_scalar_transpose(const char * cx, char * cdst, const 
         cur_tile_buf = (cur_tile_buf + 1) % 2;
     }
 
-    GGML_UNUSED_VARS(ne02, nb00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11,
+    GGML_UNUSED_VARS(ne02, nb01, nb03, ne10, ne11, ne12, nb10, nb11,
         nb12, nb13);
 }
 
@@ -458,9 +462,10 @@ void ggml_cuda_cpy(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, gg
     char * src1_ddc = (char *) src1->data;
 
     const bool contiguous_srcs = ggml_is_contiguous(src0) && ggml_is_contiguous(src1);
-    const bool can_be_transposed = nb01 == (int64_t)ggml_element_size(src0) &&
-        src0->ne[3] == 1 && nb02 == ne00 * ne01 * (int64_t)ggml_element_size(src0) &&
-        ggml_is_contiguous(src1);
+    // a transposed stack of matrices, contiguous or with strided rows and matrices when ne[0] is the outer stride
+    const int64_t esize = (int64_t) ggml_element_size(src0);
+    const bool can_be_transposed = nb01 == esize && src0->ne[3] == 1 && ggml_is_contiguous(src1) &&
+        (nb02 == ne00 * ne01 * esize || (nb00 <= nb02 && nb00 % esize == 0 && nb02 % esize == 0));
 
     size_t mc_width = 0, mc_height = 0, mc_spitch = 0, mc_dpitch = 0;
 

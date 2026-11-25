@@ -3599,7 +3599,13 @@ struct test_cont : public test_case {
         const bool permuted = permute[0] != 0 || permute[1] != 0 || permute[2] != 0 || permute[3] != 0;
 
         ggml_tensor * dst;
-        if (permuted) {
+        if (permuted && use_view_slice) {
+            // the second half of each row, then permuted: strided rows and matrices
+            ggml_tensor * half = ggml_view_4d(ctx, src, src->ne[0]/2, src->ne[1], src->ne[2], src->ne[3],
+                src->nb[1], src->nb[2], src->nb[3], src->nb[0] * (src->ne[0]/2));
+            dst = ggml_permute(ctx, half, permute[0], permute[1], permute[2], permute[3]);
+            ggml_set_name(dst, "src_half_permuted");
+        } else if (permuted) {
             dst = ggml_permute(ctx, src, permute[0], permute[1], permute[2], permute[3]);
             ggml_set_name(dst, "src_permuted");
         } else if (use_view_slice) {
@@ -12958,6 +12964,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 
     // source strides over 16 MB (24-bit DMA descriptor limit)
     test_cases.emplace_back(new test_cont(GGML_TYPE_F32, {512, 8193, 2, 1}, false, {2, 1, 0, 3}));
+    for (ggml_type type : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_BF16, GGML_TYPE_I32}) {
+        test_cases.emplace_back(new test_cont(type, {256, 4, 300, 1}, true, {1, 0, 2, 3}));
+        test_cases.emplace_back(new test_cont(type, {66, 7, 5, 1},    true, {1, 0, 2, 3}));
+        test_cases.emplace_back(new test_cont(type, {66, 7, 5, 3},    true, {1, 0, 2, 3}));
+    }
     test_cases.emplace_back(new test_cont(GGML_TYPE_F32, {256, 16385, 2, 1}, false, {0, 2, 1, 3}));
 
     // channel swap with sizes not multiples of 32/64 tile
