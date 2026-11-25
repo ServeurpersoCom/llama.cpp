@@ -758,15 +758,7 @@ ggml_tensor * llama_model_hy_v4_flash::graph::build_pool_select(
             ggml_row_size(rows->type, n_idx));
 
     // per channel softmax over the members of the gate plus the member's position bias, then the weighted sum of the values
-    ggml_tensor * logits = ggml_add(ctx0, pg, layer.indexer_kpool_ape);
-    logits = ggml_cont(ctx0, ggml_permute(ctx0, logits, 1, 0, 2, 3)); // [kpool, n_idx, n_pool]
-    // fold the pool axis into rows: soft_max maps ne[2] to a CUDA gridDim.y that caps at 65535
-    ggml_tensor * probs = ggml_soft_max(ctx0, ggml_reshape_2d(ctx0, logits, kpool, n_idx*n_pool));
-    probs = ggml_reshape_3d(ctx0, probs, kpool, n_idx, n_pool);
-
-    pv = ggml_cont(ctx0, ggml_permute(ctx0, pv, 1, 0, 2, 3));
-    ggml_tensor * pooled = ggml_sum_rows(ctx0, ggml_mul(ctx0, probs, pv)); // [1, n_idx, n_pool]
-    pooled = ggml_reshape_2d(ctx0, pooled, n_idx, n_pool);
+    ggml_tensor * pooled = ggml_softmax_pool(ctx0, pv, pg, layer.indexer_kpool_ape); // [n_idx, n_pool]
 
     // the pooled key is normed, then rotated at the position of its first member
     pooled = build_norm(pooled, layer.indexer_comp_norm, nullptr, LLM_NORM_RMS, il);
