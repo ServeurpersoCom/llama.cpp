@@ -24,6 +24,14 @@ static ggml_tensor * hy_v4_flash_rope_to_neox(ggml_context * ctx, ggml_tensor * 
     return ggml_reshape_3d(ctx, x, n_rot, x->ne[2], x->ne[3]);
 }
 
+// the same reorder on the trailing n_rot channels of each row, the leading ones are kept
+static ggml_tensor * hy_v4_flash_neox_channels(ggml_context * ctx, ggml_tensor * x, int64_t n_nope) {
+    const int64_t n_rot = x->ne[0] - n_nope;
+    ggml_tensor * front = ggml_view_3d(ctx, x, n_nope, x->ne[1], x->ne[2], x->nb[1], x->nb[2], 0);
+    ggml_tensor * back  = ggml_view_3d(ctx, x, n_rot,  x->ne[1], x->ne[2], x->nb[1], x->nb[2], ggml_row_size(x->type, n_nope));
+    return ggml_concat(ctx, front, hy_v4_flash_rope_to_neox(ctx, back), 0);
+}
+
 // IMROPE rotates the last pairs with the 4th position, the reference uses t there
 static ggml_tensor * hy_v4_flash_pos(ggml_context * ctx, ggml_tensor * pos, int64_t n_tokens) {
     return ggml_concat(ctx, ggml_view_1d(ctx, pos, 3*n_tokens, 0), ggml_view_1d(ctx, pos, n_tokens, 0), 0);
@@ -686,7 +694,7 @@ llama_model_hy_v4_flash::llm_graph_input_pool * llama_model_hy_v4_flash::graph::
 
 // rotate only the trailing n_rot of each indexer head, leaving the head's front half untouched
 ggml_tensor * llama_model_hy_v4_flash::graph::build_indexer_rope(
-        ggml_tensor * x, ggml_tensor * pos, int64_t n_idx, float freq_base, int il) const {
+        ggml_tensor * x, ggml_tensor * pos, int64_t n_idx, float freq_base, int il, bool neox) const {
     const int64_t n_nope = n_idx - n_rot;
     GGML_ASSERT(n_nope > 0);
 
@@ -700,15 +708,16 @@ ggml_tensor * llama_model_hy_v4_flash::graph::build_indexer_rope(
         int sections[GGML_MROPE_SECTIONS];
         std::copy(hparams.rope_sections.begin(), hparams.rope_sections.end(), sections);
 
-        back = ggml_rope_multi(ctx0, hy_v4_flash_rope_to_neox(ctx0, back), pos, nullptr, n_rot, sections, rope_type, n_ctx_orig,
+        back = ggml_rope_multi(ctx0, neox ? back : hy_v4_flash_rope_to_neox(ctx0, back), pos, nullptr, n_rot, sections, rope_type, n_ctx_orig,
                 freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
     } else {
+        GGML_ASSERT(!neox);
         back = ggml_rope_ext(ctx0, ggml_cont(ctx0, back), pos, nullptr, n_rot, rope_type, n_ctx_orig,
                 freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
     }
     cb(back, "indexer_rope", il);
 
-    return ggml_concat(ctx0, ggml_cont(ctx0, front), back, 0);
+    return ggml_concat(ctx0, neox ? front : ggml_cont(ctx0, front), back, 0);
 }
 
 // the cells a token attends to: the best scored pools of its sequence plus its own pool
@@ -740,6 +749,18 @@ ggml_tensor * llama_model_hy_v4_flash::graph::build_pool_select(
     // the value and the gate are linear in the token's key, so the cache holds them and the pools are built from them
     ggml_tensor * iv = build_lora_mm(layer.indexer_kpool_value, ik);
     ggml_tensor * ig = build_lora_mm(layer.indexer_kpool_gate, ik);
+
+    // the pooling and its norm are per channel, so with M-RoPE the channels are put in the neox order once, when written,
+    // instead of reordering every pool at every step; the bias and the norm weight follow the same order
+    ggml_tensor * ape       = layer.indexer_kpool_ape;
+    ggml_tensor * comp_norm = layer.indexer_comp_norm;
+    if (hparams.use_mrope()) {
+        const int64_t n_nope = n_idx - n_rot;
+        iv        = hy_v4_flash_neox_channels(ctx0, iv,  n_nope);
+        ig        = hy_v4_flash_neox_channels(ctx0, ig,  n_nope);
+        ape       = hy_v4_flash_neox_channels(ctx0, ape, n_nope);
+        comp_norm = ggml_reshape_1d(ctx0, hy_v4_flash_neox_channels(ctx0, ggml_reshape_2d(ctx0, comp_norm, n_idx, 1), n_nope), n_idx);
+    }
     cb(ig, "indexer_gate", il);
 
     ggml_tensor * packed = ggml_reshape_3d(ctx0, ggml_concat(ctx0, iv, ig, 0), 2*n_idx, 1, n_tokens);
@@ -758,11 +779,12 @@ ggml_tensor * llama_model_hy_v4_flash::graph::build_pool_select(
             ggml_row_size(rows->type, n_idx));
 
     // per channel softmax over the members of the gate plus the member's position bias, then the weighted sum of the values
-    ggml_tensor * pooled = ggml_softmax_pool(ctx0, pv, pg, layer.indexer_kpool_ape); // [n_idx, n_pool]
+    ggml_tensor * pooled = ggml_softmax_pool(ctx0, pv, pg, ape); // [n_idx, n_pool]
 
     // the pooled key is normed, then rotated at the position of its first member
-    pooled = build_norm(pooled, layer.indexer_comp_norm, nullptr, LLM_NORM_RMS, il);
-    pooled = build_indexer_rope(ggml_reshape_3d(ctx0, pooled, n_idx, 1, n_pool), inp_pool->pool_pos, n_idx, freq_base, il);
+    pooled = build_norm(pooled, comp_norm, nullptr, LLM_NORM_RMS, il);
+    pooled = build_indexer_rope(ggml_reshape_3d(ctx0, pooled, n_idx, 1, n_pool), inp_pool->pool_pos, n_idx, freq_base, il,
+            hparams.use_mrope());
     cb(pooled, "indexer_pool_k", il);
 
     ggml_tensor * weights = build_lora_mm(layer.indexer_proj, cur);

@@ -2544,8 +2544,9 @@ struct llama_model_hy_v4_flash : public llama_model_base {
         llm_graph_input_pool * build_inp_pool(llm_graph_input_attn_k_dsa_iswa * inp_attn);
 
         // rotate only the trailing n_rot of each indexer head
+        // neox: the rotated channels are already in the neox order the M-RoPE path needs
         ggml_tensor * build_indexer_rope(ggml_tensor * x, ggml_tensor * pos, int64_t n_idx,
-                float freq_base, int il) const;
+                float freq_base, int il, bool neox = false) const;
 
         // the kq_mask of the sparse layer, opened on the best scored pools plus the token's own pool
         ggml_tensor * build_pool_select(
